@@ -42,6 +42,25 @@ Covered behavior:
 - Server startup opens SQLite, loads the control TLS certificate, starts QUIC control, starts one HTTP entry, and starts TCP entries discovered from enabled TCP proxies.
 - Client startup dials the QUIC control listener, authenticates, reads the proxy snapshot, sends heartbeats, and begins serving proxy streams.
 
+## External Process Smoke
+
+The external process smoke test builds real `goginx-server` and `goginx-client` binaries, writes temporary JSON configs, generates temporary TLS certificates, seeds SQLite, starts both processes, and verifies TCP echo traffic through the daemon path.
+
+```powershell
+$env:CGO_ENABLED="0"
+go test ./e2e -run TestExternalProcessesProxyTCP -count=1
+```
+
+Covered behavior:
+
+- Real command binaries start from config files instead of package APIs.
+- The server opens SQLite, QUIC control, the HTTP entry, and a TCP entry discovered from SQLite.
+- The client authenticates with the server certificate verified by a generated CA file.
+- External TCP traffic reaches a local echo origin through server TCP entry -> QUIC client stream -> local target.
+- Child server and client processes are terminated by the test cleanup path.
+
+HTTP external process smoke is intentionally deferred; HTTP Host routing and response forwarding are already covered by package E2E tests.
+
 ## TCP Proxy
 
 The TCP proxy E2E test starts a local echo server, authenticates a QUIC client, starts a TCP entry, and verifies external TCP traffic reaches the echo target through the QUIC client stream.
@@ -94,5 +113,5 @@ Covered behavior:
 
 ## What Is Not Covered Yet
 
-- Full external OS process smoke tests for `goginx-server` and `goginx-client`.
+- HTTP external OS process smoke for `goginx-server` and `goginx-client`.
 - UDP, HTTPS, TCP+TLS fallback, forward proxy, quotas, rate limits, persistent stats, GraphQL, admin UI, ACME, and deployment automation.
