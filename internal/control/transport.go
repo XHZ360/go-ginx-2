@@ -122,7 +122,23 @@ func (listener *Listener) handleConn(ctx context.Context, conn *quic.Conn) {
 		_ = conn.CloseWithError(7, "auth response failed")
 		return
 	}
+	if err := listener.sendProxySnapshot(ctx, stream, result.Client.ID, result.ConfigVersion); err != nil {
+		_ = conn.CloseWithError(8, "proxy snapshot failed")
+		return
+	}
 	listener.handleHeartbeats(stream)
+}
+
+func (listener *Listener) sendProxySnapshot(ctx context.Context, stream *quic.Stream, clientID string, version int64) error {
+	proxyRepository := listener.server.Authenticator.Store.Proxies()
+	if proxyRepository == nil {
+		return WriteMessage(stream, MessageProxySnapshot, ProxySnapshot{Version: version})
+	}
+	proxies, err := proxyRepository.ByClientID(ctx, clientID)
+	if err != nil {
+		return err
+	}
+	return WriteMessage(stream, MessageProxySnapshot, ProxySnapshot{Version: version, Proxies: proxies})
 }
 
 func (listener *Listener) handleHeartbeats(stream *quic.Stream) {
@@ -200,6 +216,17 @@ func (client *ClientConn) SendHeartbeat(heartbeat Heartbeat) error {
 		heartbeat.ObservedAt = time.Now().UTC()
 	}
 	return WriteMessage(client.stream, MessageHeartbeat, heartbeat)
+}
+
+func (client *ClientConn) ReadProxySnapshot() (ProxySnapshot, error) {
+	envelope, err := ReadMessage(client.stream)
+	if err != nil {
+		return ProxySnapshot{}, err
+	}
+	if envelope.Type != MessageProxySnapshot {
+		return ProxySnapshot{}, fmt.Errorf("expected proxy snapshot, got %s", envelope.Type)
+	}
+	return DecodePayload[ProxySnapshot](envelope)
 }
 
 func (client *ClientConn) Close() error {

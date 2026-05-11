@@ -42,6 +42,33 @@ func TestQUICHandshakeRegistersSession(t *testing.T) {
 	}
 }
 
+func TestQUICHandshakeSendsProxySnapshot(t *testing.T) {
+	now := time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC)
+	authStore := newAuthStore(domain.UserEnabled, domain.ClientOffline, domain.HashCredential("secret"))
+	authStore.proxies = []domain.Proxy{
+		{ID: "p1", UserID: "user-1", ClientID: "client-1", Name: "web", Type: domain.ProxyHTTP, Status: domain.ProxyEnabled, EntryHost: "app.example.com", TargetHost: "127.0.0.1", TargetPort: 8080},
+		{ID: "p2", UserID: "user-2", ClientID: "other-client", Name: "other", Type: domain.ProxyTCP, Status: domain.ProxyEnabled, EntryPort: 10022, TargetHost: "127.0.0.1", TargetPort: 22},
+	}
+	listener, _ := startTestListener(t, Authenticator{Store: authStore, Now: func() time.Time { return now }})
+
+	client, response, err := DialAndAuthenticate(context.Background(), listener.Addr().String(), testClientTLSConfig(t), nil, AuthRequest{ClientID: "client-1", Credential: "secret", Timestamp: now, Protocols: []domain.Protocol{domain.ProtocolQUIC}})
+	if err != nil {
+		t.Fatalf("dial authenticate: %v", err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+	if !response.Accepted {
+		t.Fatalf("expected accepted auth response: %+v", response)
+	}
+
+	snapshot, err := client.ReadProxySnapshot()
+	if err != nil {
+		t.Fatalf("read proxy snapshot: %v", err)
+	}
+	if snapshot.Version != 7 || len(snapshot.Proxies) != 1 || snapshot.Proxies[0].ID != "p1" {
+		t.Fatalf("unexpected snapshot: %+v", snapshot)
+	}
+}
+
 func TestQUICHandshakeRejectsWrongCredential(t *testing.T) {
 	now := time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC)
 	listener, sessions := startTestListener(t, Authenticator{

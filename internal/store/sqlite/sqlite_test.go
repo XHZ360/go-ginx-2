@@ -70,6 +70,38 @@ func TestDuplicateHTTPHostIsRejectedCaseInsensitive(t *testing.T) {
 	}
 }
 
+func TestByClientIDReturnsOnlyClientOwnedProxies(t *testing.T) {
+	ctx := context.Background()
+	db := openTestStore(t)
+	seedUserAndClient(t, ctx, db)
+
+	otherUser := domain.User{ID: "u2", Username: "bob", Role: domain.RoleUser, Status: domain.UserEnabled}
+	otherClient := domain.Client{ID: "c2", UserID: otherUser.ID, Name: "office", Status: domain.ClientOffline, CredentialHash: domain.HashCredential("secret")}
+	if err := db.Users().Create(ctx, otherUser); err != nil {
+		t.Fatalf("create other user: %v", err)
+	}
+	if err := db.Clients().Create(ctx, otherClient); err != nil {
+		t.Fatalf("create other client: %v", err)
+	}
+
+	clientProxy := domain.Proxy{ID: "p1", UserID: "u1", ClientID: "c1", Name: "web", Type: domain.ProxyHTTP, Status: domain.ProxyEnabled, EntryHost: "app.example.com", TargetHost: "127.0.0.1", TargetPort: 8080}
+	otherProxy := domain.Proxy{ID: "p2", UserID: "u2", ClientID: "c2", Name: "ssh", Type: domain.ProxyTCP, Status: domain.ProxyEnabled, EntryPort: 10022, TargetHost: "127.0.0.1", TargetPort: 22}
+	if err := db.Proxies().Create(ctx, clientProxy); err != nil {
+		t.Fatalf("create client proxy: %v", err)
+	}
+	if err := db.Proxies().Create(ctx, otherProxy); err != nil {
+		t.Fatalf("create other proxy: %v", err)
+	}
+
+	found, err := db.Proxies().ByClientID(ctx, "c1")
+	if err != nil {
+		t.Fatalf("lookup by client: %v", err)
+	}
+	if len(found) != 1 || found[0].ID != clientProxy.ID {
+		t.Fatalf("expected only client proxy, got %+v", found)
+	}
+}
+
 func openTestStore(t *testing.T) *Store {
 	t.Helper()
 	db, err := Open(filepath.Join(t.TempDir(), "test.db"))

@@ -57,8 +57,9 @@ func TestAuthenticatorRejectsUnsupportedProtocol(t *testing.T) {
 }
 
 type authStore struct {
-	user   domain.User
-	client domain.Client
+	user    domain.User
+	client  domain.Client
+	proxies []domain.Proxy
 }
 
 func newAuthStore(userStatus domain.UserStatus, clientStatus domain.ClientStatus, credentialHash string) authStore {
@@ -72,7 +73,7 @@ func (s authStore) Users() store.UserRepository { return authUserRepository{s.us
 
 func (s authStore) Clients() store.ClientRepository { return authClientRepository{s.client} }
 
-func (s authStore) Proxies() store.ProxyRepository { return nil }
+func (s authStore) Proxies() store.ProxyRepository { return authProxyRepository{s.proxies} }
 
 func (s authStore) AuditEvents() store.AuditRepository { return nil }
 
@@ -111,3 +112,31 @@ func (r authClientRepository) SetStatus(context.Context, string, domain.ClientSt
 }
 
 func (r authClientRepository) RotateCredential(context.Context, string, string) error { return nil }
+
+type authProxyRepository struct{ proxies []domain.Proxy }
+
+func (r authProxyRepository) Create(context.Context, domain.Proxy) error { return nil }
+
+func (r authProxyRepository) ByID(context.Context, string) (domain.Proxy, error) {
+	return domain.Proxy{}, store.ErrNotFound
+}
+
+func (r authProxyRepository) ByClientID(_ context.Context, clientID string) ([]domain.Proxy, error) {
+	proxies := make([]domain.Proxy, 0)
+	for _, proxy := range r.proxies {
+		if proxy.ClientID == clientID {
+			proxies = append(proxies, proxy)
+		}
+	}
+	return proxies, nil
+}
+
+func (r authProxyRepository) ByTCPEntryPort(context.Context, int) (domain.Proxy, error) {
+	return domain.Proxy{}, store.ErrNotFound
+}
+
+func (r authProxyRepository) ByHTTPHost(context.Context, string) (domain.Proxy, error) {
+	return domain.Proxy{}, store.ErrNotFound
+}
+
+func (r authProxyRepository) SetStatus(context.Context, string, domain.ProxyStatus) error { return nil }

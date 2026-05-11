@@ -131,6 +131,27 @@ func (r proxyRepository) ByID(ctx context.Context, id string) (domain.Proxy, err
 	return scanProxy(r.db.QueryRowContext(ctx, `select id, user_id, client_id, name, type, status, entry_host, entry_port, target_host, target_port, description, created_at, updated_at from proxies where id = ?`, id))
 }
 
+func (r proxyRepository) ByClientID(ctx context.Context, clientID string) ([]domain.Proxy, error) {
+	rows, err := r.db.QueryContext(ctx, `select id, user_id, client_id, name, type, status, entry_host, entry_port, target_host, target_port, description, created_at, updated_at from proxies where client_id = ? order by created_at, id`, clientID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	proxies := make([]domain.Proxy, 0)
+	for rows.Next() {
+		proxy, err := scanProxyRows(rows)
+		if err != nil {
+			return nil, err
+		}
+		proxies = append(proxies, proxy)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return proxies, nil
+}
+
 func (r proxyRepository) ByTCPEntryPort(ctx context.Context, port int) (domain.Proxy, error) {
 	return scanProxy(r.db.QueryRowContext(ctx, `select id, user_id, client_id, name, type, status, entry_host, entry_port, target_host, target_port, description, created_at, updated_at from proxies where type = ? and entry_port = ?`, domain.ProxyTCP, port))
 }
@@ -173,6 +194,12 @@ func scanProxy(row *sql.Row) (domain.Proxy, error) {
 	var proxy domain.Proxy
 	err := row.Scan(&proxy.ID, &proxy.UserID, &proxy.ClientID, &proxy.Name, &proxy.Type, &proxy.Status, &proxy.EntryHost, &proxy.EntryPort, &proxy.TargetHost, &proxy.TargetPort, &proxy.Description, &proxy.CreatedAt, &proxy.UpdatedAt)
 	return proxy, translateError(err)
+}
+
+func scanProxyRows(rows *sql.Rows) (domain.Proxy, error) {
+	var proxy domain.Proxy
+	err := rows.Scan(&proxy.ID, &proxy.UserID, &proxy.ClientID, &proxy.Name, &proxy.Type, &proxy.Status, &proxy.EntryHost, &proxy.EntryPort, &proxy.TargetHost, &proxy.TargetPort, &proxy.Description, &proxy.CreatedAt, &proxy.UpdatedAt)
+	return proxy, err
 }
 
 func resultError(result sql.Result, err error) error {

@@ -47,3 +47,23 @@ func TestReadMessageRejectsEmptyFrame(t *testing.T) {
 		t.Fatal("expected empty frame error")
 	}
 }
+
+func TestProxySnapshotRoundTrip(t *testing.T) {
+	snapshot := ProxySnapshot{Version: 3, Proxies: []domain.Proxy{{ID: "p1", UserID: "u1", ClientID: "c1", Name: "web", Type: domain.ProxyHTTP, Status: domain.ProxyEnabled, EntryHost: "app.example.com", TargetHost: "127.0.0.1", TargetPort: 8080}}}
+
+	var buffer bytes.Buffer
+	if err := WriteMessage(&buffer, MessageProxySnapshot, snapshot); err != nil {
+		t.Fatalf("write snapshot: %v", err)
+	}
+	envelope, err := ReadMessage(&buffer)
+	if err != nil {
+		t.Fatalf("read snapshot: %v", err)
+	}
+	decoded, err := DecodePayload[ProxySnapshot](envelope)
+	if err != nil {
+		t.Fatalf("decode snapshot: %v", err)
+	}
+	if decoded.Version != snapshot.Version || len(decoded.Proxies) != 1 || decoded.Proxies[0].ID != "p1" {
+		t.Fatalf("unexpected snapshot: %+v", decoded)
+	}
+}
