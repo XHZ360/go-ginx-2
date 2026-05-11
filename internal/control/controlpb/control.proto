@@ -1,0 +1,78 @@
+syntax = "proto3";
+
+package goginx.control.v1;
+
+option go_package = "github.com/simp-frp/go-ginx-2/internal/control/controlpb";
+
+enum MessageType {
+  MESSAGE_TYPE_UNSPECIFIED = 0;
+  MESSAGE_TYPE_AUTH_REQUEST = 1;
+  MESSAGE_TYPE_AUTH_RESPONSE = 2;
+  MESSAGE_TYPE_HEARTBEAT = 3;
+  MESSAGE_TYPE_OPEN_STREAM = 4;
+  MESSAGE_TYPE_PROXY_SNAPSHOT = 5;
+}
+
+message Envelope {
+  MessageType type = 1;
+  bytes payload = 2;
+}
+
+message AuthRequest {
+  string client_id = 1;
+  string credential = 2;
+  string nonce = 3;
+  int64 timestamp_unix_nano = 4;
+  string version = 5;
+  repeated string protocols = 6;
+}
+
+message AuthResponse {
+  bool accepted = 1;
+  string session_id = 2;
+  string selected_protocol = 3;
+  int64 heartbeat_interval_nanos = 4;
+  int64 config_version = 5;
+  string reason = 6;
+}
+
+message Heartbeat {
+  string session_id = 1;
+  string client_id = 2;
+  int64 observed_at_unix_nano = 3;
+  int64 config_version = 4;
+  int32 active_proxies = 5;
+  int32 active_streams = 6;
+  int64 upload_bytes = 7;
+  int64 download_bytes = 8;
+  string error_summary = 9;
+}
+
+message ProxySnapshot {
+  int64 version = 1;
+  repeated Proxy proxies = 2;
+}
+
+message Proxy {
+  string id = 1;
+  string user_id = 2;
+  string client_id = 3;
+  string name = 4;
+  string type = 5;
+  string status = 6;
+  string entry_host = 7;
+  int32 entry_port = 8;
+  string target_host = 9;
+  int32 target_port = 10;
+  string description = 11;
+  int64 created_at_unix_nano = 12;
+  int64 updated_at_unix_nano = 13;
+}
+
+message OpenStream {
+  string kind = 1;
+  string proxy_id = 2;
+  string connection_id = 3;
+  string target_host = 4;
+  int32 target_port = 5;
+}

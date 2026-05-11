@@ -2,10 +2,13 @@ package control
 
 import (
 	"bytes"
+	"encoding/binary"
 	"testing"
 	"time"
 
+	"github.com/simp-frp/go-ginx-2/internal/control/controlpb"
 	"github.com/simp-frp/go-ginx-2/internal/domain"
+	"google.golang.org/protobuf/proto"
 )
 
 func TestWriteReadMessageRoundTrip(t *testing.T) {
@@ -45,6 +48,35 @@ func TestReadMessageRejectsEmptyFrame(t *testing.T) {
 
 	if _, err := ReadMessage(buffer); err == nil {
 		t.Fatal("expected empty frame error")
+	}
+}
+
+func TestWriteMessageUsesProtobufEnvelope(t *testing.T) {
+	var buffer bytes.Buffer
+	if err := WriteMessage(&buffer, MessageHeartbeat, Heartbeat{SessionID: "session-1", ClientID: "client-1", ObservedAt: time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC)}); err != nil {
+		t.Fatalf("write message: %v", err)
+	}
+	frame := buffer.Bytes()
+	if len(frame) < 5 {
+		t.Fatalf("expected length-prefixed frame, got %d bytes", len(frame))
+	}
+	frameSize := binary.BigEndian.Uint32(frame[:4])
+	if int(frameSize) != len(frame)-4 {
+		t.Fatalf("unexpected frame size %d for %d bytes", frameSize, len(frame))
+	}
+	var envelope controlpb.Envelope
+	if err := proto.Unmarshal(frame[4:], &envelope); err != nil {
+		t.Fatalf("unmarshal protobuf envelope: %v", err)
+	}
+	if envelope.GetType() != controlpb.MessageType_MESSAGE_TYPE_HEARTBEAT {
+		t.Fatalf("unexpected envelope type: %s", envelope.GetType())
+	}
+	var heartbeat controlpb.Heartbeat
+	if err := proto.Unmarshal(envelope.GetPayload(), &heartbeat); err != nil {
+		t.Fatalf("unmarshal protobuf heartbeat: %v", err)
+	}
+	if heartbeat.GetSessionId() != "session-1" || heartbeat.GetClientId() != "client-1" {
+		t.Fatalf("unexpected heartbeat: %+v", &heartbeat)
 	}
 }
 

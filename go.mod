@@ -4,6 +4,7 @@ go 1.25.0
 
 require (
 	github.com/quic-go/quic-go v0.59.1
+	google.golang.org/protobuf v1.36.10
 	modernc.org/sqlite v1.38.2
 )
 

@@ -2,13 +2,14 @@ package control
 
 import (
 	"encoding/binary"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"time"
 
+	"github.com/simp-frp/go-ginx-2/internal/control/controlpb"
 	"github.com/simp-frp/go-ginx-2/internal/domain"
+	"google.golang.org/protobuf/proto"
 )
 
 const maxFrameSize = 1 << 20
@@ -24,8 +25,8 @@ const (
 )
 
 type Envelope struct {
-	Type    MessageType     `json:"type"`
-	Payload json.RawMessage `json:"payload"`
+	Type    MessageType
+	Payload []byte
 }
 
 type AuthRequest struct {
@@ -72,12 +73,11 @@ type OpenStream struct {
 }
 
 func WriteMessage(w io.Writer, messageType MessageType, payload any) error {
-	encodedPayload, err := json.Marshal(payload)
+	protoPayload, err := marshalPayload(messageType, payload)
 	if err != nil {
 		return err
 	}
-	envelope := Envelope{Type: messageType, Payload: encodedPayload}
-	encodedEnvelope, err := json.Marshal(envelope)
+	encodedEnvelope, err := proto.Marshal(&controlpb.Envelope{Type: toProtoMessageType(messageType), Payload: protoPayload})
 	if err != nil {
 		return err
 	}
@@ -109,14 +109,15 @@ func ReadMessage(r io.Reader) (Envelope, error) {
 	if _, err := io.ReadFull(r, frame); err != nil {
 		return Envelope{}, err
 	}
-	var envelope Envelope
-	if err := json.Unmarshal(frame, &envelope); err != nil {
+	var envelope controlpb.Envelope
+	if err := proto.Unmarshal(frame, &envelope); err != nil {
 		return Envelope{}, err
 	}
-	if envelope.Type == "" {
+	messageType := fromProtoMessageType(envelope.GetType())
+	if messageType == "" {
 		return Envelope{}, errors.New("message type is required")
 	}
-	return envelope, nil
+	return Envelope{Type: messageType, Payload: envelope.GetPayload()}, nil
 }
 
 func DecodePayload[T any](envelope Envelope) (T, error) {
@@ -124,8 +125,181 @@ func DecodePayload[T any](envelope Envelope) (T, error) {
 	if len(envelope.Payload) == 0 {
 		return payload, errors.New("message payload is required")
 	}
-	if err := json.Unmarshal(envelope.Payload, &payload); err != nil {
-		return payload, err
+	switch target := any(&payload).(type) {
+	case *AuthRequest:
+		var message controlpb.AuthRequest
+		if err := proto.Unmarshal(envelope.Payload, &message); err != nil {
+			return payload, err
+		}
+		*target = authRequestFromProto(&message)
+	case *AuthResponse:
+		var message controlpb.AuthResponse
+		if err := proto.Unmarshal(envelope.Payload, &message); err != nil {
+			return payload, err
+		}
+		*target = authResponseFromProto(&message)
+	case *Heartbeat:
+		var message controlpb.Heartbeat
+		if err := proto.Unmarshal(envelope.Payload, &message); err != nil {
+			return payload, err
+		}
+		*target = heartbeatFromProto(&message)
+	case *OpenStream:
+		var message controlpb.OpenStream
+		if err := proto.Unmarshal(envelope.Payload, &message); err != nil {
+			return payload, err
+		}
+		*target = openStreamFromProto(&message)
+	case *ProxySnapshot:
+		var message controlpb.ProxySnapshot
+		if err := proto.Unmarshal(envelope.Payload, &message); err != nil {
+			return payload, err
+		}
+		*target = proxySnapshotFromProto(&message)
+	default:
+		return payload, fmt.Errorf("unsupported payload type %T", payload)
 	}
 	return payload, nil
+}
+
+func marshalPayload(messageType MessageType, payload any) ([]byte, error) {
+	switch messageType {
+	case MessageAuthRequest:
+		value, ok := payload.(AuthRequest)
+		if !ok {
+			return nil, fmt.Errorf("%s payload must be AuthRequest", messageType)
+		}
+		return proto.Marshal(authRequestToProto(value))
+	case MessageAuthResponse:
+		value, ok := payload.(AuthResponse)
+		if !ok {
+			return nil, fmt.Errorf("%s payload must be AuthResponse", messageType)
+		}
+		return proto.Marshal(authResponseToProto(value))
+	case MessageHeartbeat:
+		value, ok := payload.(Heartbeat)
+		if !ok {
+			return nil, fmt.Errorf("%s payload must be Heartbeat", messageType)
+		}
+		return proto.Marshal(heartbeatToProto(value))
+	case MessageOpenStream:
+		value, ok := payload.(OpenStream)
+		if !ok {
+			return nil, fmt.Errorf("%s payload must be OpenStream", messageType)
+		}
+		return proto.Marshal(openStreamToProto(value))
+	case MessageProxySnapshot:
+		value, ok := payload.(ProxySnapshot)
+		if !ok {
+			return nil, fmt.Errorf("%s payload must be ProxySnapshot", messageType)
+		}
+		return proto.Marshal(proxySnapshotToProto(value))
+	default:
+		return nil, fmt.Errorf("unsupported message type %s", messageType)
+	}
+}
+
+func toProtoMessageType(messageType MessageType) controlpb.MessageType {
+	switch messageType {
+	case MessageAuthRequest:
+		return controlpb.MessageType_MESSAGE_TYPE_AUTH_REQUEST
+	case MessageAuthResponse:
+		return controlpb.MessageType_MESSAGE_TYPE_AUTH_RESPONSE
+	case MessageHeartbeat:
+		return controlpb.MessageType_MESSAGE_TYPE_HEARTBEAT
+	case MessageOpenStream:
+		return controlpb.MessageType_MESSAGE_TYPE_OPEN_STREAM
+	case MessageProxySnapshot:
+		return controlpb.MessageType_MESSAGE_TYPE_PROXY_SNAPSHOT
+	default:
+		return controlpb.MessageType_MESSAGE_TYPE_UNSPECIFIED
+	}
+}
+
+func fromProtoMessageType(messageType controlpb.MessageType) MessageType {
+	switch messageType {
+	case controlpb.MessageType_MESSAGE_TYPE_AUTH_REQUEST:
+		return MessageAuthRequest
+	case controlpb.MessageType_MESSAGE_TYPE_AUTH_RESPONSE:
+		return MessageAuthResponse
+	case controlpb.MessageType_MESSAGE_TYPE_HEARTBEAT:
+		return MessageHeartbeat
+	case controlpb.MessageType_MESSAGE_TYPE_OPEN_STREAM:
+		return MessageOpenStream
+	case controlpb.MessageType_MESSAGE_TYPE_PROXY_SNAPSHOT:
+		return MessageProxySnapshot
+	default:
+		return ""
+	}
+}
+
+func authRequestToProto(request AuthRequest) *controlpb.AuthRequest {
+	protocols := make([]string, 0, len(request.Protocols))
+	for _, protocol := range request.Protocols {
+		protocols = append(protocols, string(protocol))
+	}
+	return &controlpb.AuthRequest{ClientId: request.ClientID, Credential: request.Credential, Nonce: request.Nonce, TimestampUnixNano: request.Timestamp.UnixNano(), Version: request.Version, Protocols: protocols}
+}
+
+func authRequestFromProto(request *controlpb.AuthRequest) AuthRequest {
+	protocols := make([]domain.Protocol, 0, len(request.GetProtocols()))
+	for _, protocol := range request.GetProtocols() {
+		protocols = append(protocols, domain.Protocol(protocol))
+	}
+	return AuthRequest{ClientID: request.GetClientId(), Credential: request.GetCredential(), Nonce: request.GetNonce(), Timestamp: unixNanoTime(request.GetTimestampUnixNano()), Version: request.GetVersion(), Protocols: protocols}
+}
+
+func authResponseToProto(response AuthResponse) *controlpb.AuthResponse {
+	return &controlpb.AuthResponse{Accepted: response.Accepted, SessionId: response.SessionID, SelectedProtocol: string(response.SelectedProtocol), HeartbeatIntervalNanos: int64(response.HeartbeatInterval), ConfigVersion: response.ConfigVersion, Reason: response.Reason}
+}
+
+func authResponseFromProto(response *controlpb.AuthResponse) AuthResponse {
+	return AuthResponse{Accepted: response.GetAccepted(), SessionID: response.GetSessionId(), SelectedProtocol: domain.Protocol(response.GetSelectedProtocol()), HeartbeatInterval: time.Duration(response.GetHeartbeatIntervalNanos()), ConfigVersion: response.GetConfigVersion(), Reason: response.GetReason()}
+}
+
+func heartbeatToProto(heartbeat Heartbeat) *controlpb.Heartbeat {
+	return &controlpb.Heartbeat{SessionId: heartbeat.SessionID, ClientId: heartbeat.ClientID, ObservedAtUnixNano: heartbeat.ObservedAt.UnixNano(), ConfigVersion: heartbeat.ConfigVersion, ActiveProxies: int32(heartbeat.ActiveProxies), ActiveStreams: int32(heartbeat.ActiveStreams), UploadBytes: heartbeat.UploadBytes, DownloadBytes: heartbeat.DownloadBytes, ErrorSummary: heartbeat.ErrorSummary}
+}
+
+func heartbeatFromProto(heartbeat *controlpb.Heartbeat) Heartbeat {
+	return Heartbeat{SessionID: heartbeat.GetSessionId(), ClientID: heartbeat.GetClientId(), ObservedAt: unixNanoTime(heartbeat.GetObservedAtUnixNano()), ConfigVersion: heartbeat.GetConfigVersion(), ActiveProxies: int(heartbeat.GetActiveProxies()), ActiveStreams: int(heartbeat.GetActiveStreams()), UploadBytes: heartbeat.GetUploadBytes(), DownloadBytes: heartbeat.GetDownloadBytes(), ErrorSummary: heartbeat.GetErrorSummary()}
+}
+
+func openStreamToProto(stream OpenStream) *controlpb.OpenStream {
+	return &controlpb.OpenStream{Kind: stream.Kind, ProxyId: stream.ProxyID, ConnectionId: stream.ConnectionID, TargetHost: stream.TargetHost, TargetPort: int32(stream.TargetPort)}
+}
+
+func openStreamFromProto(stream *controlpb.OpenStream) OpenStream {
+	return OpenStream{Kind: stream.GetKind(), ProxyID: stream.GetProxyId(), ConnectionID: stream.GetConnectionId(), TargetHost: stream.GetTargetHost(), TargetPort: int(stream.GetTargetPort())}
+}
+
+func proxySnapshotToProto(snapshot ProxySnapshot) *controlpb.ProxySnapshot {
+	proxies := make([]*controlpb.Proxy, 0, len(snapshot.Proxies))
+	for _, proxy := range snapshot.Proxies {
+		proxies = append(proxies, proxyToProto(proxy))
+	}
+	return &controlpb.ProxySnapshot{Version: snapshot.Version, Proxies: proxies}
+}
+
+func proxySnapshotFromProto(snapshot *controlpb.ProxySnapshot) ProxySnapshot {
+	proxies := make([]domain.Proxy, 0, len(snapshot.GetProxies()))
+	for _, proxy := range snapshot.GetProxies() {
+		proxies = append(proxies, proxyFromProto(proxy))
+	}
+	return ProxySnapshot{Version: snapshot.GetVersion(), Proxies: proxies}
+}
+
+func proxyToProto(proxy domain.Proxy) *controlpb.Proxy {
+	return &controlpb.Proxy{Id: proxy.ID, UserId: proxy.UserID, ClientId: proxy.ClientID, Name: proxy.Name, Type: string(proxy.Type), Status: string(proxy.Status), EntryHost: proxy.EntryHost, EntryPort: int32(proxy.EntryPort), TargetHost: proxy.TargetHost, TargetPort: int32(proxy.TargetPort), Description: proxy.Description, CreatedAtUnixNano: proxy.CreatedAt.UnixNano(), UpdatedAtUnixNano: proxy.UpdatedAt.UnixNano()}
+}
+
+func proxyFromProto(proxy *controlpb.Proxy) domain.Proxy {
+	return domain.Proxy{ID: proxy.GetId(), UserID: proxy.GetUserId(), ClientID: proxy.GetClientId(), Name: proxy.GetName(), Type: domain.ProxyType(proxy.GetType()), Status: domain.ProxyStatus(proxy.GetStatus()), EntryHost: proxy.GetEntryHost(), EntryPort: int(proxy.GetEntryPort()), TargetHost: proxy.GetTargetHost(), TargetPort: int(proxy.GetTargetPort()), Description: proxy.GetDescription(), CreatedAt: unixNanoTime(proxy.GetCreatedAtUnixNano()), UpdatedAt: unixNanoTime(proxy.GetUpdatedAtUnixNano())}
+}
+
+func unixNanoTime(value int64) time.Time {
+	if value == 0 {
+		return time.Time{}
+	}
+	return time.Unix(0, value).UTC()
 }
