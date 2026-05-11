@@ -11,13 +11,18 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	"io"
 	"math/big"
 	"net"
+	nethttp "net/http"
+	"net/http/httptest"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -45,7 +50,7 @@ func TestExternalProcessesProxyTCP(t *testing.T) {
 	httpEntryPort := reservePort(t)
 	certFile, keyFile, caFile := writeTLSFiles(t, workDir)
 	dbPath := filepath.Join(workDir, "go-ginx.db")
-	seedSQLite(t, dbPath, tcpEntryPort, echoHost, echoPort)
+	seedSQLite(t, dbPath, domain.Proxy{ID: "tcp-1", UserID: "user-1", ClientID: "client-1", Name: "echo", Type: domain.ProxyTCP, Status: domain.ProxyEnabled, EntryPort: tcpEntryPort, TargetHost: echoHost, TargetPort: echoPort})
 	serverConfig := writeJSON(t, filepath.Join(workDir, "server.json"), map[string]any{
 		"admin_listen":          "127.0.0.1:0",
 		"control_quic_listen":   net.JoinHostPort("127.0.0.1", strconv.Itoa(controlPort)),
@@ -79,6 +84,88 @@ func TestExternalProcessesProxyTCP(t *testing.T) {
 	entryAddress := net.JoinHostPort("127.0.0.1", strconv.Itoa(tcpEntryPort))
 	if err := waitForEcho(smokeCtx, entryAddress, "ping\n"); err != nil {
 		t.Fatalf("external process TCP smoke failed: %v\nserver output:\n%s\nclient output:\n%s", err, server.Output(), client.Output())
+	}
+}
+
+func TestExternalProcessesProxyHTTP(t *testing.T) {
+	root := repositoryRoot(t)
+	workDir := t.TempDir()
+	binDir := filepath.Join(workDir, "bin")
+	if err := os.MkdirAll(binDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	serverBin := buildCommand(t, root, binDir, "goginx-server", "./cmd/goginx-server")
+	clientBin := buildCommand(t, root, binDir, "goginx-client", "./cmd/goginx-client")
+
+	smokeCtx, cancelSmoke := context.WithTimeout(context.Background(), 20*time.Second)
+	t.Cleanup(cancelSmoke)
+	origin := httptest.NewServer(nethttp.HandlerFunc(func(w nethttp.ResponseWriter, r *nethttp.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read origin body: %v", err)
+			return
+		}
+		if r.URL.Path != "/hello" || string(body) != "request-body" || r.Header.Get("X-Smoke") != "yes" {
+			t.Errorf("unexpected origin request path=%s body=%q header=%s", r.URL.Path, string(body), r.Header.Get("X-Smoke"))
+			return
+		}
+		w.Header().Set("X-Origin", "ok")
+		w.WriteHeader(nethttp.StatusCreated)
+		_, _ = w.Write([]byte("origin-response"))
+	}))
+	t.Cleanup(origin.Close)
+	originURL, err := url.Parse(origin.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	originHost, originPort := splitAddress(t, originURL.Host)
+	controlPort := reservePort(t)
+	httpEntryPort := reservePort(t)
+	certFile, keyFile, caFile := writeTLSFiles(t, workDir)
+	dbPath := filepath.Join(workDir, "go-ginx.db")
+	seedSQLite(t, dbPath, domain.Proxy{ID: "http-1", UserID: "user-1", ClientID: "client-1", Name: "web", Type: domain.ProxyHTTP, Status: domain.ProxyEnabled, EntryHost: "app.example.com", TargetHost: originHost, TargetPort: originPort})
+	serverConfig := writeJSON(t, filepath.Join(workDir, "server.json"), map[string]any{
+		"admin_listen":          "127.0.0.1:0",
+		"control_quic_listen":   net.JoinHostPort("127.0.0.1", strconv.Itoa(controlPort)),
+		"control_tls_cert_file": certFile,
+		"control_tls_key_file":  keyFile,
+		"tcp_entry_host":        "127.0.0.1",
+		"http_entry_listen":     net.JoinHostPort("127.0.0.1", strconv.Itoa(httpEntryPort)),
+		"sqlite_path":           dbPath,
+		"data_dir":              filepath.Join(workDir, "data"),
+		"certificate_dir":       filepath.Join(workDir, "certs"),
+		"heartbeat_timeout":     int64(time.Second),
+		"log_retention_days":    1,
+	})
+	clientConfig := writeJSON(t, filepath.Join(workDir, "client.json"), map[string]any{
+		"server_address":    net.JoinHostPort("127.0.0.1", strconv.Itoa(controlPort)),
+		"server_name":       "localhost",
+		"server_ca_file":    caFile,
+		"client_id":         "client-1",
+		"credential":        "secret",
+		"allowed_protocols": []string{string(domain.ProtocolQUIC)},
+		"reconnect": map[string]any{
+			"initial_delay": int64(10 * time.Millisecond),
+			"max_delay":     int64(10 * time.Millisecond),
+		},
+	})
+
+	server := startProcess(t, root, serverBin, "-config", serverConfig)
+	waitForTCPAccept(t, smokeCtx, net.JoinHostPort("127.0.0.1", strconv.Itoa(httpEntryPort)))
+	client := startProcess(t, root, clientBin, "-config", clientConfig)
+
+	entryURL := "http://" + net.JoinHostPort("127.0.0.1", strconv.Itoa(httpEntryPort)) + "/hello"
+	response, err := waitForHTTP(smokeCtx, entryURL, "app.example.com", "request-body")
+	if err != nil {
+		t.Fatalf("external process HTTP smoke failed: %v\nserver output:\n%s\nclient output:\n%s", err, server.Output(), client.Output())
+	}
+	defer response.Body.Close()
+	responseBody, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.StatusCode != nethttp.StatusCreated || response.Header.Get("X-Origin") != "ok" || string(responseBody) != "origin-response" {
+		t.Fatalf("unexpected HTTP response status=%d header=%s body=%q", response.StatusCode, response.Header.Get("X-Origin"), string(responseBody))
 	}
 }
 
@@ -207,6 +294,34 @@ func waitForEcho(ctx context.Context, address string, payload string) error {
 	return ctx.Err()
 }
 
+func waitForHTTP(ctx context.Context, url string, host string, body string) (*nethttp.Response, error) {
+	var lastErr error
+	client := &nethttp.Client{Timeout: 500 * time.Millisecond}
+	for ctx.Err() == nil {
+		request, err := nethttp.NewRequestWithContext(ctx, nethttp.MethodPost, url, strings.NewReader(body))
+		if err != nil {
+			return nil, err
+		}
+		request.Host = host
+		request.Header.Set("X-Smoke", "yes")
+		response, err := client.Do(request)
+		if err == nil && response.StatusCode == nethttp.StatusCreated {
+			return response, nil
+		}
+		if response != nil {
+			_ = response.Body.Close()
+			lastErr = fmt.Errorf("unexpected status %d", response.StatusCode)
+		} else {
+			lastErr = err
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if lastErr != nil {
+		return nil, lastErr
+	}
+	return nil, ctx.Err()
+}
+
 func startEchoOrigin(t *testing.T, ctx context.Context) string {
 	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -244,7 +359,7 @@ func echoConnection(conn net.Conn) {
 	}
 }
 
-func seedSQLite(t *testing.T, dbPath string, entryPort int, targetHost string, targetPort int) {
+func seedSQLite(t *testing.T, dbPath string, proxies ...domain.Proxy) {
 	t.Helper()
 	db, err := sqlite.Open(dbPath)
 	if err != nil {
@@ -254,15 +369,16 @@ func seedSQLite(t *testing.T, dbPath string, entryPort int, targetHost string, t
 	ctx := context.Background()
 	user := domain.User{ID: "user-1", Username: "alice", Role: domain.RoleUser, Status: domain.UserEnabled}
 	client := domain.Client{ID: "client-1", UserID: user.ID, Name: "home", Status: domain.ClientOffline, CredentialHash: domain.HashCredential("secret")}
-	proxy := domain.Proxy{ID: "tcp-1", UserID: user.ID, ClientID: client.ID, Name: "echo", Type: domain.ProxyTCP, Status: domain.ProxyEnabled, EntryPort: entryPort, TargetHost: targetHost, TargetPort: targetPort}
 	if err := db.Users().Create(ctx, user); err != nil {
 		t.Fatalf("create user: %v", err)
 	}
 	if err := db.Clients().Create(ctx, client); err != nil {
 		t.Fatalf("create client: %v", err)
 	}
-	if err := db.Proxies().Create(ctx, proxy); err != nil {
-		t.Fatalf("create proxy: %v", err)
+	for _, proxy := range proxies {
+		if err := db.Proxies().Create(ctx, proxy); err != nil {
+			t.Fatalf("create proxy %s: %v", proxy.ID, err)
+		}
 	}
 }
 

@@ -44,11 +44,11 @@ Covered behavior:
 
 ## External Process Smoke
 
-The external process smoke test builds real `goginx-server` and `goginx-client` binaries, writes temporary JSON configs, generates temporary TLS certificates, seeds SQLite, starts both processes, and verifies TCP echo traffic through the daemon path.
+The external process smoke tests build real `goginx-server` and `goginx-client` binaries, write temporary JSON configs, generate temporary TLS certificates, seed SQLite, start both processes, and verify TCP and HTTP traffic through the daemon path.
 
 ```powershell
 $env:CGO_ENABLED="0"
-go test ./e2e -run TestExternalProcessesProxyTCP -count=1
+go test ./e2e -run "TestExternalProcessesProxy(TCP|HTTP)$" -count=1
 ```
 
 Covered behavior:
@@ -57,9 +57,8 @@ Covered behavior:
 - The server opens SQLite, QUIC control, the HTTP entry, and a TCP entry discovered from SQLite.
 - The client authenticates with the server certificate verified by a generated CA file.
 - External TCP traffic reaches a local echo origin through server TCP entry -> QUIC client stream -> local target.
+- External HTTP traffic reaches a local HTTP origin through server HTTP entry -> QUIC client stream -> local target.
 - Child server and client processes are terminated by the test cleanup path.
-
-HTTP external process smoke is intentionally deferred; HTTP Host routing and response forwarding are already covered by package E2E tests.
 
 ## TCP Proxy
 
@@ -113,5 +112,4 @@ Covered behavior:
 
 ## What Is Not Covered Yet
 
-- HTTP external OS process smoke for `goginx-server` and `goginx-client`.
 - UDP, HTTPS, TCP+TLS fallback, forward proxy, quotas, rate limits, persistent stats, GraphQL, admin UI, ACME, and deployment automation.
