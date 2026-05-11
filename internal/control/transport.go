@@ -1,6 +1,7 @@
 package control
 
 import (
+	"bufio"
 	"context"
 	"crypto/rand"
 	"crypto/tls"
@@ -9,8 +10,10 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/http"
 	"slices"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/quic-go/quic-go"
@@ -230,6 +233,10 @@ func (client *ClientConn) SendHeartbeat(heartbeat Heartbeat) error {
 }
 
 func (client *ClientConn) ServeTCPStreams(ctx context.Context) error {
+	return client.ServeProxyStreams(ctx)
+}
+
+func (client *ClientConn) ServeProxyStreams(ctx context.Context) error {
 	for {
 		stream, err := client.conn.AcceptStream(ctx)
 		if err != nil {
@@ -238,11 +245,11 @@ func (client *ClientConn) ServeTCPStreams(ctx context.Context) error {
 			}
 			return err
 		}
-		go handleTCPStream(stream)
+		go handleProxyStream(stream)
 	}
 }
 
-func handleTCPStream(stream *quic.Stream) {
+func handleProxyStream(stream *quic.Stream) {
 	defer stream.Close()
 	envelope, err := ReadMessage(stream)
 	if err != nil || envelope.Type != MessageOpenStream {
@@ -252,12 +259,37 @@ func handleTCPStream(stream *quic.Stream) {
 	if err != nil {
 		return
 	}
+	if request.Kind == "http" {
+		handleHTTPStream(stream, request)
+		return
+	}
+	handleTCPStream(stream, request)
+}
+
+func handleTCPStream(stream *quic.Stream, request OpenStream) {
 	target, err := net.Dial("tcp", net.JoinHostPort(request.TargetHost, strconv.Itoa(request.TargetPort)))
 	if err != nil {
 		return
 	}
 	defer target.Close()
 	copyBidirectional(stream, target)
+}
+
+func handleHTTPStream(stream *quic.Stream, request OpenStream) {
+	inbound, err := http.ReadRequest(bufio.NewReader(stream))
+	if err != nil {
+		return
+	}
+	defer inbound.Body.Close()
+	inbound.RequestURI = ""
+	inbound.URL.Scheme = "http"
+	inbound.URL.Host = net.JoinHostPort(request.TargetHost, strconv.Itoa(request.TargetPort))
+	response, err := http.DefaultTransport.RoundTrip(inbound)
+	if err != nil {
+		response = &http.Response{StatusCode: http.StatusBadGateway, Status: "502 Bad Gateway", Body: io.NopCloser(strings.NewReader("target unreachable\n")), Header: make(http.Header)}
+	}
+	defer response.Body.Close()
+	_ = response.Write(stream)
 }
 
 func (client *ClientConn) ReadProxySnapshot() (ProxySnapshot, error) {

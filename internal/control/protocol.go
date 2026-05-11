@@ -64,6 +64,7 @@ type ProxySnapshot struct {
 }
 
 type OpenStream struct {
+	Kind         string `json:"kind"`
 	ProxyID      string `json:"proxy_id"`
 	ConnectionID string `json:"connection_id"`
 	TargetHost   string `json:"target_host"`
