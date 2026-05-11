@@ -39,6 +39,7 @@ type ProxyRepository interface {
 	Create(ctx context.Context, proxy domain.Proxy) error
 	ByID(ctx context.Context, id string) (domain.Proxy, error)
 	ByClientID(ctx context.Context, clientID string) ([]domain.Proxy, error)
+	EnabledByType(ctx context.Context, proxyType domain.ProxyType) ([]domain.Proxy, error)
 	ByTCPEntryPort(ctx context.Context, port int) (domain.Proxy, error)
 	ByHTTPHost(ctx context.Context, host string) (domain.Proxy, error)
 	SetStatus(ctx context.Context, id string, status domain.ProxyStatus) error

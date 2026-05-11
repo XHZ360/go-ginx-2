@@ -131,6 +131,16 @@ func (r authProxyRepository) ByClientID(_ context.Context, clientID string) ([]d
 	return proxies, nil
 }
 
+func (r authProxyRepository) EnabledByType(_ context.Context, proxyType domain.ProxyType) ([]domain.Proxy, error) {
+	proxies := make([]domain.Proxy, 0)
+	for _, proxy := range r.proxies {
+		if proxy.Type == proxyType && proxy.Status == domain.ProxyEnabled {
+			proxies = append(proxies, proxy)
+		}
+	}
+	return proxies, nil
+}
+
 func (r authProxyRepository) ByTCPEntryPort(context.Context, int) (domain.Proxy, error) {
 	return domain.Proxy{}, store.ErrNotFound
 }

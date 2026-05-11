@@ -1,11 +1,14 @@
 package main
 
 import (
+	"context"
 	"flag"
-	"fmt"
 	"log"
+	"os/signal"
+	"syscall"
 
 	"github.com/simp-frp/go-ginx-2/internal/config"
+	"github.com/simp-frp/go-ginx-2/internal/daemon"
 )
 
 func main() {
@@ -17,5 +20,9 @@ func main() {
 		log.Fatalf("load client config: %v", err)
 	}
 
-	fmt.Printf("go-ginx client config loaded: client=%s server=%s protocols=%v\n", cfg.ClientID, cfg.ServerAddress, cfg.AllowedProtocols)
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	if err := daemon.RunClient(ctx, cfg); err != nil {
+		log.Fatalf("run client: %v", err)
+	}
 }

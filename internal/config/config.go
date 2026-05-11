@@ -13,19 +13,24 @@ import (
 )
 
 type Server struct {
-	AdminListen       string        `json:"admin_listen"`
-	ControlQUICListen string        `json:"control_quic_listen"`
-	ControlTLSListen  string        `json:"control_tls_listen"`
-	SQLitePath        string        `json:"sqlite_path"`
-	DataDir           string        `json:"data_dir"`
-	CertificateDir    string        `json:"certificate_dir"`
-	HeartbeatTimeout  time.Duration `json:"heartbeat_timeout"`
-	LogRetentionDays  int           `json:"log_retention_days"`
+	AdminListen        string        `json:"admin_listen"`
+	ControlQUICListen  string        `json:"control_quic_listen"`
+	ControlTLSListen   string        `json:"control_tls_listen"`
+	ControlTLSCertFile string        `json:"control_tls_cert_file"`
+	ControlTLSKeyFile  string        `json:"control_tls_key_file"`
+	TCPEntryHost       string        `json:"tcp_entry_host"`
+	HTTPEntryListen    string        `json:"http_entry_listen"`
+	SQLitePath         string        `json:"sqlite_path"`
+	DataDir            string        `json:"data_dir"`
+	CertificateDir     string        `json:"certificate_dir"`
+	HeartbeatTimeout   time.Duration `json:"heartbeat_timeout"`
+	LogRetentionDays   int           `json:"log_retention_days"`
 }
 
 type Client struct {
 	ServerAddress    string            `json:"server_address"`
 	ServerName       string            `json:"server_name"`
+	ServerCAFile     string            `json:"server_ca_file"`
 	ClientID         string            `json:"client_id"`
 	Credential       string            `json:"credential"`
 	AllowedProtocols []domain.Protocol `json:"allowed_protocols"`
@@ -39,14 +44,18 @@ type Reconnect struct {
 
 func DefaultServer() Server {
 	return Server{
-		AdminListen:       "127.0.0.1:8080",
-		ControlQUICListen: ":8443",
-		ControlTLSListen:  ":9443",
-		SQLitePath:        "data/go-ginx.db",
-		DataDir:           "data",
-		CertificateDir:    "data/certs",
-		HeartbeatTimeout:  45 * time.Second,
-		LogRetentionDays:  7,
+		AdminListen:        "127.0.0.1:8080",
+		ControlQUICListen:  ":8443",
+		ControlTLSListen:   ":9443",
+		ControlTLSCertFile: "data/certs/control.crt",
+		ControlTLSKeyFile:  "data/certs/control.key",
+		TCPEntryHost:       "0.0.0.0",
+		HTTPEntryListen:    ":8081",
+		SQLitePath:         "data/go-ginx.db",
+		DataDir:            "data",
+		CertificateDir:     "data/certs",
+		HeartbeatTimeout:   45 * time.Second,
+		LogRetentionDays:   7,
 	}
 }
 
@@ -83,7 +92,21 @@ func (cfg Server) Validate() error {
 	if err := requireAddress("control_quic_listen", cfg.ControlQUICListen); err != nil {
 		return err
 	}
-	if err := requireAddress("control_tls_listen", cfg.ControlTLSListen); err != nil {
+	if strings.TrimSpace(cfg.ControlTLSListen) != "" {
+		if err := requireAddress("control_tls_listen", cfg.ControlTLSListen); err != nil {
+			return err
+		}
+	}
+	if strings.TrimSpace(cfg.ControlTLSCertFile) == "" {
+		return errors.New("control_tls_cert_file is required")
+	}
+	if strings.TrimSpace(cfg.ControlTLSKeyFile) == "" {
+		return errors.New("control_tls_key_file is required")
+	}
+	if strings.TrimSpace(cfg.TCPEntryHost) == "" {
+		return errors.New("tcp_entry_host is required")
+	}
+	if err := requireAddress("http_entry_listen", cfg.HTTPEntryListen); err != nil {
 		return err
 	}
 	if strings.TrimSpace(cfg.SQLitePath) == "" {
@@ -110,6 +133,9 @@ func (cfg Client) Validate() error {
 	}
 	if strings.TrimSpace(cfg.ServerName) == "" {
 		return errors.New("server_name is required")
+	}
+	if strings.TrimSpace(cfg.ServerCAFile) == "" {
+		return errors.New("server_ca_file is required")
 	}
 	if strings.TrimSpace(cfg.ClientID) == "" {
 		return errors.New("client_id is required")

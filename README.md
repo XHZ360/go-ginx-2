@@ -2,7 +2,7 @@
 
 This is the new implementation target for the Simp-Frp/go-ginx design in `../docs`.
 
-The repository currently contains a milestone-one MVP foundation. It is not a complete production daemon yet, but the core control plane and TCP/HTTP proxy paths are implemented and covered by local end-to-end tests.
+The repository currently contains a milestone-one MVP foundation. It is not a complete production daemon yet, but the core control plane, TCP/HTTP proxy paths, and daemon startup helpers are implemented and covered by local tests.
 
 ## Current Capabilities
 
@@ -17,6 +17,8 @@ The repository currently contains a milestone-one MVP foundation. It is not a co
 - HTTP proxy MVP over QUIC streams, routed by `Host`.
 - Non-interactive admin setup CLI for milestone-one resource seeding.
 - In-memory proxy stats for TCP and HTTP traffic.
+- `goginx-server` starts SQLite, QUIC control, TCP entries, and HTTP entry from config.
+- `goginx-client` authenticates, reads proxy snapshots, sends heartbeats, and serves proxy streams.
 
 ## Commands
 
@@ -28,11 +30,12 @@ go test ./...
 go build ./cmd/goginx-server ./cmd/goginx-client ./cmd/goginx-admin
 ```
 
-Run focused E2E tests:
+Run focused runtime and E2E tests:
 
 ```powershell
 $env:CGO_ENABLED="0"
 go test ./internal/control
+go test ./internal/daemon
 go test ./internal/proxy/tcp
 go test ./internal/proxy/http
 ```
@@ -49,15 +52,41 @@ go run ./cmd/goginx-admin create-http-proxy -db ./.tmp/go-ginx.db -id web-1 -use
 
 More detailed flows are documented in `docs/milestone-one-e2e.md` and `docs/examples/admin-seed-sqlite.md`.
 
+## Runtime Config Fields
+
+Server config now requires runtime TLS and proxy listener fields in addition to the existing SQLite path:
+
+```json
+{
+  "control_quic_listen": "127.0.0.1:8443",
+  "control_tls_cert_file": "data/certs/control.crt",
+  "control_tls_key_file": "data/certs/control.key",
+  "tcp_entry_host": "0.0.0.0",
+  "http_entry_listen": "0.0.0.0:8081",
+  "sqlite_path": "data/go-ginx.db"
+}
+```
+
+Client config requires the server CA used to verify the QUIC control certificate:
+
+```json
+{
+  "server_address": "127.0.0.1:8443",
+  "server_name": "localhost",
+  "server_ca_file": "data/certs/ca.crt",
+  "client_id": "client-1",
+  "credential": "secret"
+}
+```
+
 ## Current Limitations
 
-- `goginx-server` and `goginx-client` currently load and validate config only; they do not yet wire the long-running control/proxy runtime.
-- TCP and HTTP proxy behavior is runnable through package APIs and verified by tests, not yet exposed as complete daemon commands.
+- Daemon startup is wired, but production packaging, service supervision, and deployment docs are not implemented yet.
+- TCP and HTTP proxy behavior is exposed through daemon commands and package E2E tests; full external process E2E is still pending.
 - UDP, HTTPS, TCP+TLS fallback, forward proxy, quotas, rate limiting, GraphQL, admin UI, ACME/Cloudflare DNS, persistent stats, alerts, and production deployment docs are not implemented yet.
 
 ## Next Steps
 
-1. Wire `goginx-server` and `goginx-client` into runnable daemon modes.
-2. Add basic runtime configuration for control listener, TCP entries, and HTTP entry.
-3. Persist or periodically flush stats if milestone-one needs restart survival.
-4. Add deployment and troubleshooting docs after daemon wiring exists.
+1. Add external process smoke tests for `goginx-server` and `goginx-client`.
+2. Persist or periodically flush stats if milestone-one needs restart survival.
+3. Add deployment and troubleshooting docs after daemon wiring exists.

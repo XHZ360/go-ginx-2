@@ -152,6 +152,27 @@ func (r proxyRepository) ByClientID(ctx context.Context, clientID string) ([]dom
 	return proxies, nil
 }
 
+func (r proxyRepository) EnabledByType(ctx context.Context, proxyType domain.ProxyType) ([]domain.Proxy, error) {
+	rows, err := r.db.QueryContext(ctx, `select id, user_id, client_id, name, type, status, entry_host, entry_port, target_host, target_port, description, created_at, updated_at from proxies where type = ? and status = ? order by created_at, id`, proxyType, domain.ProxyEnabled)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	proxies := make([]domain.Proxy, 0)
+	for rows.Next() {
+		proxy, err := scanProxyRows(rows)
+		if err != nil {
+			return nil, err
+		}
+		proxies = append(proxies, proxy)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return proxies, nil
+}
+
 func (r proxyRepository) ByTCPEntryPort(ctx context.Context, port int) (domain.Proxy, error) {
 	return scanProxy(r.db.QueryRowContext(ctx, `select id, user_id, client_id, name, type, status, entry_host, entry_port, target_host, target_port, description, created_at, updated_at from proxies where type = ? and entry_port = ?`, domain.ProxyTCP, port))
 }

@@ -15,14 +15,45 @@ func TestServerValidateRequiresSQLitePath(t *testing.T) {
 	}
 }
 
+func TestServerValidateRequiresRuntimeTLSFiles(t *testing.T) {
+	cfg := DefaultServer()
+	cfg.ControlTLSCertFile = ""
+
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected missing cert file validation error")
+	}
+}
+
+func TestServerValidateRequiresHTTPEntryListen(t *testing.T) {
+	cfg := DefaultServer()
+	cfg.HTTPEntryListen = ""
+
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected missing HTTP entry listen validation error")
+	}
+}
+
 func TestClientValidateRequiresStrictServerIdentity(t *testing.T) {
 	cfg := DefaultClient()
 	cfg.ServerAddress = "127.0.0.1:8443"
 	cfg.ClientID = "client-1"
 	cfg.Credential = "secret"
+	cfg.ServerCAFile = "ca.pem"
 
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("expected missing server_name validation error")
+	}
+}
+
+func TestClientValidateRequiresServerCAFile(t *testing.T) {
+	cfg := DefaultClient()
+	cfg.ServerAddress = "127.0.0.1:8443"
+	cfg.ServerName = "localhost"
+	cfg.ClientID = "client-1"
+	cfg.Credential = "secret"
+
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected missing server ca file validation error")
 	}
 }
 

@@ -102,6 +102,29 @@ func TestByClientIDReturnsOnlyClientOwnedProxies(t *testing.T) {
 	}
 }
 
+func TestEnabledByTypeReturnsOnlyEnabledMatchingProxies(t *testing.T) {
+	ctx := context.Background()
+	db := openTestStore(t)
+	seedUserAndClient(t, ctx, db)
+
+	enabledTCP := domain.Proxy{ID: "p1", UserID: "u1", ClientID: "c1", Name: "ssh", Type: domain.ProxyTCP, Status: domain.ProxyEnabled, EntryPort: 10022, TargetHost: "127.0.0.1", TargetPort: 22}
+	disabledTCP := domain.Proxy{ID: "p2", UserID: "u1", ClientID: "c1", Name: "disabled", Type: domain.ProxyTCP, Status: domain.ProxyDisabled, EntryPort: 10023, TargetHost: "127.0.0.1", TargetPort: 23}
+	enabledHTTP := domain.Proxy{ID: "p3", UserID: "u1", ClientID: "c1", Name: "web", Type: domain.ProxyHTTP, Status: domain.ProxyEnabled, EntryHost: "app.example.com", TargetHost: "127.0.0.1", TargetPort: 8080}
+	for _, proxy := range []domain.Proxy{enabledTCP, disabledTCP, enabledHTTP} {
+		if err := db.Proxies().Create(ctx, proxy); err != nil {
+			t.Fatalf("create proxy %s: %v", proxy.ID, err)
+		}
+	}
+
+	found, err := db.Proxies().EnabledByType(ctx, domain.ProxyTCP)
+	if err != nil {
+		t.Fatalf("enabled by type: %v", err)
+	}
+	if len(found) != 1 || found[0].ID != enabledTCP.ID {
+		t.Fatalf("expected enabled TCP proxy only, got %+v", found)
+	}
+}
+
 func openTestStore(t *testing.T) *Store {
 	t.Helper()
 	db, err := Open(filepath.Join(t.TempDir(), "test.db"))

@@ -1,6 +1,6 @@
 # Milestone One E2E Validation
 
-This document describes the current executable verification paths for the milestone-one MVP. These flows are test-backed and should be treated as the source of truth until `goginx-server` and `goginx-client` are wired into long-running daemon modes.
+This document describes the current executable verification paths for the milestone-one MVP. These flows are test-backed and should be treated as the source of truth for the current daemon runtime.
 
 ## Full Suite
 
@@ -27,6 +27,20 @@ Covered behavior:
 - Server sends a proxy snapshot after authentication.
 - Client sends heartbeat updates and the session manager records them.
 - Wrong credentials are rejected without registering a session.
+
+## Daemon Runtime
+
+The daemon tests verify that command-level startup helpers wire existing package APIs into a runnable runtime:
+
+```powershell
+$env:CGO_ENABLED="0"
+go test ./internal/daemon
+```
+
+Covered behavior:
+
+- Server startup opens SQLite, loads the control TLS certificate, starts QUIC control, starts one HTTP entry, and starts TCP entries discovered from enabled TCP proxies.
+- Client startup dials the QUIC control listener, authenticates, reads the proxy snapshot, sends heartbeats, and begins serving proxy streams.
 
 ## TCP Proxy
 
@@ -80,6 +94,5 @@ Covered behavior:
 
 ## What Is Not Covered Yet
 
-- Long-running `goginx-server` / `goginx-client` daemon startup.
-- Runtime config files that launch control listeners and proxy entries automatically.
+- Full external OS process smoke tests for `goginx-server` and `goginx-client`.
 - UDP, HTTPS, TCP+TLS fallback, forward proxy, quotas, rate limits, persistent stats, GraphQL, admin UI, ACME, and deployment automation.
