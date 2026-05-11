@@ -19,6 +19,7 @@ const (
 	MessageAuthRequest   MessageType = "auth_request"
 	MessageAuthResponse  MessageType = "auth_response"
 	MessageHeartbeat     MessageType = "heartbeat"
+	MessageOpenStream    MessageType = "open_stream"
 	MessageProxySnapshot MessageType = "proxy_snapshot"
 )
 
@@ -60,6 +61,13 @@ type Heartbeat struct {
 type ProxySnapshot struct {
 	Version int64          `json:"version"`
 	Proxies []domain.Proxy `json:"proxies"`
+}
+
+type OpenStream struct {
+	ProxyID      string `json:"proxy_id"`
+	ConnectionID string `json:"connection_id"`
+	TargetHost   string `json:"target_host"`
+	TargetPort   int    `json:"target_port"`
 }
 
 func WriteMessage(w io.Writer, messageType MessageType, payload any) error {

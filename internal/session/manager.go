@@ -1,8 +1,10 @@
 package session
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"io"
 	"sync"
 	"time"
 
@@ -31,6 +33,11 @@ type Session struct {
 	ReplacedAt    *time.Time
 	ClosedAt      *time.Time
 	Stats         HeartbeatStats
+	StreamOpener  StreamOpener
+}
+
+type StreamOpener interface {
+	OpenStream(ctx context.Context) (io.ReadWriteCloser, error)
 }
 
 type HeartbeatStats struct {
@@ -47,6 +54,7 @@ type RegisterInput struct {
 	UserID        string
 	Protocol      domain.Protocol
 	ConfigVersion int64
+	StreamOpener  StreamOpener
 }
 
 type HeartbeatInput struct {
@@ -91,6 +99,7 @@ func (manager *Manager) Register(input RegisterInput) (Session, *Session, error)
 		ConfigVersion: input.ConfigVersion,
 		ConnectedAt:   now,
 		LastHeartbeat: now,
+		StreamOpener:  input.StreamOpener,
 	}
 
 	var replaced *Session

@@ -7,8 +7,10 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"slices"
+	"strconv"
 	"time"
 
 	"github.com/quic-go/quic-go"
@@ -34,6 +36,14 @@ type Listener struct {
 type ClientConn struct {
 	conn   *quic.Conn
 	stream *quic.Stream
+}
+
+type quicStreamOpener struct {
+	conn *quic.Conn
+}
+
+func (opener quicStreamOpener) OpenStream(ctx context.Context) (io.ReadWriteCloser, error) {
+	return opener.conn.OpenStreamSync(ctx)
 }
 
 func ListenAddr(addr string, server Server) (*Listener, error) {
@@ -111,6 +121,7 @@ func (listener *Listener) handleConn(ctx context.Context, conn *quic.Conn) {
 		UserID:        result.User.ID,
 		Protocol:      result.SelectedProtocol,
 		ConfigVersion: result.ConfigVersion,
+		StreamOpener:  quicStreamOpener{conn: conn},
 	})
 	if err != nil {
 		_ = WriteMessage(stream, MessageAuthResponse, AuthResponse{Accepted: false, Reason: err.Error()})
@@ -218,6 +229,37 @@ func (client *ClientConn) SendHeartbeat(heartbeat Heartbeat) error {
 	return WriteMessage(client.stream, MessageHeartbeat, heartbeat)
 }
 
+func (client *ClientConn) ServeTCPStreams(ctx context.Context) error {
+	for {
+		stream, err := client.conn.AcceptStream(ctx)
+		if err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			return err
+		}
+		go handleTCPStream(stream)
+	}
+}
+
+func handleTCPStream(stream *quic.Stream) {
+	defer stream.Close()
+	envelope, err := ReadMessage(stream)
+	if err != nil || envelope.Type != MessageOpenStream {
+		return
+	}
+	request, err := DecodePayload[OpenStream](envelope)
+	if err != nil {
+		return
+	}
+	target, err := net.Dial("tcp", net.JoinHostPort(request.TargetHost, strconv.Itoa(request.TargetPort)))
+	if err != nil {
+		return
+	}
+	defer target.Close()
+	copyBidirectional(stream, target)
+}
+
 func (client *ClientConn) ReadProxySnapshot() (ProxySnapshot, error) {
 	envelope, err := ReadMessage(client.stream)
 	if err != nil {
@@ -234,6 +276,21 @@ func (client *ClientConn) Close() error {
 		return nil
 	}
 	return client.conn.CloseWithError(0, "closed")
+}
+
+func copyBidirectional(left io.ReadWriteCloser, right io.ReadWriteCloser) {
+	done := make(chan struct{}, 2)
+	go func() {
+		_, _ = io.Copy(left, right)
+		_ = left.Close()
+		done <- struct{}{}
+	}()
+	go func() {
+		_, _ = io.Copy(right, left)
+		_ = right.Close()
+		done <- struct{}{}
+	}()
+	<-done
 }
 
 func (listener *Listener) newSessionID() (string, error) {
