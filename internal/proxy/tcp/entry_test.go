@@ -10,6 +10,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"errors"
+	"math/big"
 	"net"
 	"path/filepath"
 	"strconv"
@@ -20,8 +21,8 @@ import (
 	"github.com/simp-frp/go-ginx-2/internal/control"
 	"github.com/simp-frp/go-ginx-2/internal/domain"
 	"github.com/simp-frp/go-ginx-2/internal/session"
+	"github.com/simp-frp/go-ginx-2/internal/stats"
 	"github.com/simp-frp/go-ginx-2/internal/store/sqlite"
-	"math/big"
 )
 
 func TestTCPEntryProxiesThroughQUICClientStream(t *testing.T) {
@@ -71,8 +72,9 @@ func TestTCPEntryProxiesThroughQUICClientStream(t *testing.T) {
 		t.Fatalf("read snapshot: %v", err)
 	}
 	go func() { _ = client.ServeTCPStreams(ctx) }()
+	memoryStats := stats.NewMemory()
 
-	entry, err := Listen(Entry{Store: db, Sessions: sessions, ListenAddress: Address("127.0.0.1", entryPort), EntryPort: entryPort, NewConnection: func() (string, error) { return "conn-1", nil }})
+	entry, err := Listen(Entry{Store: db, Sessions: sessions, ListenAddress: Address("127.0.0.1", entryPort), EntryPort: entryPort, NewConnection: func() (string, error) { return "conn-1", nil }, Stats: memoryStats})
 	if err != nil {
 		t.Fatalf("tcp listen: %v", err)
 	}
@@ -94,6 +96,16 @@ func TestTCPEntryProxiesThroughQUICClientStream(t *testing.T) {
 	if line != "ping\n" {
 		t.Fatalf("expected echo, got %q", line)
 	}
+	_ = conn.Close()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		snapshot := memoryStats.Snapshot("proxy-1")
+		if snapshot.TCPConnections == 1 && snapshot.TCPCurrentConnections == 0 && snapshot.TCPUploadBytes >= int64(len("ping\n")) && snapshot.TCPDownloadBytes >= int64(len("ping\n")) {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("TCP stats did not update: %+v", memoryStats.Snapshot("proxy-1"))
 }
 
 func seedTCPProxy(t *testing.T, ctx context.Context, db *sqlite.Store, entryPort int, targetHost string, targetPort int) {

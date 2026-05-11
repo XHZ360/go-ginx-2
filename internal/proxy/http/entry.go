@@ -14,6 +14,7 @@ import (
 	"github.com/simp-frp/go-ginx-2/internal/control"
 	"github.com/simp-frp/go-ginx-2/internal/domain"
 	"github.com/simp-frp/go-ginx-2/internal/session"
+	"github.com/simp-frp/go-ginx-2/internal/stats"
 	"github.com/simp-frp/go-ginx-2/internal/store"
 )
 
@@ -22,6 +23,7 @@ type Entry struct {
 	Sessions      *session.Manager
 	ListenAddress string
 	NewRequest    func() (string, error)
+	Stats         stats.Recorder
 }
 
 type Server struct {
@@ -75,8 +77,18 @@ func (server *Server) ServeHTTP(w nethttp.ResponseWriter, r *nethttp.Request) {
 		nethttp.Error(w, "proxy not found", nethttp.StatusNotFound)
 		return
 	}
+	statusCode := nethttp.StatusBadGateway
+	failed := true
+	var uploadBytes int64
+	var downloadBytes int64
+	if server.entry.Stats != nil {
+		defer func() {
+			server.entry.Stats.RecordHTTP(proxy.ID, statusCode, uploadBytes, downloadBytes, failed)
+		}()
+	}
 	latest, ok := server.entry.Sessions.Latest(proxy.ClientID)
 	if !ok || latest.StreamOpener == nil {
+		statusCode = nethttp.StatusServiceUnavailable
 		nethttp.Error(w, "client offline", nethttp.StatusServiceUnavailable)
 		return
 	}
@@ -95,6 +107,9 @@ func (server *Server) ServeHTTP(w nethttp.ResponseWriter, r *nethttp.Request) {
 		nethttp.Error(w, "write proxy stream failed", nethttp.StatusBadGateway)
 		return
 	}
+	if r.Body != nil {
+		r.Body = &countingReadCloser{ReadCloser: r.Body, count: &uploadBytes}
+	}
 	if err := r.Write(stream); err != nil {
 		nethttp.Error(w, "write proxy request failed", nethttp.StatusBadGateway)
 		return
@@ -105,9 +120,12 @@ func (server *Server) ServeHTTP(w nethttp.ResponseWriter, r *nethttp.Request) {
 		return
 	}
 	defer response.Body.Close()
+	statusCode = response.StatusCode
 	copyHeader(w.Header(), response.Header)
 	w.WriteHeader(response.StatusCode)
-	_, _ = io.Copy(w, response.Body)
+	bytes, err := io.Copy(w, response.Body)
+	downloadBytes = bytes
+	failed = err != nil || response.StatusCode >= 500
 }
 
 func (server *Server) requestID() (string, error) {
@@ -137,4 +155,15 @@ func copyHeader(dst nethttp.Header, src nethttp.Header) {
 			dst.Add(key, value)
 		}
 	}
+}
+
+type countingReadCloser struct {
+	io.ReadCloser
+	count *int64
+}
+
+func (reader *countingReadCloser) Read(p []byte) (int, error) {
+	n, err := reader.ReadCloser.Read(p)
+	*reader.count += int64(n)
+	return n, err
 }

@@ -13,6 +13,7 @@ import (
 	"github.com/simp-frp/go-ginx-2/internal/control"
 	"github.com/simp-frp/go-ginx-2/internal/domain"
 	"github.com/simp-frp/go-ginx-2/internal/session"
+	"github.com/simp-frp/go-ginx-2/internal/stats"
 	"github.com/simp-frp/go-ginx-2/internal/store"
 )
 
@@ -22,6 +23,7 @@ type Entry struct {
 	ListenAddress string
 	EntryPort     int
 	NewConnection func() (string, error)
+	Stats         stats.Recorder
 }
 
 type Listener struct {
@@ -74,6 +76,15 @@ func (listener *Listener) handleConn(ctx context.Context, conn net.Conn) {
 	if err != nil || proxy.Status != domain.ProxyEnabled {
 		return
 	}
+	failed := true
+	var uploadBytes int64
+	var downloadBytes int64
+	if listener.entry.Stats != nil {
+		listener.entry.Stats.RecordTCPStart(proxy.ID)
+		defer func() {
+			listener.entry.Stats.RecordTCPEnd(proxy.ID, uploadBytes, downloadBytes, failed)
+		}()
+	}
 	latest, ok := listener.entry.Sessions.Latest(proxy.ClientID)
 	if !ok || latest.StreamOpener == nil {
 		return
@@ -90,7 +101,8 @@ func (listener *Listener) handleConn(ctx context.Context, conn net.Conn) {
 	if err := control.WriteMessage(stream, control.MessageOpenStream, control.OpenStream{ProxyID: proxy.ID, ConnectionID: connectionID, TargetHost: proxy.TargetHost, TargetPort: proxy.TargetPort}); err != nil {
 		return
 	}
-	copyBidirectional(conn, stream)
+	uploadBytes, downloadBytes = copyBidirectional(conn, stream)
+	failed = false
 }
 
 func (listener *Listener) connectionID() (string, error) {
@@ -116,19 +128,24 @@ func portFromAddr(addr net.Addr) int {
 	return parsed
 }
 
-func copyBidirectional(left io.ReadWriteCloser, right io.ReadWriteCloser) {
-	done := make(chan struct{}, 2)
+func copyBidirectional(left io.ReadWriteCloser, right io.ReadWriteCloser) (int64, int64) {
+	type result struct {
+		bytes int64
+	}
+	done := make(chan result, 2)
 	go func() {
-		_, _ = io.Copy(left, right)
+		bytes, _ := io.Copy(left, right)
 		_ = left.Close()
-		done <- struct{}{}
+		done <- result{bytes: bytes}
 	}()
 	go func() {
-		_, _ = io.Copy(right, left)
+		bytes, _ := io.Copy(right, left)
 		_ = right.Close()
-		done <- struct{}{}
+		done <- result{bytes: bytes}
 	}()
-	<-done
+	first := <-done
+	second := <-done
+	return second.bytes, first.bytes
 }
 
 func Address(host string, port int) string {

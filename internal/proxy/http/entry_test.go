@@ -25,6 +25,7 @@ import (
 	"github.com/simp-frp/go-ginx-2/internal/control"
 	"github.com/simp-frp/go-ginx-2/internal/domain"
 	"github.com/simp-frp/go-ginx-2/internal/session"
+	"github.com/simp-frp/go-ginx-2/internal/stats"
 	"github.com/simp-frp/go-ginx-2/internal/store/sqlite"
 )
 
@@ -90,8 +91,9 @@ func TestHTTPEntryProxiesThroughQUICClientStream(t *testing.T) {
 		t.Fatalf("read snapshot: %v", err)
 	}
 	go func() { _ = client.ServeProxyStreams(ctx) }()
+	memoryStats := stats.NewMemory()
 
-	entry, err := Listen(Entry{Store: db, Sessions: sessions, ListenAddress: "127.0.0.1:0", NewRequest: func() (string, error) { return "req-1", nil }})
+	entry, err := Listen(Entry{Store: db, Sessions: sessions, ListenAddress: "127.0.0.1:0", NewRequest: func() (string, error) { return "req-1", nil }, Stats: memoryStats})
 	if err != nil {
 		t.Fatalf("http listen: %v", err)
 	}
@@ -115,6 +117,10 @@ func TestHTTPEntryProxiesThroughQUICClientStream(t *testing.T) {
 	}
 	if responseFromProxy.StatusCode != nethttp.StatusCreated || responseFromProxy.Header.Get("X-Origin") != "ok" || string(responseBody) != "origin-response" {
 		t.Fatalf("unexpected proxy response status=%d header=%s body=%q", responseFromProxy.StatusCode, responseFromProxy.Header.Get("X-Origin"), string(responseBody))
+	}
+	snapshot := memoryStats.Snapshot("proxy-1")
+	if snapshot.HTTPRequests != 1 || snapshot.HTTPStatusCodes[nethttp.StatusCreated] != 1 || snapshot.HTTPUploadBytes != int64(len("request-body")) || snapshot.HTTPDownloadBytes != int64(len("origin-response")) || snapshot.HTTPErrors != 0 {
+		t.Fatalf("unexpected HTTP stats: %+v", snapshot)
 	}
 }
 
