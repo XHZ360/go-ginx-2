@@ -5,6 +5,7 @@ import (
 	"errors"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/simp-frp/go-ginx-2/internal/domain"
 	"github.com/simp-frp/go-ginx-2/internal/store"
@@ -54,6 +55,29 @@ func TestDuplicateTCPEntryPortIsRejected(t *testing.T) {
 	}
 }
 
+func TestDuplicateUDPEntryPortIsRejected(t *testing.T) {
+	ctx := context.Background()
+	db := openTestStore(t)
+	seedUserAndClient(t, ctx, db)
+
+	first := domain.Proxy{ID: "p1", UserID: "u1", ClientID: "c1", Name: "first", Type: domain.ProxyUDP, Status: domain.ProxyEnabled, EntryPort: 10053, TargetHost: "127.0.0.1", TargetPort: 53}
+	second := domain.Proxy{ID: "p2", UserID: "u1", ClientID: "c1", Name: "second", Type: domain.ProxyUDP, Status: domain.ProxyEnabled, EntryPort: 10053, TargetHost: "127.0.0.1", TargetPort: 5353}
+
+	if err := db.Proxies().Create(ctx, first); err != nil {
+		t.Fatalf("create first proxy: %v", err)
+	}
+	if err := db.Proxies().Create(ctx, second); !errors.Is(err, store.ErrAlreadyExists) {
+		t.Fatalf("expected already exists, got %v", err)
+	}
+	found, err := db.Proxies().ByUDPEntryPort(ctx, 10053)
+	if err != nil {
+		t.Fatalf("lookup udp proxy: %v", err)
+	}
+	if found.ID != first.ID {
+		t.Fatalf("unexpected proxy: %+v", found)
+	}
+}
+
 func TestDuplicateHTTPHostIsRejectedCaseInsensitive(t *testing.T) {
 	ctx := context.Background()
 	db := openTestStore(t)
@@ -67,6 +91,29 @@ func TestDuplicateHTTPHostIsRejectedCaseInsensitive(t *testing.T) {
 	}
 	if err := db.Proxies().Create(ctx, second); !errors.Is(err, store.ErrAlreadyExists) {
 		t.Fatalf("expected already exists, got %v", err)
+	}
+}
+
+func TestDuplicateHTTPSHostIsRejectedCaseInsensitive(t *testing.T) {
+	ctx := context.Background()
+	db := openTestStore(t)
+	seedUserAndClient(t, ctx, db)
+
+	first := domain.Proxy{ID: "p1", UserID: "u1", ClientID: "c1", Name: "first", Type: domain.ProxyHTTPS, Status: domain.ProxyEnabled, EntryHost: "App.Example.com", TargetHost: "127.0.0.1", TargetPort: 8443}
+	second := domain.Proxy{ID: "p2", UserID: "u1", ClientID: "c1", Name: "second", Type: domain.ProxyHTTPS, Status: domain.ProxyEnabled, EntryHost: "app.example.com", TargetHost: "127.0.0.1", TargetPort: 9443}
+
+	if err := db.Proxies().Create(ctx, first); err != nil {
+		t.Fatalf("create first proxy: %v", err)
+	}
+	if err := db.Proxies().Create(ctx, second); !errors.Is(err, store.ErrAlreadyExists) {
+		t.Fatalf("expected already exists, got %v", err)
+	}
+	found, err := db.Proxies().ByHTTPSHost(ctx, "app.example.com")
+	if err != nil {
+		t.Fatalf("lookup https proxy: %v", err)
+	}
+	if found.ID != first.ID {
+		t.Fatalf("unexpected https proxy: %+v", found)
 	}
 }
 
@@ -122,6 +169,105 @@ func TestEnabledByTypeReturnsOnlyEnabledMatchingProxies(t *testing.T) {
 	}
 	if len(found) != 1 || found[0].ID != enabledTCP.ID {
 		t.Fatalf("expected enabled TCP proxy only, got %+v", found)
+	}
+}
+
+func TestStatsRepositoryPersistsProxyStats(t *testing.T) {
+	ctx := context.Background()
+	db := openTestStore(t)
+	seedUserAndClient(t, ctx, db)
+	proxy := domain.Proxy{ID: "p1", UserID: "u1", ClientID: "c1", Name: "web", Type: domain.ProxyHTTP, Status: domain.ProxyEnabled, EntryHost: "app.example.com", TargetHost: "127.0.0.1", TargetPort: 8080}
+	if err := db.Proxies().Create(ctx, proxy); err != nil {
+		t.Fatalf("create proxy: %v", err)
+	}
+
+	snapshot := store.ProxyStats{ProxyID: proxy.ID, TCPConnections: 2, TCPUploadBytes: 10, TCPDownloadBytes: 20, TCPErrors: 1, UDPPackets: 4, UDPUploadBytes: 50, UDPDownloadBytes: 60, UDPErrors: 1, HTTPRequests: 3, HTTPUploadBytes: 30, HTTPDownloadBytes: 40, HTTPErrors: 1, HTTPStatusCodes: map[int]int64{200: 2, 502: 1}}
+	if err := db.Stats().Save(ctx, []store.ProxyStats{snapshot}); err != nil {
+		t.Fatalf("save stats: %v", err)
+	}
+
+	loaded, err := db.Stats().List(ctx)
+	if err != nil {
+		t.Fatalf("list stats: %v", err)
+	}
+	if len(loaded) != 1 {
+		t.Fatalf("expected one stats row, got %+v", loaded)
+	}
+	found := loaded[0]
+	if found.ProxyID != proxy.ID || found.TCPConnections != 2 || found.UDPPackets != 4 || found.UDPUploadBytes != 50 || found.HTTPRequests != 3 || found.HTTPStatusCodes[200] != 2 || found.HTTPStatusCodes[502] != 1 {
+		t.Fatalf("unexpected stats: %+v", found)
+	}
+
+	snapshot.HTTPRequests = 4
+	snapshot.HTTPStatusCodes[201] = 1
+	if err := db.Stats().Save(ctx, []store.ProxyStats{snapshot}); err != nil {
+		t.Fatalf("update stats: %v", err)
+	}
+	loaded, err = db.Stats().List(ctx)
+	if err != nil {
+		t.Fatalf("list updated stats: %v", err)
+	}
+	if loaded[0].HTTPRequests != 4 || loaded[0].HTTPStatusCodes[201] != 1 {
+		t.Fatalf("unexpected updated stats: %+v", loaded[0])
+	}
+}
+
+func TestCertificateRepositoryPersistsLifecycleMetadata(t *testing.T) {
+	ctx := context.Background()
+	db := openTestStore(t)
+	seedUserAndClient(t, ctx, db)
+	proxy := domain.Proxy{ID: "p1", UserID: "u1", ClientID: "c1", Name: "secure", Type: domain.ProxyHTTPS, Status: domain.ProxyEnabled, EntryHost: "app.example.com", TargetHost: "127.0.0.1", TargetPort: 8080}
+	if err := db.Proxies().Create(ctx, proxy); err != nil {
+		t.Fatalf("create proxy: %v", err)
+	}
+
+	notAfter := time.Now().UTC().Add(20 * 24 * time.Hour).Truncate(time.Second)
+	certificate := domain.ManagedCertificate{ID: "cert-1", ProxyID: proxy.ID, Host: "App.Example.com", Status: domain.CertificatePending, Provider: "cloudflare"}
+	if err := db.Certificates().Create(ctx, certificate); err != nil {
+		t.Fatalf("create certificate: %v", err)
+	}
+	if err := db.Certificates().UpdateSuccess(ctx, certificate.ID, store.CertificateSuccess{CertFile: "active.crt", KeyFile: "active.key", NotAfter: notAfter}); err != nil {
+		t.Fatalf("update success: %v", err)
+	}
+
+	found, err := db.Certificates().ByHost(ctx, "app.example.com")
+	if err != nil {
+		t.Fatalf("lookup certificate by host: %v", err)
+	}
+	if found.ProxyID != proxy.ID || found.Status != domain.CertificateValid || found.CertFile != "active.crt" || found.KeyFile != "active.key" || found.NotAfter == nil || !found.NotAfter.Equal(notAfter) {
+		t.Fatalf("unexpected certificate: %+v", found)
+	}
+	renewable, err := db.Certificates().ListRenewable(ctx, notAfter.Add(time.Hour))
+	if err != nil {
+		t.Fatalf("list renewable: %v", err)
+	}
+	if len(renewable) != 1 || renewable[0].ID != certificate.ID {
+		t.Fatalf("unexpected renewable certificates: %+v", renewable)
+	}
+}
+
+func TestCertificateRepositoryRecordsFailureWithoutReplacingFiles(t *testing.T) {
+	ctx := context.Background()
+	db := openTestStore(t)
+	seedUserAndClient(t, ctx, db)
+	proxy := domain.Proxy{ID: "p1", UserID: "u1", ClientID: "c1", Name: "secure", Type: domain.ProxyHTTPS, Status: domain.ProxyEnabled, EntryHost: "app.example.com", TargetHost: "127.0.0.1", TargetPort: 8080}
+	if err := db.Proxies().Create(ctx, proxy); err != nil {
+		t.Fatalf("create proxy: %v", err)
+	}
+	certificate := domain.ManagedCertificate{ID: "cert-1", ProxyID: proxy.ID, Host: "app.example.com", Status: domain.CertificateValid, Provider: "cloudflare", CertFile: "active.crt", KeyFile: "active.key"}
+	if err := db.Certificates().Create(ctx, certificate); err != nil {
+		t.Fatalf("create certificate: %v", err)
+	}
+
+	if err := db.Certificates().UpdateFailure(ctx, certificate.ID, store.CertificateFailure{Status: domain.CertificateRenewalFailed, LastError: "dns failed"}); err != nil {
+		t.Fatalf("update failure: %v", err)
+	}
+	found, err := db.Certificates().ByProxyID(ctx, proxy.ID)
+	if err != nil {
+		t.Fatalf("lookup certificate by proxy: %v", err)
+	}
+	if found.Status != domain.CertificateRenewalFailed || found.LastError != "dns failed" || found.CertFile != "active.crt" || found.KeyFile != "active.key" {
+		t.Fatalf("unexpected failure state: %+v", found)
 	}
 }
 
