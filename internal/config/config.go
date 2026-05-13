@@ -13,22 +13,30 @@ import (
 )
 
 type Server struct {
-	AdminListen        string        `json:"admin_listen"`
-	ControlQUICListen  string        `json:"control_quic_listen"`
-	ControlTLSListen   string        `json:"control_tls_listen"`
-	ControlTLSCertFile string        `json:"control_tls_cert_file"`
-	ControlTLSKeyFile  string        `json:"control_tls_key_file"`
-	TCPEntryHost       string        `json:"tcp_entry_host"`
-	HTTPEntryListen    string        `json:"http_entry_listen"`
-	SQLitePath         string        `json:"sqlite_path"`
-	DataDir            string        `json:"data_dir"`
-	CertificateDir     string        `json:"certificate_dir"`
-	HeartbeatTimeout   time.Duration `json:"heartbeat_timeout"`
-	LogRetentionDays   int           `json:"log_retention_days"`
+	AdminListen            string        `json:"admin_listen"`
+	ControlQUICListen      string        `json:"control_quic_listen"`
+	ControlTLSListen       string        `json:"control_tls_listen"`
+	ControlTLSCertFile     string        `json:"control_tls_cert_file"`
+	ControlTLSKeyFile      string        `json:"control_tls_key_file"`
+	TCPEntryHost           string        `json:"tcp_entry_host"`
+	HTTPEntryListen        string        `json:"http_entry_listen"`
+	HTTPSEntryListen       string        `json:"https_entry_listen"`
+	SQLitePath             string        `json:"sqlite_path"`
+	DataDir                string        `json:"data_dir"`
+	CertificateDir         string        `json:"certificate_dir"`
+	ACMEEnabled            bool          `json:"acme_enabled"`
+	ACMEDirectoryURL       string        `json:"acme_directory_url"`
+	ACMEAccountEmail       string        `json:"acme_account_email"`
+	ACMETermsAccepted      bool          `json:"acme_terms_accepted"`
+	ACMERenewalWindow      time.Duration `json:"acme_renewal_window"`
+	ACMECloudflareTokenEnv string        `json:"acme_cloudflare_token_env"`
+	HeartbeatTimeout       time.Duration `json:"heartbeat_timeout"`
+	LogRetentionDays       int           `json:"log_retention_days"`
 }
 
 type Client struct {
 	ServerAddress    string            `json:"server_address"`
+	ServerTLSAddress string            `json:"server_tls_address"`
 	ServerName       string            `json:"server_name"`
 	ServerCAFile     string            `json:"server_ca_file"`
 	ClientID         string            `json:"client_id"`
@@ -44,18 +52,22 @@ type Reconnect struct {
 
 func DefaultServer() Server {
 	return Server{
-		AdminListen:        "127.0.0.1:8080",
-		ControlQUICListen:  ":8443",
-		ControlTLSListen:   ":9443",
-		ControlTLSCertFile: "data/certs/control.crt",
-		ControlTLSKeyFile:  "data/certs/control.key",
-		TCPEntryHost:       "0.0.0.0",
-		HTTPEntryListen:    ":8081",
-		SQLitePath:         "data/go-ginx.db",
-		DataDir:            "data",
-		CertificateDir:     "data/certs",
-		HeartbeatTimeout:   45 * time.Second,
-		LogRetentionDays:   7,
+		AdminListen:            "127.0.0.1:8080",
+		ControlQUICListen:      ":8443",
+		ControlTLSListen:       ":9443",
+		ControlTLSCertFile:     "data/certs/control.crt",
+		ControlTLSKeyFile:      "data/certs/control.key",
+		TCPEntryHost:           "0.0.0.0",
+		HTTPEntryListen:        ":8081",
+		HTTPSEntryListen:       "",
+		SQLitePath:             "data/go-ginx.db",
+		DataDir:                "data",
+		CertificateDir:         "data/certs",
+		ACMEDirectoryURL:       "https://acme-v02.api.letsencrypt.org/directory",
+		ACMERenewalWindow:      30 * 24 * time.Hour,
+		ACMECloudflareTokenEnv: "CF_DNS_API_TOKEN",
+		HeartbeatTimeout:       45 * time.Second,
+		LogRetentionDays:       7,
 	}
 }
 
@@ -109,6 +121,11 @@ func (cfg Server) Validate() error {
 	if err := requireAddress("http_entry_listen", cfg.HTTPEntryListen); err != nil {
 		return err
 	}
+	if strings.TrimSpace(cfg.HTTPSEntryListen) != "" {
+		if err := requireAddress("https_entry_listen", cfg.HTTPSEntryListen); err != nil {
+			return err
+		}
+	}
 	if strings.TrimSpace(cfg.SQLitePath) == "" {
 		return errors.New("sqlite_path is required")
 	}
@@ -117,6 +134,23 @@ func (cfg Server) Validate() error {
 	}
 	if strings.TrimSpace(cfg.CertificateDir) == "" {
 		return errors.New("certificate_dir is required")
+	}
+	if cfg.ACMEEnabled {
+		if strings.TrimSpace(cfg.ACMEDirectoryURL) == "" {
+			return errors.New("acme_directory_url is required when acme is enabled")
+		}
+		if strings.TrimSpace(cfg.ACMEAccountEmail) == "" {
+			return errors.New("acme_account_email is required when acme is enabled")
+		}
+		if !cfg.ACMETermsAccepted {
+			return errors.New("acme_terms_accepted is required when acme is enabled")
+		}
+		if cfg.ACMERenewalWindow <= 0 {
+			return errors.New("acme_renewal_window must be positive when acme is enabled")
+		}
+		if strings.TrimSpace(cfg.ACMECloudflareTokenEnv) == "" {
+			return errors.New("acme_cloudflare_token_env is required when acme is enabled")
+		}
 	}
 	if cfg.HeartbeatTimeout <= 0 {
 		return errors.New("heartbeat_timeout must be positive")
@@ -130,6 +164,11 @@ func (cfg Server) Validate() error {
 func (cfg Client) Validate() error {
 	if err := requireAddress("server_address", cfg.ServerAddress); err != nil {
 		return err
+	}
+	if strings.TrimSpace(cfg.ServerTLSAddress) != "" {
+		if err := requireAddress("server_tls_address", cfg.ServerTLSAddress); err != nil {
+			return err
+		}
 	}
 	if strings.TrimSpace(cfg.ServerName) == "" {
 		return errors.New("server_name is required")

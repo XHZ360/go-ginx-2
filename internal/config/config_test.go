@@ -33,6 +33,28 @@ func TestServerValidateRequiresHTTPEntryListen(t *testing.T) {
 	}
 }
 
+func TestServerValidateRequiresACMEFieldsWhenEnabled(t *testing.T) {
+	cfg := DefaultServer()
+	cfg.ACMEEnabled = true
+	cfg.ACMEAccountEmail = ""
+	cfg.ACMETermsAccepted = true
+
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected missing ACME account email validation error")
+	}
+}
+
+func TestServerValidateAcceptsConfiguredACME(t *testing.T) {
+	cfg := DefaultServer()
+	cfg.ACMEEnabled = true
+	cfg.ACMEAccountEmail = "ops@example.com"
+	cfg.ACMETermsAccepted = true
+
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("validate ACME server config: %v", err)
+	}
+}
+
 func TestClientValidateRequiresStrictServerIdentity(t *testing.T) {
 	cfg := DefaultClient()
 	cfg.ServerAddress = "127.0.0.1:8443"
