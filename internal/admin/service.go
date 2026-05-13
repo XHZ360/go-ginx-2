@@ -8,12 +8,14 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/simp-frp/go-ginx-2/internal/certmanager"
 	"github.com/simp-frp/go-ginx-2/internal/domain"
 	"github.com/simp-frp/go-ginx-2/internal/store"
 )
 
 type Service struct {
-	Store store.Store
+	Store        store.Store
+	Certificates certmanager.Service
 }
 
 type CreateUserInput struct {
@@ -41,8 +43,15 @@ type CreateProxyInput struct {
 	EntryPort   int
 	TargetHost  string
 	TargetPort  int
+	CertFile    string
+	KeyFile     string
 	Description string
 	ActorID     string
+}
+
+type CertificateInput struct {
+	ProxyID string
+	ActorID string
 }
 
 func (service Service) CreateUser(ctx context.Context, input CreateUserInput) (domain.User, error) {
@@ -86,13 +95,22 @@ func (service Service) CreateProxy(ctx context.Context, input CreateProxyInput) 
 	if input.Type == domain.ProxyTCP && input.EntryPort == 0 {
 		return domain.Proxy{}, errors.New("tcp proxy entry port is required")
 	}
+	if input.Type == domain.ProxyUDP && input.EntryPort == 0 {
+		return domain.Proxy{}, errors.New("udp proxy entry port is required")
+	}
 	if input.Type == domain.ProxyHTTP && strings.TrimSpace(input.EntryHost) == "" {
 		return domain.Proxy{}, errors.New("http proxy entry host is required")
+	}
+	if input.Type == domain.ProxyHTTPS && strings.TrimSpace(input.EntryHost) == "" {
+		return domain.Proxy{}, errors.New("https proxy entry host is required")
 	}
 	if strings.TrimSpace(input.ID) == "" {
 		input.ID = newID("proxy")
 	}
-	proxy := domain.Proxy{ID: input.ID, UserID: input.UserID, ClientID: input.ClientID, Name: input.Name, Type: input.Type, Status: domain.ProxyEnabled, EntryHost: input.EntryHost, EntryPort: input.EntryPort, TargetHost: input.TargetHost, TargetPort: input.TargetPort, Description: input.Description}
+	if input.Type == domain.ProxyHTTPS && (strings.TrimSpace(input.CertFile) == "") != (strings.TrimSpace(input.KeyFile) == "") {
+		return domain.Proxy{}, errors.New("https proxy cert file and key file must be provided together")
+	}
+	proxy := domain.Proxy{ID: input.ID, UserID: input.UserID, ClientID: input.ClientID, Name: input.Name, Type: input.Type, Status: domain.ProxyEnabled, EntryHost: input.EntryHost, EntryPort: input.EntryPort, TargetHost: input.TargetHost, TargetPort: input.TargetPort, CertFile: input.CertFile, KeyFile: input.KeyFile, Description: input.Description}
 	if err := service.Store.Proxies().Create(ctx, proxy); err != nil {
 		return domain.Proxy{}, err
 	}
@@ -103,7 +121,54 @@ func (service Service) CreateProxy(ctx context.Context, input CreateProxyInput) 
 	if input.Type == domain.ProxyHTTP {
 		action = "create_http_proxy"
 	}
+	if input.Type == domain.ProxyHTTPS {
+		action = "create_https_proxy"
+	}
+	if input.Type == domain.ProxyUDP {
+		action = "create_udp_proxy"
+	}
 	return proxy, service.audit(ctx, input.ActorID, "proxy", proxy.ID, action)
+}
+
+func (service Service) IssueManagedCertificate(ctx context.Context, input CertificateInput) (domain.ManagedCertificate, error) {
+	manager, err := service.certificateManager()
+	if err != nil {
+		return domain.ManagedCertificate{}, err
+	}
+	certificate, err := manager.Issue(ctx, input.ProxyID)
+	if err != nil {
+		return domain.ManagedCertificate{}, err
+	}
+	return certificate, service.audit(ctx, input.ActorID, "certificate", certificate.ID, "issue_managed_certificate")
+}
+
+func (service Service) RenewManagedCertificate(ctx context.Context, input CertificateInput) (domain.ManagedCertificate, error) {
+	manager, err := service.certificateManager()
+	if err != nil {
+		return domain.ManagedCertificate{}, err
+	}
+	certificate, err := manager.Renew(ctx, input.ProxyID)
+	if err != nil {
+		return domain.ManagedCertificate{}, err
+	}
+	return certificate, service.audit(ctx, input.ActorID, "certificate", certificate.ID, "renew_managed_certificate")
+}
+
+func (service Service) ManagedCertificateStatus(ctx context.Context, proxyID string) (certmanager.CertificateStatus, error) {
+	manager, err := service.certificateManager()
+	if err != nil {
+		return certmanager.CertificateStatus{}, err
+	}
+	return manager.Status(ctx, proxyID)
+}
+
+func (service Service) certificateManager() (certmanager.Service, error) {
+	if service.Store == nil {
+		return certmanager.Service{}, errors.New("store is required")
+	}
+	manager := service.Certificates
+	manager.Store = service.Store
+	return manager, nil
 }
 
 func (service Service) audit(ctx context.Context, actorID string, resourceType string, resourceID string, action string) error {
