@@ -75,6 +75,10 @@ func (s authStore) Clients() store.ClientRepository { return authClientRepositor
 
 func (s authStore) Proxies() store.ProxyRepository { return authProxyRepository{s.proxies} }
 
+func (s authStore) Certificates() store.CertificateRepository { return authCertificateRepository{} }
+
+func (s authStore) Stats() store.StatsRepository { return authStatsRepository{} }
+
 func (s authStore) AuditEvents() store.AuditRepository { return nil }
 
 func (s authStore) Close() error { return nil }
@@ -145,8 +149,48 @@ func (r authProxyRepository) ByTCPEntryPort(context.Context, int) (domain.Proxy,
 	return domain.Proxy{}, store.ErrNotFound
 }
 
+func (r authProxyRepository) ByUDPEntryPort(context.Context, int) (domain.Proxy, error) {
+	return domain.Proxy{}, store.ErrNotFound
+}
+
 func (r authProxyRepository) ByHTTPHost(context.Context, string) (domain.Proxy, error) {
 	return domain.Proxy{}, store.ErrNotFound
 }
 
+func (r authProxyRepository) ByHTTPSHost(context.Context, string) (domain.Proxy, error) {
+	return domain.Proxy{}, store.ErrNotFound
+}
+
 func (r authProxyRepository) SetStatus(context.Context, string, domain.ProxyStatus) error { return nil }
+
+type authStatsRepository struct{}
+
+type authCertificateRepository struct{}
+
+func (authCertificateRepository) Create(context.Context, domain.ManagedCertificate) error {
+	return nil
+}
+
+func (authCertificateRepository) ByProxyID(context.Context, string) (domain.ManagedCertificate, error) {
+	return domain.ManagedCertificate{}, store.ErrNotFound
+}
+
+func (authCertificateRepository) ByHost(context.Context, string) (domain.ManagedCertificate, error) {
+	return domain.ManagedCertificate{}, store.ErrNotFound
+}
+
+func (authCertificateRepository) ListRenewable(context.Context, time.Time) ([]domain.ManagedCertificate, error) {
+	return nil, nil
+}
+
+func (authCertificateRepository) UpdateSuccess(context.Context, string, store.CertificateSuccess) error {
+	return nil
+}
+
+func (authCertificateRepository) UpdateFailure(context.Context, string, store.CertificateFailure) error {
+	return nil
+}
+
+func (r authStatsRepository) Save(context.Context, []store.ProxyStats) error { return nil }
+
+func (r authStatsRepository) List(context.Context) ([]store.ProxyStats, error) { return nil, nil }

@@ -91,6 +91,27 @@ const (
 	ProxyNeedsConf ProxyStatus = "needs_config"
 )
 
+type CertificateStatus string
+
+const (
+	CertificatePending       CertificateStatus = "pending"
+	CertificateValid         CertificateStatus = "valid"
+	CertificateExpiringSoon  CertificateStatus = "expiring_soon"
+	CertificateExpired       CertificateStatus = "expired"
+	CertificateIssueFailed   CertificateStatus = "issue_failed"
+	CertificateRenewalFailed CertificateStatus = "renewal_failed"
+	CertificateDisabled      CertificateStatus = "disabled"
+)
+
+func (status CertificateStatus) Valid() bool {
+	switch status {
+	case CertificatePending, CertificateValid, CertificateExpiringSoon, CertificateExpired, CertificateIssueFailed, CertificateRenewalFailed, CertificateDisabled:
+		return true
+	default:
+		return false
+	}
+}
+
 type User struct {
 	ID        string
 	Username  string
@@ -124,9 +145,49 @@ type Proxy struct {
 	EntryPort   int
 	TargetHost  string
 	TargetPort  int
+	CertFile    string
+	KeyFile     string
 	Description string
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
+}
+
+type ManagedCertificate struct {
+	ID               string
+	ProxyID          string
+	Host             string
+	Status           CertificateStatus
+	Provider         string
+	CertFile         string
+	KeyFile          string
+	PreviousCertFile string
+	PreviousKeyFile  string
+	NotAfter         *time.Time
+	LastIssuedAt     *time.Time
+	LastRenewedAt    *time.Time
+	LastError        string
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
+}
+
+type ACMEProviderSettings struct {
+	DirectoryURL        string
+	AccountEmail        string
+	TermsAccepted       bool
+	RenewalWindow       time.Duration
+	DNSProvider         string
+	DNSProviderTokenEnv string
+}
+
+type CertificateOperationResult struct {
+	Status           CertificateStatus
+	CertFile         string
+	KeyFile          string
+	PreviousCertFile string
+	PreviousKeyFile  string
+	NotAfter         *time.Time
+	ErrorSummary     string
+	CompletedAt      time.Time
 }
 
 type AuditEvent struct {
@@ -200,6 +261,22 @@ func (proxy Proxy) Validate() error {
 	}
 	if ip := net.ParseIP(proxy.TargetHost); ip == nil && !validHostname(proxy.TargetHost) {
 		return errors.New("proxy target host is invalid")
+	}
+	return nil
+}
+
+func (certificate ManagedCertificate) Validate() error {
+	if strings.TrimSpace(certificate.ID) == "" {
+		return errors.New("certificate id is required")
+	}
+	if strings.TrimSpace(certificate.ProxyID) == "" {
+		return errors.New("certificate proxy id is required")
+	}
+	if strings.TrimSpace(certificate.Host) == "" || !validHostname(certificate.Host) {
+		return errors.New("certificate host is invalid")
+	}
+	if !certificate.Status.Valid() {
+		return errors.New("certificate status is invalid")
 	}
 	return nil
 }
