@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/json"
@@ -27,6 +28,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/simp-frp/go-ginx-2/internal/deploy"
 	"github.com/simp-frp/go-ginx-2/internal/domain"
 	"github.com/simp-frp/go-ginx-2/internal/store/sqlite"
 )
@@ -169,6 +171,245 @@ func TestExternalProcessesProxyHTTP(t *testing.T) {
 	}
 }
 
+func TestExternalProcessesProxyHTTPS(t *testing.T) {
+	root := repositoryRoot(t)
+	workDir := t.TempDir()
+	binDir := filepath.Join(workDir, "bin")
+	if err := os.MkdirAll(binDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	serverBin := buildCommand(t, root, binDir, "goginx-server", "./cmd/goginx-server")
+	clientBin := buildCommand(t, root, binDir, "goginx-client", "./cmd/goginx-client")
+
+	smokeCtx, cancelSmoke := context.WithTimeout(context.Background(), 20*time.Second)
+	t.Cleanup(cancelSmoke)
+	originAddress, originPool := startTLSEchoOrigin(t, smokeCtx, "secure.example.com")
+	originHost, originPort := splitAddress(t, originAddress)
+	controlPort := reservePort(t)
+	httpEntryPort := reservePort(t)
+	httpsEntryPort := reservePort(t)
+	certFile, keyFile, caFile := writeTLSFiles(t, workDir)
+	dbPath := filepath.Join(workDir, "go-ginx.db")
+	seedSQLite(t, dbPath, domain.Proxy{ID: "https-1", UserID: "user-1", ClientID: "client-1", Name: "secure", Type: domain.ProxyHTTPS, Status: domain.ProxyEnabled, EntryHost: "secure.example.com", TargetHost: originHost, TargetPort: originPort})
+	serverConfig := writeJSON(t, filepath.Join(workDir, "server.json"), map[string]any{
+		"admin_listen":          "127.0.0.1:0",
+		"control_quic_listen":   net.JoinHostPort("127.0.0.1", strconv.Itoa(controlPort)),
+		"control_tls_cert_file": certFile,
+		"control_tls_key_file":  keyFile,
+		"tcp_entry_host":        "127.0.0.1",
+		"http_entry_listen":     net.JoinHostPort("127.0.0.1", strconv.Itoa(httpEntryPort)),
+		"https_entry_listen":    net.JoinHostPort("127.0.0.1", strconv.Itoa(httpsEntryPort)),
+		"sqlite_path":           dbPath,
+		"data_dir":              filepath.Join(workDir, "data"),
+		"certificate_dir":       filepath.Join(workDir, "certs"),
+		"heartbeat_timeout":     int64(time.Second),
+		"log_retention_days":    1,
+	})
+	clientConfig := writeJSON(t, filepath.Join(workDir, "client.json"), map[string]any{
+		"server_address":    net.JoinHostPort("127.0.0.1", strconv.Itoa(controlPort)),
+		"server_name":       "localhost",
+		"server_ca_file":    caFile,
+		"client_id":         "client-1",
+		"credential":        "secret",
+		"allowed_protocols": []string{string(domain.ProtocolQUIC)},
+		"reconnect": map[string]any{
+			"initial_delay": int64(10 * time.Millisecond),
+			"max_delay":     int64(10 * time.Millisecond),
+		},
+	})
+
+	server := startProcess(t, root, serverBin, "-config", serverConfig)
+	waitForTCPAccept(t, smokeCtx, net.JoinHostPort("127.0.0.1", strconv.Itoa(httpsEntryPort)))
+	client := startProcess(t, root, clientBin, "-config", clientConfig)
+
+	entryAddress := net.JoinHostPort("127.0.0.1", strconv.Itoa(httpsEntryPort))
+	if err := waitForTLSEcho(smokeCtx, entryAddress, "secure.example.com", originPool, "ping\n"); err != nil {
+		t.Fatalf("external process HTTPS smoke failed: %v\nserver output:\n%s\nclient output:\n%s", err, server.Output(), client.Output())
+	}
+}
+
+func TestExternalProcessesProxyUDP(t *testing.T) {
+	root := repositoryRoot(t)
+	workDir := t.TempDir()
+	binDir := filepath.Join(workDir, "bin")
+	if err := os.MkdirAll(binDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	serverBin := buildCommand(t, root, binDir, "goginx-server", "./cmd/goginx-server")
+	clientBin := buildCommand(t, root, binDir, "goginx-client", "./cmd/goginx-client")
+
+	smokeCtx, cancelSmoke := context.WithTimeout(context.Background(), 20*time.Second)
+	t.Cleanup(cancelSmoke)
+	echoAddress := startUDPEchoOrigin(t, smokeCtx)
+	echoHost, echoPort := splitAddress(t, echoAddress)
+	controlPort := reservePort(t)
+	udpEntryPort := reserveUDPPort(t)
+	httpEntryPort := reservePort(t)
+	certFile, keyFile, caFile := writeTLSFiles(t, workDir)
+	dbPath := filepath.Join(workDir, "go-ginx.db")
+	seedSQLite(t, dbPath, domain.Proxy{ID: "udp-1", UserID: "user-1", ClientID: "client-1", Name: "dns", Type: domain.ProxyUDP, Status: domain.ProxyEnabled, EntryPort: udpEntryPort, TargetHost: echoHost, TargetPort: echoPort})
+	serverConfig := writeJSON(t, filepath.Join(workDir, "server.json"), map[string]any{
+		"admin_listen":          "127.0.0.1:0",
+		"control_quic_listen":   net.JoinHostPort("127.0.0.1", strconv.Itoa(controlPort)),
+		"control_tls_cert_file": certFile,
+		"control_tls_key_file":  keyFile,
+		"tcp_entry_host":        "127.0.0.1",
+		"http_entry_listen":     net.JoinHostPort("127.0.0.1", strconv.Itoa(httpEntryPort)),
+		"sqlite_path":           dbPath,
+		"data_dir":              filepath.Join(workDir, "data"),
+		"certificate_dir":       filepath.Join(workDir, "certs"),
+		"heartbeat_timeout":     int64(time.Second),
+		"log_retention_days":    1,
+	})
+	clientConfig := writeJSON(t, filepath.Join(workDir, "client.json"), map[string]any{
+		"server_address":    net.JoinHostPort("127.0.0.1", strconv.Itoa(controlPort)),
+		"server_name":       "localhost",
+		"server_ca_file":    caFile,
+		"client_id":         "client-1",
+		"credential":        "secret",
+		"allowed_protocols": []string{string(domain.ProtocolQUIC)},
+		"reconnect": map[string]any{
+			"initial_delay": int64(10 * time.Millisecond),
+			"max_delay":     int64(10 * time.Millisecond),
+		},
+	})
+
+	server := startProcess(t, root, serverBin, "-config", serverConfig)
+	client := startProcess(t, root, clientBin, "-config", clientConfig)
+	entryAddress := net.JoinHostPort("127.0.0.1", strconv.Itoa(udpEntryPort))
+	if err := waitForUDPEcho(smokeCtx, entryAddress, "ping"); err != nil {
+		t.Fatalf("external process UDP smoke failed: %v\nserver output:\n%s\nclient output:\n%s", err, server.Output(), client.Output())
+	}
+}
+
+func TestExternalProcessesAdminAPIUI(t *testing.T) {
+	root := repositoryRoot(t)
+	workDir := t.TempDir()
+	binDir := filepath.Join(workDir, "bin")
+	if err := os.MkdirAll(binDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	serverBin := buildCommand(t, root, binDir, "goginx-server", "./cmd/goginx-server")
+	clientBin := buildCommand(t, root, binDir, "goginx-client", "./cmd/goginx-client")
+
+	smokeCtx, cancelSmoke := context.WithTimeout(context.Background(), 20*time.Second)
+	t.Cleanup(cancelSmoke)
+	controlPort := reservePort(t)
+	httpEntryPort := reservePort(t)
+	adminPort := reservePort(t)
+	certFile, keyFile, caFile := writeTLSFiles(t, workDir)
+	adminCredsFile := writeAdminCredentialsFile(t, workDir, "admin", "secret")
+	dbPath := filepath.Join(workDir, "go-ginx.db")
+	seedSQLite(t, dbPath, domain.Proxy{ID: "http-1", UserID: "user-1", ClientID: "client-1", Name: "web", Type: domain.ProxyHTTP, Status: domain.ProxyEnabled, EntryHost: "app.example.com", TargetHost: "127.0.0.1", TargetPort: 8080})
+	serverConfig := writeJSON(t, filepath.Join(workDir, "server.json"), map[string]any{
+		"admin_listen":           net.JoinHostPort("127.0.0.1", strconv.Itoa(adminPort)),
+		"admin_credentials_file": adminCredsFile,
+		"control_quic_listen":    net.JoinHostPort("127.0.0.1", strconv.Itoa(controlPort)),
+		"control_tls_cert_file":  certFile,
+		"control_tls_key_file":   keyFile,
+		"tcp_entry_host":         "127.0.0.1",
+		"http_entry_listen":      net.JoinHostPort("127.0.0.1", strconv.Itoa(httpEntryPort)),
+		"sqlite_path":            dbPath,
+		"data_dir":               filepath.Join(workDir, "data"),
+		"certificate_dir":        filepath.Join(workDir, "certs"),
+		"heartbeat_timeout":      int64(time.Second),
+		"log_retention_days":     1,
+	})
+	clientConfig := writeJSON(t, filepath.Join(workDir, "client.json"), map[string]any{
+		"server_address":    net.JoinHostPort("127.0.0.1", strconv.Itoa(controlPort)),
+		"server_name":       "localhost",
+		"server_ca_file":    caFile,
+		"client_id":         "client-1",
+		"credential":        "secret",
+		"allowed_protocols": []string{string(domain.ProtocolQUIC)},
+		"reconnect": map[string]any{
+			"initial_delay": int64(10 * time.Millisecond),
+			"max_delay":     int64(10 * time.Millisecond),
+		},
+	})
+
+	server := startProcess(t, root, serverBin, "-config", serverConfig)
+	waitForTCPAccept(t, smokeCtx, net.JoinHostPort("127.0.0.1", strconv.Itoa(adminPort)))
+	client := startProcess(t, root, clientBin, "-config", clientConfig)
+	if err := waitForAdminDashboard(smokeCtx, net.JoinHostPort("127.0.0.1", strconv.Itoa(adminPort)), "admin", "secret"); err != nil {
+		t.Fatalf("admin ui smoke failed: %v\nserver output:\n%s\nclient output:\n%s", err, server.Output(), client.Output())
+	}
+	if err := waitForAdminGraphQL(smokeCtx, net.JoinHostPort("127.0.0.1", strconv.Itoa(adminPort)), "admin", "secret"); err != nil {
+		t.Fatalf("admin graphql smoke failed: %v\nserver output:\n%s\nclient output:\n%s", err, server.Output(), client.Output())
+	}
+}
+
+func TestDeployBundleRuntimeRestartRecovery(t *testing.T) {
+	root := repositoryRoot(t)
+	workDir := t.TempDir()
+	bundleDir := filepath.Join(workDir, "bundle")
+	if err := deploy.BuildBundle(context.Background(), deploy.BundleOptions{RepoRoot: root, OutputDir: bundleDir, GoOS: runtime.GOOS, GoArch: runtime.GOARCH, InstallRoot: "/opt/go-ginx"}); err != nil {
+		t.Fatalf("build deploy bundle: %v", err)
+	}
+
+	smokeCtx, cancelSmoke := context.WithTimeout(context.Background(), 30*time.Second)
+	t.Cleanup(cancelSmoke)
+	echoAddress := startEchoOrigin(t, smokeCtx)
+	echoHost, echoPort := splitAddress(t, echoAddress)
+	controlTLSPort := reservePort(t)
+	tcpEntryPort := reservePort(t)
+	httpEntryPort := reservePort(t)
+	certDir := filepath.Join(bundleDir, "data", "certs")
+	certFile, keyFile, caFile := writeTLSFiles(t, certDir)
+	dbPath := filepath.Join(bundleDir, "data", "go-ginx.db")
+	seedSQLite(t, dbPath, domain.Proxy{ID: "tcp-1", UserID: "user-1", ClientID: "client-1", Name: "echo", Type: domain.ProxyTCP, Status: domain.ProxyEnabled, EntryPort: tcpEntryPort, TargetHost: echoHost, TargetPort: echoPort})
+	serverConfig := writeJSON(t, filepath.Join(bundleDir, "config", "server.json"), map[string]any{
+		"admin_listen":          "127.0.0.1:0",
+		"control_quic_listen":   "127.0.0.1:0",
+		"control_tls_listen":    net.JoinHostPort("127.0.0.1", strconv.Itoa(controlTLSPort)),
+		"control_tls_cert_file": filepath.ToSlash(filepath.Join("data", "certs", filepath.Base(certFile))),
+		"control_tls_key_file":  filepath.ToSlash(filepath.Join("data", "certs", filepath.Base(keyFile))),
+		"tcp_entry_host":        "127.0.0.1",
+		"http_entry_listen":     net.JoinHostPort("127.0.0.1", strconv.Itoa(httpEntryPort)),
+		"sqlite_path":           filepath.ToSlash(filepath.Join("data", filepath.Base(dbPath))),
+		"data_dir":              "data",
+		"certificate_dir":       filepath.ToSlash(filepath.Join("data", "certs")),
+		"heartbeat_timeout":     int64(time.Second),
+		"log_retention_days":    1,
+	})
+	clientConfig := writeJSON(t, filepath.Join(bundleDir, "config", "client.json"), map[string]any{
+		"server_address":     "127.0.0.1:1",
+		"server_tls_address": net.JoinHostPort("127.0.0.1", strconv.Itoa(controlTLSPort)),
+		"server_name":        "localhost",
+		"server_ca_file":     filepath.ToSlash(filepath.Join("data", "certs", filepath.Base(caFile))),
+		"client_id":          "client-1",
+		"credential":         "secret",
+		"allowed_protocols":  []string{string(domain.ProtocolTCPTLS)},
+		"reconnect": map[string]any{
+			"initial_delay": int64(10 * time.Millisecond),
+			"max_delay":     int64(20 * time.Millisecond),
+		},
+	})
+
+	serverBin := filepath.Join(bundleDir, "bin", bundleBinaryName("goginx-server"))
+	clientBin := filepath.Join(bundleDir, "bin", bundleBinaryName("goginx-client"))
+	server := startProcess(t, bundleDir, serverBin, "-config", filepath.ToSlash(filepath.Join("config", filepath.Base(serverConfig))))
+	waitForTCPAccept(t, smokeCtx, net.JoinHostPort("127.0.0.1", strconv.Itoa(tcpEntryPort)))
+	client := startProcess(t, bundleDir, clientBin, "-config", filepath.ToSlash(filepath.Join("config", filepath.Base(clientConfig))))
+
+	entryAddress := net.JoinHostPort("127.0.0.1", strconv.Itoa(tcpEntryPort))
+	if err := waitForEcho(smokeCtx, entryAddress, "ping\n"); err != nil {
+		t.Fatalf("bundle startup smoke failed: %v\nserver output:\n%s\nclient output:\n%s", err, server.Output(), client.Output())
+	}
+	server.cancel()
+	select {
+	case <-server.done:
+	case <-time.After(3 * time.Second):
+		t.Fatalf("server process did not stop in time\nserver output:\n%s", server.Output())
+	}
+
+	restartedServer := startProcess(t, bundleDir, serverBin, "-config", filepath.ToSlash(filepath.Join("config", filepath.Base(serverConfig))))
+	waitForTCPAccept(t, smokeCtx, net.JoinHostPort("127.0.0.1", strconv.Itoa(tcpEntryPort)))
+	if err := waitForEcho(smokeCtx, entryAddress, "pong\n"); err != nil {
+		t.Fatalf("bundle restart recovery failed: %v\nserver output:\n%s\nrestarted server output:\n%s\nclient output:\n%s", err, server.Output(), restartedServer.Output(), client.Output())
+	}
+}
+
 func buildCommand(t *testing.T, root string, binDir string, name string, packagePath string) string {
 	t.Helper()
 	if runtime.GOOS == "windows" {
@@ -215,10 +456,20 @@ func startProcess(t *testing.T, root string, binary string, args ...string) *run
 			if cmd.Process != nil {
 				_ = cmd.Process.Kill()
 			}
-			<-process.done
+			select {
+			case <-process.done:
+			case <-time.After(3 * time.Second):
+			}
 		}
 	})
 	return process
+}
+
+func bundleBinaryName(name string) string {
+	if runtime.GOOS == "windows" {
+		return name + ".exe"
+	}
+	return name
 }
 
 func (process *runningProcess) Output() string {
@@ -322,6 +573,138 @@ func waitForHTTP(ctx context.Context, url string, host string, body string) (*ne
 	return nil, ctx.Err()
 }
 
+func waitForUDPEcho(ctx context.Context, address string, payload string) error {
+	var lastErr error
+	for ctx.Err() == nil {
+		conn, err := net.DialTimeout("udp", address, 200*time.Millisecond)
+		if err != nil {
+			lastErr = err
+			time.Sleep(50 * time.Millisecond)
+			continue
+		}
+		_, writeErr := conn.Write([]byte(payload))
+		if writeErr == nil {
+			_ = conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+			buffer := make([]byte, 64*1024)
+			n, readErr := conn.Read(buffer)
+			if readErr == nil && string(buffer[:n]) == payload {
+				_ = conn.Close()
+				return nil
+			}
+			if readErr != nil {
+				lastErr = readErr
+			} else {
+				lastErr = fmt.Errorf("unexpected echo %q", string(buffer[:n]))
+			}
+		} else {
+			lastErr = writeErr
+		}
+		_ = conn.Close()
+		time.Sleep(50 * time.Millisecond)
+	}
+	if lastErr != nil {
+		return lastErr
+	}
+	return ctx.Err()
+}
+
+func waitForTLSEcho(ctx context.Context, address string, serverName string, roots *x509.CertPool, payload string) error {
+	var lastErr error
+	for ctx.Err() == nil {
+		dialer := &net.Dialer{Timeout: 200 * time.Millisecond}
+		conn, err := tls.DialWithDialer(dialer, "tcp", address, &tls.Config{RootCAs: roots, ServerName: serverName, MinVersion: tls.VersionTLS12})
+		if err != nil {
+			lastErr = err
+			time.Sleep(50 * time.Millisecond)
+			continue
+		}
+		_, writeErr := conn.Write([]byte(payload))
+		if writeErr == nil {
+			_ = conn.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+			line, readErr := bufio.NewReader(conn).ReadString('\n')
+			if readErr == nil && line == payload {
+				_ = conn.Close()
+				return nil
+			}
+			if readErr != nil {
+				lastErr = readErr
+			} else {
+				lastErr = fmt.Errorf("unexpected tls echo %q", line)
+			}
+		} else {
+			lastErr = writeErr
+		}
+		_ = conn.Close()
+		time.Sleep(50 * time.Millisecond)
+	}
+	if lastErr != nil {
+		return lastErr
+	}
+	return ctx.Err()
+}
+
+func waitForAdminDashboard(ctx context.Context, address string, username string, password string) error {
+	var lastErr error
+	for ctx.Err() == nil {
+		request, err := nethttp.NewRequestWithContext(ctx, nethttp.MethodGet, "http://"+address+"/", nil)
+		if err != nil {
+			return err
+		}
+		request.SetBasicAuth(username, password)
+		response, err := (&nethttp.Client{Timeout: 500 * time.Millisecond}).Do(request)
+		if err == nil && response.StatusCode == nethttp.StatusOK {
+			body, readErr := io.ReadAll(response.Body)
+			_ = response.Body.Close()
+			if readErr == nil && strings.Contains(string(body), "Dashboard") {
+				return nil
+			}
+			lastErr = readErr
+		} else if response != nil {
+			_ = response.Body.Close()
+			lastErr = fmt.Errorf("unexpected status %d", response.StatusCode)
+		} else {
+			lastErr = err
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if lastErr != nil {
+		return lastErr
+	}
+	return ctx.Err()
+}
+
+func waitForAdminGraphQL(ctx context.Context, address string, username string, password string) error {
+	var lastErr error
+	for ctx.Err() == nil {
+		payload := bytes.NewBufferString(`{"query":"query { dashboardSummary { onlineClientCount enabledProxyCount } }"}`)
+		request, err := nethttp.NewRequestWithContext(ctx, nethttp.MethodPost, "http://"+address+"/graphql", payload)
+		if err != nil {
+			return err
+		}
+		request.SetBasicAuth(username, password)
+		request.Header.Set("Content-Type", "application/json")
+		response, err := (&nethttp.Client{Timeout: 500 * time.Millisecond}).Do(request)
+		if err == nil && response.StatusCode == nethttp.StatusOK {
+			body, readErr := io.ReadAll(response.Body)
+			_ = response.Body.Close()
+			if readErr == nil && strings.Contains(string(body), "dashboardSummary") {
+				return nil
+			}
+			lastErr = readErr
+		} else if response != nil {
+			_ = response.Body.Close()
+			lastErr = fmt.Errorf("unexpected status %d", response.StatusCode)
+		} else {
+			lastErr = err
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if lastErr != nil {
+		return lastErr
+	}
+	return ctx.Err()
+}
+
 func startEchoOrigin(t *testing.T, ctx context.Context) string {
 	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -343,6 +726,62 @@ func startEchoOrigin(t *testing.T, ctx context.Context) string {
 		}
 	}()
 	return listener.Addr().String()
+}
+
+func startUDPEchoOrigin(t *testing.T, ctx context.Context) string {
+	t.Helper()
+	conn, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	go func() {
+		<-ctx.Done()
+		_ = conn.Close()
+	}()
+	go func() {
+		buffer := make([]byte, 64*1024)
+		for {
+			n, addr, err := conn.ReadFrom(buffer)
+			if err != nil {
+				return
+			}
+			_, _ = conn.WriteTo(buffer[:n], addr)
+		}
+	}()
+	return conn.LocalAddr().String()
+}
+
+func startTLSEchoOrigin(t *testing.T, ctx context.Context, serverName string) (string, *x509.CertPool) {
+	t.Helper()
+	certPEM, keyPEM, caPEM := generateCertificateFor(t, serverName)
+	cert, err := tls.X509KeyPair(certPEM, keyPEM)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(caPEM) {
+		t.Fatal("append origin CA")
+	}
+	listener, err := tls.Listen("tcp", "127.0.0.1:0", &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	go func() {
+		<-ctx.Done()
+		_ = listener.Close()
+	}()
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			go echoConnection(conn)
+		}
+	}()
+	return listener.Addr().String(), pool
 }
 
 func echoConnection(conn net.Conn) {
@@ -406,6 +845,17 @@ func writeTLSFiles(t *testing.T, dir string) (string, string, string) {
 	return certFile, keyFile, caFile
 }
 
+func writeAdminCredentialsFile(t *testing.T, dir string, username string, password string) string {
+	t.Helper()
+	hash, err := domain.HashPassword(password)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "admin-creds.json")
+	writeFile(t, path, []byte(`{"administrators":[{"username":"`+username+`","password_hash":"`+hash+`"}]}`))
+	return path
+}
+
 func writeFile(t *testing.T, path string, content []byte) {
 	t.Helper()
 	if err := os.WriteFile(path, content, 0o600); err != nil {
@@ -414,6 +864,10 @@ func writeFile(t *testing.T, path string, content []byte) {
 }
 
 func generateCertificate(t *testing.T) ([]byte, []byte, []byte) {
+	return generateCertificateFor(t, "localhost")
+}
+
+func generateCertificateFor(t *testing.T, serverName string) ([]byte, []byte, []byte) {
 	t.Helper()
 	caKey, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
@@ -428,7 +882,7 @@ func generateCertificate(t *testing.T) ([]byte, []byte, []byte) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	serverTemplate := &x509.Certificate{SerialNumber: big.NewInt(2), Subject: pkix.Name{CommonName: "localhost"}, DNSNames: []string{"localhost"}, NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour), KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}}
+	serverTemplate := &x509.Certificate{SerialNumber: big.NewInt(2), Subject: pkix.Name{CommonName: serverName}, DNSNames: []string{serverName}, NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour), KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}}
 	serverDER, err := x509.CreateCertificate(rand.Reader, serverTemplate, caTemplate, &serverKey.PublicKey, caKey)
 	if err != nil {
 		t.Fatal(err)
@@ -444,6 +898,24 @@ func reservePort(t *testing.T) int {
 	}
 	defer listener.Close()
 	_, portText, err := net.SplitHostPort(listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	port, err := strconv.Atoi(portText)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return port
+}
+
+func reserveUDPPort(t *testing.T) int {
+	t.Helper()
+	conn, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	_, portText, err := net.SplitHostPort(conn.LocalAddr().String())
 	if err != nil {
 		t.Fatal(err)
 	}

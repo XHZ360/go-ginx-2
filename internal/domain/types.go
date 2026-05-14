@@ -7,6 +7,8 @@ import (
 	"net"
 	"strings"
 	"time"
+
+	"golang.org/x/crypto/bcrypt"
 )
 
 type Protocol string
@@ -113,12 +115,13 @@ func (status CertificateStatus) Valid() bool {
 }
 
 type User struct {
-	ID        string
-	Username  string
-	Role      Role
-	Status    UserStatus
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	ID           string
+	Username     string
+	PasswordHash string
+	Role         Role
+	Status       UserStatus
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
 }
 
 type Client struct {
@@ -284,6 +287,24 @@ func (certificate ManagedCertificate) Validate() error {
 func HashCredential(credential string) string {
 	sum := sha256.Sum256([]byte(credential))
 	return hex.EncodeToString(sum[:])
+}
+
+func HashPassword(password string) (string, error) {
+	if strings.TrimSpace(password) == "" {
+		return "", errors.New("password is required")
+	}
+	hash, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	if err != nil {
+		return "", err
+	}
+	return string(hash), nil
+}
+
+func CheckPasswordHash(password string, hash string) bool {
+	if strings.TrimSpace(password) == "" || strings.TrimSpace(hash) == "" {
+		return false
+	}
+	return bcrypt.CompareHashAndPassword([]byte(hash), []byte(password)) == nil
 }
 
 func validHostname(hostname string) bool {

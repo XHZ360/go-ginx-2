@@ -21,6 +21,7 @@ type Service struct {
 type CreateUserInput struct {
 	ID       string
 	Username string
+	Password string
 	Role     domain.Role
 	ActorID  string
 }
@@ -49,6 +50,20 @@ type CreateProxyInput struct {
 	ActorID     string
 }
 
+type UpdateProxyInput struct {
+	ID          string
+	Type        domain.ProxyType
+	Name        string
+	EntryHost   string
+	EntryPort   int
+	TargetHost  string
+	TargetPort  int
+	CertFile    string
+	KeyFile     string
+	Description string
+	ActorID     string
+}
+
 type CertificateInput struct {
 	ProxyID string
 	ActorID string
@@ -64,11 +79,43 @@ func (service Service) CreateUser(ctx context.Context, input CreateUserInput) (d
 	if input.Role == "" {
 		input.Role = domain.RoleUser
 	}
-	user := domain.User{ID: input.ID, Username: input.Username, Role: input.Role, Status: domain.UserEnabled}
+	passwordHash := ""
+	if strings.TrimSpace(input.Password) != "" {
+		passwordHashValue, err := domain.HashPassword(input.Password)
+		if err != nil {
+			return domain.User{}, err
+		}
+		passwordHash = passwordHashValue
+	}
+	user := domain.User{ID: input.ID, Username: input.Username, PasswordHash: passwordHash, Role: input.Role, Status: domain.UserEnabled}
 	if err := service.Store.Users().Create(ctx, user); err != nil {
 		return domain.User{}, err
 	}
 	return user, service.audit(ctx, input.ActorID, "user", user.ID, "create_user")
+}
+
+func (service Service) DisableUser(ctx context.Context, userID string, actorID string) error {
+	if service.Store == nil {
+		return errors.New("store is required")
+	}
+	if err := service.Store.Users().SetStatus(ctx, userID, domain.UserDisabled); err != nil {
+		return err
+	}
+	return service.audit(ctx, actorID, "user", userID, "disable_user")
+}
+
+func (service Service) SetUserPassword(ctx context.Context, userID string, password string, actorID string) error {
+	if service.Store == nil {
+		return errors.New("store is required")
+	}
+	passwordHash, err := domain.HashPassword(password)
+	if err != nil {
+		return err
+	}
+	if err := service.Store.Users().SetPassword(ctx, userID, passwordHash); err != nil {
+		return err
+	}
+	return service.audit(ctx, actorID, "user", userID, "set_user_password")
 }
 
 func (service Service) CreateClient(ctx context.Context, input CreateClientInput) (domain.Client, error) {
@@ -91,6 +138,9 @@ func (service Service) CreateClient(ctx context.Context, input CreateClientInput
 func (service Service) CreateProxy(ctx context.Context, input CreateProxyInput) (domain.Proxy, error) {
 	if service.Store == nil {
 		return domain.Proxy{}, errors.New("store is required")
+	}
+	if input.Type == domain.ProxyForward {
+		return domain.Proxy{}, errors.New("forward proxy is not supported in this management batch")
 	}
 	if input.Type == domain.ProxyTCP && input.EntryPort == 0 {
 		return domain.Proxy{}, errors.New("tcp proxy entry port is required")
@@ -128,6 +178,81 @@ func (service Service) CreateProxy(ctx context.Context, input CreateProxyInput) 
 		action = "create_udp_proxy"
 	}
 	return proxy, service.audit(ctx, input.ActorID, "proxy", proxy.ID, action)
+}
+
+func (service Service) UpdateProxy(ctx context.Context, input UpdateProxyInput) (domain.Proxy, error) {
+	if service.Store == nil {
+		return domain.Proxy{}, errors.New("store is required")
+	}
+	existing, err := service.Store.Proxies().ByID(ctx, input.ID)
+	if err != nil {
+		return domain.Proxy{}, err
+	}
+	if input.Type != "" && input.Type != existing.Type {
+		return domain.Proxy{}, errors.New("proxy type is immutable")
+	}
+	if existing.Type == domain.ProxyForward {
+		return domain.Proxy{}, errors.New("forward proxy is not supported in this management batch")
+	}
+	existing.Name = input.Name
+	existing.EntryHost = input.EntryHost
+	existing.EntryPort = input.EntryPort
+	existing.TargetHost = input.TargetHost
+	existing.TargetPort = input.TargetPort
+	existing.CertFile = input.CertFile
+	existing.KeyFile = input.KeyFile
+	existing.Description = input.Description
+	if existing.Type == domain.ProxyHTTPS && (strings.TrimSpace(existing.CertFile) == "") != (strings.TrimSpace(existing.KeyFile) == "") {
+		return domain.Proxy{}, errors.New("https proxy cert file and key file must be provided together")
+	}
+	if err := service.Store.Proxies().Update(ctx, existing); err != nil {
+		return domain.Proxy{}, err
+	}
+	return existing, service.audit(ctx, input.ActorID, "proxy", existing.ID, "update_proxy")
+}
+
+func (service Service) EnableProxy(ctx context.Context, proxyID string, actorID string) error {
+	if service.Store == nil {
+		return errors.New("store is required")
+	}
+	proxy, err := service.Store.Proxies().ByID(ctx, proxyID)
+	if err != nil {
+		return err
+	}
+	if proxy.Type == domain.ProxyForward {
+		return errors.New("forward proxy is not supported in this management batch")
+	}
+	if err := service.Store.Proxies().SetStatus(ctx, proxyID, domain.ProxyEnabled); err != nil {
+		return err
+	}
+	return service.audit(ctx, actorID, "proxy", proxyID, "enable_proxy")
+}
+
+func (service Service) DisableProxy(ctx context.Context, proxyID string, actorID string) error {
+	if service.Store == nil {
+		return errors.New("store is required")
+	}
+	if err := service.Store.Proxies().SetStatus(ctx, proxyID, domain.ProxyDisabled); err != nil {
+		return err
+	}
+	return service.audit(ctx, actorID, "proxy", proxyID, "disable_proxy")
+}
+
+func (service Service) DeleteProxy(ctx context.Context, proxyID string, actorID string) error {
+	if service.Store == nil {
+		return errors.New("store is required")
+	}
+	proxy, err := service.Store.Proxies().ByID(ctx, proxyID)
+	if err != nil {
+		return err
+	}
+	if proxy.Status != domain.ProxyDisabled {
+		return errors.New("proxy must be disabled before delete")
+	}
+	if err := service.Store.Proxies().Delete(ctx, proxyID); err != nil {
+		return err
+	}
+	return service.audit(ctx, actorID, "proxy", proxyID, "delete_proxy")
 }
 
 func (service Service) IssueManagedCertificate(ctx context.Context, input CertificateInput) (domain.ManagedCertificate, error) {

@@ -1,0 +1,16 @@
+[Unit]
+Description=go-ginx client
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory={{INSTALL_ROOT}}
+EnvironmentFile=-{{INSTALL_ROOT}}/config/goginx-client.env
+ExecStart={{INSTALL_ROOT}}/bin/goginx-client -config {{INSTALL_ROOT}}/config/client.json
+Restart=always
+RestartSec=2s
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

@@ -79,6 +79,61 @@ func (MessageType) EnumDescriptor() ([]byte, []int) {
 	return file_internal_control_controlpb_control_proto_rawDescGZIP(), []int{0}
 }
 
+type MuxFrameType int32
+
+const (
+	MuxFrameType_MUX_FRAME_TYPE_UNSPECIFIED MuxFrameType = 0
+	MuxFrameType_MUX_FRAME_TYPE_OPEN        MuxFrameType = 1
+	MuxFrameType_MUX_FRAME_TYPE_DATA        MuxFrameType = 2
+	MuxFrameType_MUX_FRAME_TYPE_CLOSE       MuxFrameType = 3
+	MuxFrameType_MUX_FRAME_TYPE_RESET       MuxFrameType = 4
+)
+
+// Enum value maps for MuxFrameType.
+var (
+	MuxFrameType_name = map[int32]string{
+		0: "MUX_FRAME_TYPE_UNSPECIFIED",
+		1: "MUX_FRAME_TYPE_OPEN",
+		2: "MUX_FRAME_TYPE_DATA",
+		3: "MUX_FRAME_TYPE_CLOSE",
+		4: "MUX_FRAME_TYPE_RESET",
+	}
+	MuxFrameType_value = map[string]int32{
+		"MUX_FRAME_TYPE_UNSPECIFIED": 0,
+		"MUX_FRAME_TYPE_OPEN":        1,
+		"MUX_FRAME_TYPE_DATA":        2,
+		"MUX_FRAME_TYPE_CLOSE":       3,
+		"MUX_FRAME_TYPE_RESET":       4,
+	}
+)
+
+func (x MuxFrameType) Enum() *MuxFrameType {
+	p := new(MuxFrameType)
+	*p = x
+	return p
+}
+
+func (x MuxFrameType) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (MuxFrameType) Descriptor() protoreflect.EnumDescriptor {
+	return file_internal_control_controlpb_control_proto_enumTypes[1].Descriptor()
+}
+
+func (MuxFrameType) Type() protoreflect.EnumType {
+	return &file_internal_control_controlpb_control_proto_enumTypes[1]
+}
+
+func (x MuxFrameType) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use MuxFrameType.Descriptor instead.
+func (MuxFrameType) EnumDescriptor() ([]byte, []int) {
+	return file_internal_control_controlpb_control_proto_rawDescGZIP(), []int{1}
+}
+
 type Envelope struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Type          MessageType            `protobuf:"varint,1,opt,name=type,proto3,enum=goginx.control.v1.MessageType" json:"type,omitempty"`
@@ -675,6 +730,74 @@ func (x *OpenStream) GetTargetPort() int32 {
 	return 0
 }
 
+type MuxFrame struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	StreamId      uint64                 `protobuf:"varint,1,opt,name=stream_id,json=streamId,proto3" json:"stream_id,omitempty"`
+	Type          MuxFrameType           `protobuf:"varint,2,opt,name=type,proto3,enum=goginx.control.v1.MuxFrameType" json:"type,omitempty"`
+	Payload       []byte                 `protobuf:"bytes,3,opt,name=payload,proto3" json:"payload,omitempty"`
+	Reason        string                 `protobuf:"bytes,4,opt,name=reason,proto3" json:"reason,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *MuxFrame) Reset() {
+	*x = MuxFrame{}
+	mi := &file_internal_control_controlpb_control_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *MuxFrame) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*MuxFrame) ProtoMessage() {}
+
+func (x *MuxFrame) ProtoReflect() protoreflect.Message {
+	mi := &file_internal_control_controlpb_control_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use MuxFrame.ProtoReflect.Descriptor instead.
+func (*MuxFrame) Descriptor() ([]byte, []int) {
+	return file_internal_control_controlpb_control_proto_rawDescGZIP(), []int{7}
+}
+
+func (x *MuxFrame) GetStreamId() uint64 {
+	if x != nil {
+		return x.StreamId
+	}
+	return 0
+}
+
+func (x *MuxFrame) GetType() MuxFrameType {
+	if x != nil {
+		return x.Type
+	}
+	return MuxFrameType_MUX_FRAME_TYPE_UNSPECIFIED
+}
+
+func (x *MuxFrame) GetPayload() []byte {
+	if x != nil {
+		return x.Payload
+	}
+	return nil
+}
+
+func (x *MuxFrame) GetReason() string {
+	if x != nil {
+		return x.Reason
+	}
+	return ""
+}
+
 var File_internal_control_controlpb_control_proto protoreflect.FileDescriptor
 
 const file_internal_control_controlpb_control_proto_rawDesc = "" +
@@ -741,14 +864,25 @@ const file_internal_control_controlpb_control_proto_rawDesc = "" +
 	"\vtarget_host\x18\x04 \x01(\tR\n" +
 	"targetHost\x12\x1f\n" +
 	"\vtarget_port\x18\x05 \x01(\x05R\n" +
-	"targetPort*\xc5\x01\n" +
+	"targetPort\"\x8e\x01\n" +
+	"\bMuxFrame\x12\x1b\n" +
+	"\tstream_id\x18\x01 \x01(\x04R\bstreamId\x123\n" +
+	"\x04type\x18\x02 \x01(\x0e2\x1f.goginx.control.v1.MuxFrameTypeR\x04type\x12\x18\n" +
+	"\apayload\x18\x03 \x01(\fR\apayload\x12\x16\n" +
+	"\x06reason\x18\x04 \x01(\tR\x06reason*\xc5\x01\n" +
 	"\vMessageType\x12\x1c\n" +
 	"\x18MESSAGE_TYPE_UNSPECIFIED\x10\x00\x12\x1d\n" +
 	"\x19MESSAGE_TYPE_AUTH_REQUEST\x10\x01\x12\x1e\n" +
 	"\x1aMESSAGE_TYPE_AUTH_RESPONSE\x10\x02\x12\x1a\n" +
 	"\x16MESSAGE_TYPE_HEARTBEAT\x10\x03\x12\x1c\n" +
 	"\x18MESSAGE_TYPE_OPEN_STREAM\x10\x04\x12\x1f\n" +
-	"\x1bMESSAGE_TYPE_PROXY_SNAPSHOT\x10\x05B:Z8github.com/simp-frp/go-ginx-2/internal/control/controlpbb\x06proto3"
+	"\x1bMESSAGE_TYPE_PROXY_SNAPSHOT\x10\x05*\x94\x01\n" +
+	"\fMuxFrameType\x12\x1e\n" +
+	"\x1aMUX_FRAME_TYPE_UNSPECIFIED\x10\x00\x12\x17\n" +
+	"\x13MUX_FRAME_TYPE_OPEN\x10\x01\x12\x17\n" +
+	"\x13MUX_FRAME_TYPE_DATA\x10\x02\x12\x18\n" +
+	"\x14MUX_FRAME_TYPE_CLOSE\x10\x03\x12\x18\n" +
+	"\x14MUX_FRAME_TYPE_RESET\x10\x04B:Z8github.com/simp-frp/go-ginx-2/internal/control/controlpbb\x06proto3"
 
 var (
 	file_internal_control_controlpb_control_proto_rawDescOnce sync.Once
@@ -762,26 +896,29 @@ func file_internal_control_controlpb_control_proto_rawDescGZIP() []byte {
 	return file_internal_control_controlpb_control_proto_rawDescData
 }
 
-var file_internal_control_controlpb_control_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_internal_control_controlpb_control_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
+var file_internal_control_controlpb_control_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
+var file_internal_control_controlpb_control_proto_msgTypes = make([]protoimpl.MessageInfo, 8)
 var file_internal_control_controlpb_control_proto_goTypes = []any{
 	(MessageType)(0),      // 0: goginx.control.v1.MessageType
-	(*Envelope)(nil),      // 1: goginx.control.v1.Envelope
-	(*AuthRequest)(nil),   // 2: goginx.control.v1.AuthRequest
-	(*AuthResponse)(nil),  // 3: goginx.control.v1.AuthResponse
-	(*Heartbeat)(nil),     // 4: goginx.control.v1.Heartbeat
-	(*ProxySnapshot)(nil), // 5: goginx.control.v1.ProxySnapshot
-	(*Proxy)(nil),         // 6: goginx.control.v1.Proxy
-	(*OpenStream)(nil),    // 7: goginx.control.v1.OpenStream
+	(MuxFrameType)(0),     // 1: goginx.control.v1.MuxFrameType
+	(*Envelope)(nil),      // 2: goginx.control.v1.Envelope
+	(*AuthRequest)(nil),   // 3: goginx.control.v1.AuthRequest
+	(*AuthResponse)(nil),  // 4: goginx.control.v1.AuthResponse
+	(*Heartbeat)(nil),     // 5: goginx.control.v1.Heartbeat
+	(*ProxySnapshot)(nil), // 6: goginx.control.v1.ProxySnapshot
+	(*Proxy)(nil),         // 7: goginx.control.v1.Proxy
+	(*OpenStream)(nil),    // 8: goginx.control.v1.OpenStream
+	(*MuxFrame)(nil),      // 9: goginx.control.v1.MuxFrame
 }
 var file_internal_control_controlpb_control_proto_depIdxs = []int32{
 	0, // 0: goginx.control.v1.Envelope.type:type_name -> goginx.control.v1.MessageType
-	6, // 1: goginx.control.v1.ProxySnapshot.proxies:type_name -> goginx.control.v1.Proxy
-	2, // [2:2] is the sub-list for method output_type
-	2, // [2:2] is the sub-list for method input_type
-	2, // [2:2] is the sub-list for extension type_name
-	2, // [2:2] is the sub-list for extension extendee
-	0, // [0:2] is the sub-list for field type_name
+	7, // 1: goginx.control.v1.ProxySnapshot.proxies:type_name -> goginx.control.v1.Proxy
+	1, // 2: goginx.control.v1.MuxFrame.type:type_name -> goginx.control.v1.MuxFrameType
+	3, // [3:3] is the sub-list for method output_type
+	3, // [3:3] is the sub-list for method input_type
+	3, // [3:3] is the sub-list for extension type_name
+	3, // [3:3] is the sub-list for extension extendee
+	0, // [0:3] is the sub-list for field type_name
 }
 
 func init() { file_internal_control_controlpb_control_proto_init() }
@@ -794,8 +931,8 @@ func file_internal_control_controlpb_control_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_internal_control_controlpb_control_proto_rawDesc), len(file_internal_control_controlpb_control_proto_rawDesc)),
-			NumEnums:      1,
-			NumMessages:   7,
+			NumEnums:      2,
+			NumMessages:   8,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

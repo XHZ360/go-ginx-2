@@ -76,3 +76,18 @@ message OpenStream {
   string target_host = 4;
   int32 target_port = 5;
 }
+
+enum MuxFrameType {
+  MUX_FRAME_TYPE_UNSPECIFIED = 0;
+  MUX_FRAME_TYPE_OPEN = 1;
+  MUX_FRAME_TYPE_DATA = 2;
+  MUX_FRAME_TYPE_CLOSE = 3;
+  MUX_FRAME_TYPE_RESET = 4;
+}
+
+message MuxFrame {
+  uint64 stream_id = 1;
+  MuxFrameType type = 2;
+  bytes payload = 3;
+  string reason = 4;
+}

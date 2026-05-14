@@ -108,6 +108,136 @@ func TestRunClientAuthenticatesAndSendsHeartbeat(t *testing.T) {
 	t.Fatalf("client heartbeat did not update session")
 }
 
+func TestRunClientReconnectsAfterInitialDialFailure(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	serverCert, serverKey, caFile := writeTestTLSFiles(t)
+	dbPath := filepath.Join(t.TempDir(), "client-reconnect.db")
+	seedDatabase(t, dbPath, []domain.Proxy{{ID: "http-1", UserID: "user-1", ClientID: "client-1", Name: "web", Type: domain.ProxyHTTP, Status: domain.ProxyEnabled, EntryHost: "app.example.com", TargetHost: "127.0.0.1", TargetPort: 8080}})
+	quicPort := reserveUDPPort(t)
+	serverAddress := net.JoinHostPort("127.0.0.1", strconv.Itoa(quicPort))
+
+	clientDone := make(chan error, 1)
+	go func() {
+		clientDone <- RunClient(ctx, config.Client{ServerAddress: serverAddress, ServerName: "localhost", ServerCAFile: caFile, ClientID: "client-1", Credential: "secret", AllowedProtocols: []domain.Protocol{domain.ProtocolQUIC}, Reconnect: config.Reconnect{InitialDelay: 10 * time.Millisecond, MaxDelay: 20 * time.Millisecond}})
+	}()
+	select {
+	case err := <-clientDone:
+		t.Fatalf("client exited before server startup: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	runtime, err := StartServer(ctx, config.Server{AdminListen: "127.0.0.1:0", ControlQUICListen: serverAddress, ControlTLSCertFile: serverCert, ControlTLSKeyFile: serverKey, TCPEntryHost: "127.0.0.1", HTTPEntryListen: "127.0.0.1:0", SQLitePath: dbPath, DataDir: t.TempDir(), CertificateDir: t.TempDir(), HeartbeatTimeout: time.Second, LogRetentionDays: 1})
+	if err != nil {
+		t.Fatalf("start server: %v", err)
+	}
+	t.Cleanup(func() { _ = runtime.Close() })
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		select {
+		case err := <-clientDone:
+			t.Fatalf("client exited before reconnect completed: %v", err)
+		default:
+		}
+		latest, ok := runtime.Sessions.Latest("client-1")
+		if ok && latest.Stats.ActiveProxies == 1 {
+			cancel()
+			if err := <-clientDone; err != nil {
+				t.Fatalf("run client: %v", err)
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+	t.Fatal("client did not reconnect after server startup")
+}
+
+func TestRunClientAuthenticationRejectedStops(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	serverCert, serverKey, caFile := writeTestTLSFiles(t)
+	dbPath := filepath.Join(t.TempDir(), "client-auth-reject.db")
+	seedDatabase(t, dbPath, []domain.Proxy{{ID: "http-1", UserID: "user-1", ClientID: "client-1", Name: "web", Type: domain.ProxyHTTP, Status: domain.ProxyEnabled, EntryHost: "app.example.com", TargetHost: "127.0.0.1", TargetPort: 8080}})
+	runtime, err := StartServer(ctx, config.Server{AdminListen: "127.0.0.1:0", ControlQUICListen: "127.0.0.1:0", ControlTLSCertFile: serverCert, ControlTLSKeyFile: serverKey, TCPEntryHost: "127.0.0.1", HTTPEntryListen: "127.0.0.1:0", SQLitePath: dbPath, DataDir: t.TempDir(), CertificateDir: t.TempDir(), HeartbeatTimeout: time.Second, LogRetentionDays: 1})
+	if err != nil {
+		t.Fatalf("start server: %v", err)
+	}
+	t.Cleanup(func() { _ = runtime.Close() })
+
+	clientDone := make(chan error, 1)
+	go func() {
+		clientDone <- RunClient(ctx, config.Client{ServerAddress: runtime.ControlListener.Addr().String(), ServerName: "localhost", ServerCAFile: caFile, ClientID: "client-1", Credential: "wrong", AllowedProtocols: []domain.Protocol{domain.ProtocolQUIC}, Reconnect: config.Reconnect{InitialDelay: 10 * time.Millisecond, MaxDelay: 20 * time.Millisecond}})
+	}()
+	select {
+	case err := <-clientDone:
+		if err == nil {
+			t.Fatal("expected authentication rejection error")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("client did not stop after authentication rejection")
+	}
+	if _, ok := runtime.Sessions.Latest("client-1"); ok {
+		t.Fatal("rejected client must not register a session")
+	}
+}
+
+func TestRunClientReconnectsAfterServerRestart(t *testing.T) {
+	clientCtx, cancelClient := context.WithCancel(context.Background())
+	t.Cleanup(cancelClient)
+	serverCert, serverKey, caFile := writeTestTLSFiles(t)
+	dbPath := filepath.Join(t.TempDir(), "client-restart.db")
+	seedDatabase(t, dbPath, []domain.Proxy{{ID: "http-1", UserID: "user-1", ClientID: "client-1", Name: "web", Type: domain.ProxyHTTP, Status: domain.ProxyEnabled, EntryHost: "app.example.com", TargetHost: "127.0.0.1", TargetPort: 8080}})
+	tlsPort := reservePort(t)
+	serverTLSAddress := net.JoinHostPort("127.0.0.1", strconv.Itoa(tlsPort))
+
+	serverCtx1, cancelServer1 := context.WithCancel(context.Background())
+	runtime1, err := StartServer(serverCtx1, config.Server{AdminListen: "127.0.0.1:0", ControlQUICListen: "127.0.0.1:0", ControlTLSListen: serverTLSAddress, ControlTLSCertFile: serverCert, ControlTLSKeyFile: serverKey, TCPEntryHost: "127.0.0.1", HTTPEntryListen: "127.0.0.1:0", SQLitePath: dbPath, DataDir: t.TempDir(), CertificateDir: t.TempDir(), HeartbeatTimeout: time.Second, LogRetentionDays: 1})
+	if err != nil {
+		t.Fatalf("start first server: %v", err)
+	}
+	defer func() {
+		cancelServer1()
+		_ = runtime1.Close()
+	}()
+
+	clientDone := make(chan error, 1)
+	go func() {
+		clientDone <- RunClient(clientCtx, config.Client{ServerAddress: "127.0.0.1:1", ServerTLSAddress: serverTLSAddress, ServerName: "localhost", ServerCAFile: caFile, ClientID: "client-1", Credential: "secret", AllowedProtocols: []domain.Protocol{domain.ProtocolTCPTLS}, Reconnect: config.Reconnect{InitialDelay: 10 * time.Millisecond, MaxDelay: 20 * time.Millisecond}})
+	}()
+	waitForActiveProxySession(t, runtime1)
+
+	cancelServer1()
+	if err := runtime1.Close(); err != nil {
+		t.Fatalf("close first server: %v", err)
+	}
+
+	runtime2, cancelServer2 := startServerWithRetry(t, serverTLSAddress, serverCert, serverKey, dbPath)
+	defer cancelServer2()
+	t.Cleanup(func() { _ = runtime2.Close() })
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		select {
+		case err := <-clientDone:
+			t.Fatalf("client exited before reconnect after restart: %v", err)
+		default:
+		}
+		latest, ok := runtime2.Sessions.Latest("client-1")
+		if ok && latest.Stats.ActiveProxies == 1 {
+			cancelClient()
+			if err := <-clientDone; err != nil {
+				t.Fatalf("run client: %v", err)
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancelClient()
+	t.Fatal("client did not reconnect after server restart")
+}
+
 func TestRunClientFallsBackToTCPTLSControl(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
@@ -321,6 +451,35 @@ func waitForTCPTLSSession(t *testing.T, runtime *ServerRuntime) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatal("tcp+tls session did not become ready")
+}
+
+func waitForActiveProxySession(t *testing.T, runtime *ServerRuntime) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		latest, ok := runtime.Sessions.Latest("client-1")
+		if ok && latest.Stats.ActiveProxies == 1 {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("client session did not become active")
+}
+
+func startServerWithRetry(t *testing.T, serverTLSAddress string, serverCert string, serverKey string, dbPath string) (*ServerRuntime, context.CancelFunc) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		serverCtx, cancelServer := context.WithCancel(context.Background())
+		runtime, err := StartServer(serverCtx, config.Server{AdminListen: "127.0.0.1:0", ControlQUICListen: "127.0.0.1:0", ControlTLSListen: serverTLSAddress, ControlTLSCertFile: serverCert, ControlTLSKeyFile: serverKey, TCPEntryHost: "127.0.0.1", HTTPEntryListen: "127.0.0.1:0", SQLitePath: dbPath, DataDir: t.TempDir(), CertificateDir: t.TempDir(), HeartbeatTimeout: time.Second, LogRetentionDays: 1})
+		if err == nil {
+			return runtime, cancelServer
+		}
+		cancelServer()
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("second server did not restart before deadline")
+	return nil, nil
 }
 
 func startEchoTarget(t *testing.T) net.Listener {

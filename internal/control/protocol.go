@@ -14,6 +14,10 @@ import (
 
 const maxFrameSize = 1 << 20
 
+const maxMuxPayloadSize = 32 * 1024
+
+const MaxDatagramFrameSize = maxFrameSize
+
 type MessageType string
 
 const (
@@ -72,6 +76,22 @@ type OpenStream struct {
 	TargetPort   int    `json:"target_port"`
 }
 
+type MuxFrameType string
+
+const (
+	MuxFrameOpen  MuxFrameType = "open"
+	MuxFrameData  MuxFrameType = "data"
+	MuxFrameClose MuxFrameType = "close"
+	MuxFrameReset MuxFrameType = "reset"
+)
+
+type MuxFrame struct {
+	StreamID uint64
+	Type     MuxFrameType
+	Payload  []byte
+	Reason   string
+}
+
 func WriteMessage(w io.Writer, messageType MessageType, payload any) error {
 	protoPayload, err := marshalPayload(messageType, payload)
 	if err != nil {
@@ -118,6 +138,94 @@ func ReadMessage(r io.Reader) (Envelope, error) {
 		return Envelope{}, errors.New("message type is required")
 	}
 	return Envelope{Type: messageType, Payload: envelope.GetPayload()}, nil
+}
+
+func WriteMuxFrame(w io.Writer, frame MuxFrame) error {
+	if frame.StreamID == 0 && frame.Type == MuxFrameOpen {
+		return errors.New("control mux stream cannot be opened")
+	}
+	if len(frame.Payload) > maxMuxPayloadSize {
+		return fmt.Errorf("mux payload too large: %d", len(frame.Payload))
+	}
+	encodedFrame, err := proto.Marshal(muxFrameToProto(frame))
+	if err != nil {
+		return err
+	}
+	if len(encodedFrame) > maxFrameSize {
+		return fmt.Errorf("mux frame too large: %d", len(encodedFrame))
+	}
+	var length [4]byte
+	binary.BigEndian.PutUint32(length[:], uint32(len(encodedFrame)))
+	if _, err := w.Write(length[:]); err != nil {
+		return err
+	}
+	_, err = w.Write(encodedFrame)
+	return err
+}
+
+func ReadMuxFrame(r io.Reader) (MuxFrame, error) {
+	var length [4]byte
+	if _, err := io.ReadFull(r, length[:]); err != nil {
+		return MuxFrame{}, err
+	}
+	frameSize := binary.BigEndian.Uint32(length[:])
+	if frameSize == 0 {
+		return MuxFrame{}, errors.New("empty mux frame")
+	}
+	if frameSize > maxFrameSize {
+		return MuxFrame{}, fmt.Errorf("mux frame too large: %d", frameSize)
+	}
+	encodedFrame := make([]byte, frameSize)
+	if _, err := io.ReadFull(r, encodedFrame); err != nil {
+		return MuxFrame{}, err
+	}
+	var frame controlpb.MuxFrame
+	if err := proto.Unmarshal(encodedFrame, &frame); err != nil {
+		return MuxFrame{}, err
+	}
+	decoded := muxFrameFromProto(&frame)
+	if decoded.Type == "" {
+		return MuxFrame{}, errors.New("mux frame type is required")
+	}
+	if len(decoded.Payload) > maxMuxPayloadSize {
+		return MuxFrame{}, fmt.Errorf("mux payload too large: %d", len(decoded.Payload))
+	}
+	return decoded, nil
+}
+
+func WriteDatagramFrame(w io.Writer, payload []byte) error {
+	if len(payload) == 0 {
+		return errors.New("empty datagram frame")
+	}
+	if len(payload) > MaxDatagramFrameSize {
+		return fmt.Errorf("datagram frame too large: %d", len(payload))
+	}
+	var length [4]byte
+	binary.BigEndian.PutUint32(length[:], uint32(len(payload)))
+	if _, err := w.Write(length[:]); err != nil {
+		return err
+	}
+	_, err := w.Write(payload)
+	return err
+}
+
+func ReadDatagramFrame(r io.Reader) ([]byte, error) {
+	var length [4]byte
+	if _, err := io.ReadFull(r, length[:]); err != nil {
+		return nil, err
+	}
+	frameSize := binary.BigEndian.Uint32(length[:])
+	if frameSize == 0 {
+		return nil, errors.New("empty datagram frame")
+	}
+	if frameSize > MaxDatagramFrameSize {
+		return nil, fmt.Errorf("datagram frame too large: %d", frameSize)
+	}
+	payload := make([]byte, frameSize)
+	if _, err := io.ReadFull(r, payload); err != nil {
+		return nil, err
+	}
+	return payload, nil
 }
 
 func DecodePayload[T any](envelope Envelope) (T, error) {
@@ -295,6 +403,44 @@ func proxyToProto(proxy domain.Proxy) *controlpb.Proxy {
 
 func proxyFromProto(proxy *controlpb.Proxy) domain.Proxy {
 	return domain.Proxy{ID: proxy.GetId(), UserID: proxy.GetUserId(), ClientID: proxy.GetClientId(), Name: proxy.GetName(), Type: domain.ProxyType(proxy.GetType()), Status: domain.ProxyStatus(proxy.GetStatus()), EntryHost: proxy.GetEntryHost(), EntryPort: int(proxy.GetEntryPort()), TargetHost: proxy.GetTargetHost(), TargetPort: int(proxy.GetTargetPort()), Description: proxy.GetDescription(), CreatedAt: unixNanoTime(proxy.GetCreatedAtUnixNano()), UpdatedAt: unixNanoTime(proxy.GetUpdatedAtUnixNano())}
+}
+
+func muxFrameToProto(frame MuxFrame) *controlpb.MuxFrame {
+	return &controlpb.MuxFrame{StreamId: frame.StreamID, Type: toProtoMuxFrameType(frame.Type), Payload: frame.Payload, Reason: frame.Reason}
+}
+
+func muxFrameFromProto(frame *controlpb.MuxFrame) MuxFrame {
+	return MuxFrame{StreamID: frame.GetStreamId(), Type: fromProtoMuxFrameType(frame.GetType()), Payload: frame.GetPayload(), Reason: frame.GetReason()}
+}
+
+func toProtoMuxFrameType(frameType MuxFrameType) controlpb.MuxFrameType {
+	switch frameType {
+	case MuxFrameOpen:
+		return controlpb.MuxFrameType_MUX_FRAME_TYPE_OPEN
+	case MuxFrameData:
+		return controlpb.MuxFrameType_MUX_FRAME_TYPE_DATA
+	case MuxFrameClose:
+		return controlpb.MuxFrameType_MUX_FRAME_TYPE_CLOSE
+	case MuxFrameReset:
+		return controlpb.MuxFrameType_MUX_FRAME_TYPE_RESET
+	default:
+		return controlpb.MuxFrameType_MUX_FRAME_TYPE_UNSPECIFIED
+	}
+}
+
+func fromProtoMuxFrameType(frameType controlpb.MuxFrameType) MuxFrameType {
+	switch frameType {
+	case controlpb.MuxFrameType_MUX_FRAME_TYPE_OPEN:
+		return MuxFrameOpen
+	case controlpb.MuxFrameType_MUX_FRAME_TYPE_DATA:
+		return MuxFrameData
+	case controlpb.MuxFrameType_MUX_FRAME_TYPE_CLOSE:
+		return MuxFrameClose
+	case controlpb.MuxFrameType_MUX_FRAME_TYPE_RESET:
+		return MuxFrameReset
+	default:
+		return ""
+	}
 }
 
 func unixNanoTime(value int64) time.Time {

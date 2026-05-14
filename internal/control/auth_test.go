@@ -98,7 +98,13 @@ func (r authUserRepository) ByUsername(context.Context, string) (domain.User, er
 	return r.user, nil
 }
 
+func (r authUserRepository) List(context.Context) ([]domain.User, error) {
+	return []domain.User{r.user}, nil
+}
+
 func (r authUserRepository) SetStatus(context.Context, string, domain.UserStatus) error { return nil }
+
+func (r authUserRepository) SetPassword(context.Context, string, string) error { return nil }
 
 type authClientRepository struct{ client domain.Client }
 
@@ -109,6 +115,10 @@ func (r authClientRepository) ByID(_ context.Context, id string) (domain.Client,
 		return domain.Client{}, store.ErrNotFound
 	}
 	return r.client, nil
+}
+
+func (r authClientRepository) List(context.Context) ([]domain.Client, error) {
+	return []domain.Client{r.client}, nil
 }
 
 func (r authClientRepository) SetStatus(context.Context, string, domain.ClientStatus) error {
@@ -123,6 +133,10 @@ func (r authProxyRepository) Create(context.Context, domain.Proxy) error { retur
 
 func (r authProxyRepository) ByID(context.Context, string) (domain.Proxy, error) {
 	return domain.Proxy{}, store.ErrNotFound
+}
+
+func (r authProxyRepository) List(context.Context) ([]domain.Proxy, error) {
+	return r.proxies, nil
 }
 
 func (r authProxyRepository) ByClientID(_ context.Context, clientID string) ([]domain.Proxy, error) {
@@ -163,6 +177,10 @@ func (r authProxyRepository) ByHTTPSHost(context.Context, string) (domain.Proxy,
 
 func (r authProxyRepository) SetStatus(context.Context, string, domain.ProxyStatus) error { return nil }
 
+func (r authProxyRepository) Update(context.Context, domain.Proxy) error { return nil }
+
+func (r authProxyRepository) Delete(context.Context, string) error { return nil }
+
 type authStatsRepository struct{}
 
 type authCertificateRepository struct{}
@@ -177,6 +195,10 @@ func (authCertificateRepository) ByProxyID(context.Context, string) (domain.Mana
 
 func (authCertificateRepository) ByHost(context.Context, string) (domain.ManagedCertificate, error) {
 	return domain.ManagedCertificate{}, store.ErrNotFound
+}
+
+func (authCertificateRepository) List(context.Context) ([]domain.ManagedCertificate, error) {
+	return nil, nil
 }
 
 func (authCertificateRepository) ListRenewable(context.Context, time.Time) ([]domain.ManagedCertificate, error) {

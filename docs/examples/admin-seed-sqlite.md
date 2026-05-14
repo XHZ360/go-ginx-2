@@ -42,6 +42,20 @@ go run ./cmd/goginx-admin create-tcp-proxy `
   -target-port 22
 ```
 
+Create a UDP proxy:
+
+```powershell
+go run ./cmd/goginx-admin create-udp-proxy `
+  -db ./.tmp/go-ginx.db `
+  -id udp-1 `
+  -user user-1 `
+  -client client-1 `
+  -name dns `
+  -port 10053 `
+  -target-host 127.0.0.1 `
+  -target-port 53
+```
+
 Create an HTTP proxy:
 
 ```powershell
@@ -56,4 +70,34 @@ go run ./cmd/goginx-admin create-http-proxy `
   -target-port 8080
 ```
 
-The current server/client binaries do not yet consume this database in daemon mode. The database is used by package-level runtime tests today and will become the seed source for the daemon wiring step.
+Create an HTTPS passthrough proxy:
+
+```powershell
+go run ./cmd/goginx-admin create-https-proxy `
+  -db ./.tmp/go-ginx.db `
+  -id secure-1 `
+  -user user-1 `
+  -client client-1 `
+  -name secure `
+  -host secure.example.com `
+  -target-host 127.0.0.1 `
+  -target-port 8443
+```
+
+Create an HTTPS termination proxy. The public server selects this certificate by SNI, terminates TLS, and forwards the decrypted HTTP request to the configured local HTTP target:
+
+```powershell
+go run ./cmd/goginx-admin create-https-proxy `
+  -db ./.tmp/go-ginx.db `
+  -id secure-term-1 `
+  -user user-1 `
+  -client client-1 `
+  -name secure-term `
+  -host term.example.com `
+  -target-host 127.0.0.1 `
+  -target-port 8080 `
+  -cert-file data/certs/term.crt `
+  -key-file data/certs/term.key
+```
+
+Daemon mode now consumes this seeded SQLite database. Start `goginx-server` with a `sqlite_path` that points at this file, then start `goginx-client` with the seeded `client_id` and credential.

@@ -146,6 +146,20 @@ func (manager *Manager) Latest(clientID string) (Session, bool) {
 	return session, true
 }
 
+func (manager *Manager) SnapshotLatest() []Session {
+	manager.mu.RLock()
+	defer manager.mu.RUnlock()
+	sessions := make([]Session, 0, len(manager.latestByClient))
+	for _, sessionID := range manager.latestByClient {
+		session, ok := manager.byID[sessionID]
+		if !ok || session.ReplacedAt != nil || session.ClosedAt != nil {
+			continue
+		}
+		sessions = append(sessions, session)
+	}
+	return sessions
+}
+
 func (manager *Manager) MarkExpired(timeout time.Duration) []Session {
 	manager.mu.Lock()
 	defer manager.mu.Unlock()

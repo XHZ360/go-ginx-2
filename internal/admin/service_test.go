@@ -135,6 +135,86 @@ func TestServiceIssuesRenewsAndReportsManagedCertificate(t *testing.T) {
 	}
 }
 
+func TestServiceDisablesUserAndSetsPassword(t *testing.T) {
+	ctx := context.Background()
+	db := openTestStore(t)
+	service := Service{Store: db}
+	user, err := service.CreateUser(ctx, CreateUserInput{ID: "user-1", Username: "alice", Password: "secret-1", ActorID: "admin-1"})
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	if user.PasswordHash == "" || !domain.CheckPasswordHash("secret-1", user.PasswordHash) {
+		t.Fatalf("expected password hash on created user: %+v", user)
+	}
+	if err := service.DisableUser(ctx, user.ID, "admin-1"); err != nil {
+		t.Fatalf("disable user: %v", err)
+	}
+	disabled, err := db.Users().ByID(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("reload disabled user: %v", err)
+	}
+	if disabled.Status != domain.UserDisabled {
+		t.Fatalf("expected disabled user, got %+v", disabled)
+	}
+	if err := service.SetUserPassword(ctx, user.ID, "secret-2", "admin-1"); err != nil {
+		t.Fatalf("set user password: %v", err)
+	}
+	updated, err := db.Users().ByID(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("reload password user: %v", err)
+	}
+	if !domain.CheckPasswordHash("secret-2", updated.PasswordHash) {
+		t.Fatalf("expected updated password hash: %+v", updated)
+	}
+}
+
+func TestServiceEnforcesProxyLifecycleRules(t *testing.T) {
+	ctx := context.Background()
+	db := openTestStore(t)
+	service := Service{Store: db}
+	user, err := service.CreateUser(ctx, CreateUserInput{ID: "user-1", Username: "alice", ActorID: "admin-1"})
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	client, err := service.CreateClient(ctx, CreateClientInput{ID: "client-1", UserID: user.ID, Name: "home", Credential: "secret", ActorID: "admin-1"})
+	if err != nil {
+		t.Fatalf("create client: %v", err)
+	}
+	proxy, err := service.CreateProxy(ctx, CreateProxyInput{ID: "proxy-1", UserID: user.ID, ClientID: client.ID, Name: "web", Type: domain.ProxyHTTP, EntryHost: "app.example.com", TargetHost: "127.0.0.1", TargetPort: 8080, ActorID: "admin-1"})
+	if err != nil {
+		t.Fatalf("create proxy: %v", err)
+	}
+	if _, err := service.UpdateProxy(ctx, UpdateProxyInput{ID: proxy.ID, Type: domain.ProxyTCP, Name: proxy.Name, EntryPort: 10022, TargetHost: proxy.TargetHost, TargetPort: 22, ActorID: "admin-1"}); err == nil {
+		t.Fatal("expected immutable proxy type error")
+	}
+	updated, err := service.UpdateProxy(ctx, UpdateProxyInput{ID: proxy.ID, Type: proxy.Type, Name: "web-updated", EntryHost: "api.example.com", TargetHost: "127.0.0.1", TargetPort: 8081, ActorID: "admin-1"})
+	if err != nil {
+		t.Fatalf("update proxy: %v", err)
+	}
+	if updated.Name != "web-updated" || updated.EntryHost != "api.example.com" || updated.TargetPort != 8081 {
+		t.Fatalf("unexpected updated proxy: %+v", updated)
+	}
+	if err := service.DeleteProxy(ctx, proxy.ID, "admin-1"); err == nil {
+		t.Fatal("expected delete-before-disable rejection")
+	}
+	if err := service.DisableProxy(ctx, proxy.ID, "admin-1"); err != nil {
+		t.Fatalf("disable proxy: %v", err)
+	}
+	disabled, err := db.Proxies().ByID(ctx, proxy.ID)
+	if err != nil {
+		t.Fatalf("reload disabled proxy: %v", err)
+	}
+	if disabled.Status != domain.ProxyDisabled {
+		t.Fatalf("expected disabled proxy, got %+v", disabled)
+	}
+	if err := service.DeleteProxy(ctx, proxy.ID, "admin-1"); err != nil {
+		t.Fatalf("delete proxy: %v", err)
+	}
+	if _, err := db.Proxies().ByID(ctx, proxy.ID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("expected deleted proxy not found, got %v", err)
+	}
+}
+
 type adminFakeDNSProvider struct{}
 
 func (adminFakeDNSProvider) Present(context.Context, string, string) error { return nil }

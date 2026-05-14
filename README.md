@@ -2,7 +2,7 @@
 
 This is the new implementation target for the Simp-Frp/go-ginx design in `../docs`.
 
-The repository currently contains a milestone-one MVP foundation. It is not a complete production daemon yet, but the core control plane, TCP/HTTP proxy paths, and daemon startup helpers are implemented and covered by local tests.
+The repository currently contains a milestone-one runtime plus a first deployment baseline. It is not yet a complete production platform, but the core control plane, TCP/UDP/HTTP/HTTPS proxy paths, daemon startup helpers, reconnect/restart recovery, and a reproducible bundle plus `systemd` service template workflow are implemented and covered by local tests.
 
 ## Current Capabilities
 
@@ -19,9 +19,11 @@ The repository currently contains a milestone-one MVP foundation. It is not a co
 - HTTPS proxy MVP using SNI passthrough, file-backed TLS termination, or managed ACME DNS-01 TLS termination with SNI certificate selection over QUIC streams or framed TCP+TLS substreams.
 - Non-interactive admin setup CLI for milestone-one resource seeding.
 - Admin CLI commands for issuing, renewing, and inspecting managed HTTPS certificates.
-- Restart-surviving proxy stats for TCP and HTTP traffic, backed by SQLite flushes.
+- Restart-surviving proxy stats for TCP, UDP, and HTTP traffic, backed by SQLite flushes.
 - `goginx-server` starts SQLite, QUIC control, optional TCP+TLS fallback, TCP entries, HTTP entry, and optional HTTPS entry for SNI passthrough or file-backed TLS termination from config.
-- `goginx-client` authenticates, reads proxy snapshots, sends heartbeats, and serves proxy streams.
+- `goginx-client` authenticates, reads proxy snapshots, sends heartbeats, serves proxy streams, and retries transient control-plane failures with reconnect backoff.
+- `goginx-admin build-deploy-bundle` creates a reproducible deployment bundle with sample config, environment examples, and `systemd` service templates.
+- A first administrator-only management surface is available through protected HTTP Basic Auth, GraphQL, and simple server-rendered UI views for dashboard, users, clients, proxies, managed certificates, and recent audit events.
 
 ## Commands
 
@@ -55,6 +57,13 @@ go run ./cmd/goginx-admin create-udp-proxy -db ./.tmp/go-ginx.db -id udp-1 -user
 go run ./cmd/goginx-admin create-http-proxy -db ./.tmp/go-ginx.db -id web-1 -user user-1 -client client-1 -name web -host app.example.com -target-host 127.0.0.1 -target-port 8080
 go run ./cmd/goginx-admin create-https-proxy -db ./.tmp/go-ginx.db -id secure-1 -user user-1 -client client-1 -name secure -host secure.example.com -target-host 127.0.0.1 -target-port 8443
 go run ./cmd/goginx-admin create-https-proxy -db ./.tmp/go-ginx.db -id secure-term-1 -user user-1 -client client-1 -name secure-term -host term.example.com -target-host 127.0.0.1 -target-port 8080 -cert-file data/certs/term.crt -key-file data/certs/term.key
+```
+
+Build the first supported deployment bundle:
+
+```powershell
+$env:CGO_ENABLED="0"
+go run ./cmd/goginx-admin build-deploy-bundle -output ./.tmp/linux-systemd-bundle -goos linux -goarch amd64 -install-root /opt/go-ginx
 ```
 
 More detailed flows are documented in `docs/milestone-one-e2e.md`, `docs/daemon-runtime.md`, and `docs/examples/admin-seed-sqlite.md`.
@@ -100,7 +109,7 @@ go run ./cmd/goginx-admin renew-managed-certificate -db ./.tmp/go-ginx.db -proxy
 go run ./cmd/goginx-admin managed-certificate-status -db ./.tmp/go-ginx.db -proxy secure-1 -certificate-dir data/certs -acme-account-email ops@example.com -acme-terms-accepted
 ```
 
-Client config requires the server CA used to verify the control certificate. `server_tls_address` is optional; when set and both protocols are allowed, the client falls back from QUIC to TCP+TLS for the control channel and framed proxy substreams. TCP+TLS fallback uses one TCP connection, so multiplexed streams can experience normal TCP head-of-line effects.
+Client config requires the server CA used to verify the control certificate. `server_tls_address` is optional; when set and both protocols are allowed, the client falls back from QUIC to TCP+TLS for the control channel and framed proxy substreams. TCP+TLS fallback uses one TCP connection, so multiplexed streams can experience normal TCP head-of-line effects. `reconnect` controls client retry backoff after transient dial or runtime failures.
 
 ```json
 {
@@ -109,16 +118,45 @@ Client config requires the server CA used to verify the control certificate. `se
   "server_name": "localhost",
   "server_ca_file": "data/certs/ca.crt",
   "client_id": "client-1",
-  "credential": "secret"
+  "credential": "secret",
+  "allowed_protocols": ["quic", "tcp_tls"],
+  "reconnect": {
+    "initial_delay": 1000000000,
+    "max_delay": 30000000000
+  }
 }
 ```
 
+Administrator management access is optional and requires an additional server setting pointing at a protected credential file:
+
+```json
+{
+  "admin_listen": "127.0.0.1:8080",
+  "admin_credentials_file": "config/admin-creds.json"
+}
+```
+
+The credentials file stores administrator usernames and bcrypt password hashes:
+
+```json
+{
+  "administrators": [
+    {
+      "username": "admin",
+      "password_hash": "$2a$10$replace.with.bcrypt.hash"
+    }
+  ]
+}
+```
+
+When enabled, the admin surface is protected by HTTP Basic Auth and is expected to run behind TLS. V1 management scope is administrator-only and currently includes a cumulative dashboard summary, user management, client list/detail, full reverse-proxy CRUD plus lifecycle actions, managed-certificate status/issue/renew, and a minimal recent audit list. Runtime-oriented views refresh by 5-second polling instead of realtime subscriptions.
+
 ## Current Limitations
 
-- Daemon startup is wired, but production packaging and service supervision are not implemented yet.
-- TCP and HTTP proxy behavior is covered through package tests and external process smoke tests.
-- Forward proxy, quotas, rate limiting, GraphQL, admin UI, alerts, wildcard/platform-domain ownership verification, and production deployment docs are not implemented yet.
+- The first supported deployment model is a reproducible bundle plus `systemd` service templates; native installers and non-`systemd` supervisors are not implemented yet.
+- TCP, UDP, HTTP, and HTTPS proxy behavior is covered through package tests and external process smoke tests.
+- Forward proxy, quotas, rate limiting, ordinary-user self-service, alerts, backup/restore tooling, capacity validation, wildcard/platform-domain ownership verification, and broader production operations docs are not implemented yet.
 
 ## Next Steps
 
-1. Continue closing product gaps: ACME/renewal, limits, admin API/UI, and production operations.
+1. Continue closing product gaps: limits, admin API/UI, backup/restore, capacity validation, and broader production operations.

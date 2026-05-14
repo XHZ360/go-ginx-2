@@ -27,6 +27,18 @@ func main() {
 		log.Fatalf("start server: %v", err)
 	}
 	defer func() { _ = runtime.Close() }()
-	log.Printf("go-ginx server started: control_quic=%s http=%s tcp_entries=%d", runtime.ControlListener.Addr(), runtime.HTTPServer.Addr(), len(runtime.TCPListeners))
+	adminAddress := "disabled"
+	if runtime.AdminServer != nil {
+		adminAddress = runtime.AdminServer.Addr().String()
+	}
+	controlTLSAddress := "disabled"
+	if runtime.ControlTLSListener != nil {
+		controlTLSAddress = runtime.ControlTLSListener.Addr().String()
+	}
+	httpsAddress := "disabled"
+	if runtime.HTTPSListener != nil {
+		httpsAddress = runtime.HTTPSListener.Addr().String()
+	}
+	log.Printf("go-ginx server started: admin=%s control_quic=%s control_tls=%s http=%s https=%s tcp_entries=%d udp_entries=%d", adminAddress, runtime.ControlListener.Addr(), controlTLSAddress, runtime.HTTPServer.Addr(), httpsAddress, len(runtime.TCPListeners), len(runtime.UDPListeners))
 	<-ctx.Done()
 }

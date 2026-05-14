@@ -5,10 +5,13 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
+	"runtime"
 	"time"
 
 	"github.com/simp-frp/go-ginx-2/internal/admin"
 	"github.com/simp-frp/go-ginx-2/internal/certmanager"
+	"github.com/simp-frp/go-ginx-2/internal/deploy"
 	"github.com/simp-frp/go-ginx-2/internal/domain"
 	httpsproxy "github.com/simp-frp/go-ginx-2/internal/proxy/https"
 	"github.com/simp-frp/go-ginx-2/internal/store/sqlite"
@@ -34,7 +37,7 @@ func main() {
 
 func run(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: goginx-admin <create-user|create-client|create-tcp-proxy|create-udp-proxy|create-http-proxy|create-https-proxy|issue-managed-certificate|renew-managed-certificate|managed-certificate-status> [flags]")
+		return fmt.Errorf("usage: goginx-admin <create-user|create-client|create-tcp-proxy|create-udp-proxy|create-http-proxy|create-https-proxy|issue-managed-certificate|renew-managed-certificate|managed-certificate-status|build-deploy-bundle> [flags]")
 	}
 	command := args[0]
 	flags := flag.NewFlagSet(command, flag.ContinueOnError)
@@ -94,8 +97,43 @@ func run(args []string) error {
 		return manageCertificate(flags, args[1:], "renew")
 	case "managed-certificate-status":
 		return manageCertificate(flags, args[1:], "status")
+	case "build-deploy-bundle":
+		return buildDeployBundle(flags, args[1:])
 	default:
 		return fmt.Errorf("unknown command %q", command)
+	}
+}
+
+func buildDeployBundle(flags *flag.FlagSet, args []string) error {
+	outputDir := flags.String("output", filepath.Join("dist", runtime.GOOS+"-"+runtime.GOARCH+"-bundle"), "bundle output directory")
+	goos := flags.String("goos", runtime.GOOS, "target GOOS")
+	goarch := flags.String("goarch", runtime.GOARCH, "target GOARCH")
+	installRoot := flags.String("install-root", "/opt/go-ginx", "install root rendered into service templates")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	repoRoot, err := os.Getwd()
+	if err != nil {
+		return err
+	}
+	repoRoot, err = findRepoRoot(repoRoot)
+	if err != nil {
+		return err
+	}
+	return deploy.BuildBundle(context.Background(), deploy.BundleOptions{RepoRoot: repoRoot, OutputDir: *outputDir, GoOS: *goos, GoArch: *goarch, InstallRoot: *installRoot})
+}
+
+func findRepoRoot(start string) (string, error) {
+	current := filepath.Clean(start)
+	for {
+		if _, err := os.Stat(filepath.Join(current, "go.mod")); err == nil {
+			return current, nil
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return "", fmt.Errorf("go.mod not found from %s", start)
+		}
+		current = parent
 	}
 }
 

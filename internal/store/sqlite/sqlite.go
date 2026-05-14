@@ -50,7 +50,10 @@ func (s *Store) migrate(ctx context.Context) error {
 	if _, err := s.db.ExecContext(ctx, schema); err != nil {
 		return err
 	}
-	return addProxyCertificateColumns(ctx, s.db)
+	if err := addProxyCertificateColumns(ctx, s.db); err != nil {
+		return err
+	}
+	return addUserPasswordColumn(ctx, s.db)
 }
 
 type userRepository struct{ db *sql.DB }
@@ -66,20 +69,45 @@ func (r userRepository) Create(ctx context.Context, user domain.User) error {
 	if user.UpdatedAt.IsZero() {
 		user.UpdatedAt = now
 	}
-	_, err := r.db.ExecContext(ctx, `insert into users (id, username, role, status, created_at, updated_at) values (?, ?, ?, ?, ?, ?)`, user.ID, user.Username, user.Role, user.Status, user.CreatedAt, user.UpdatedAt)
+	_, err := r.db.ExecContext(ctx, `insert into users (id, username, password_hash, role, status, created_at, updated_at) values (?, ?, ?, ?, ?, ?, ?)`, user.ID, user.Username, user.PasswordHash, user.Role, user.Status, user.CreatedAt, user.UpdatedAt)
 	return translateError(err)
 }
 
 func (r userRepository) ByID(ctx context.Context, id string) (domain.User, error) {
-	return scanUser(r.db.QueryRowContext(ctx, `select id, username, role, status, created_at, updated_at from users where id = ?`, id))
+	return scanUser(r.db.QueryRowContext(ctx, `select id, username, password_hash, role, status, created_at, updated_at from users where id = ?`, id))
 }
 
 func (r userRepository) ByUsername(ctx context.Context, username string) (domain.User, error) {
-	return scanUser(r.db.QueryRowContext(ctx, `select id, username, role, status, created_at, updated_at from users where username = ?`, username))
+	return scanUser(r.db.QueryRowContext(ctx, `select id, username, password_hash, role, status, created_at, updated_at from users where username = ?`, username))
+}
+
+func (r userRepository) List(ctx context.Context) ([]domain.User, error) {
+	rows, err := r.db.QueryContext(ctx, `select id, username, password_hash, role, status, created_at, updated_at from users order by created_at, id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	users := make([]domain.User, 0)
+	for rows.Next() {
+		user, err := scanUserRows(rows)
+		if err != nil {
+			return nil, err
+		}
+		users = append(users, user)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return users, nil
 }
 
 func (r userRepository) SetStatus(ctx context.Context, id string, status domain.UserStatus) error {
 	result, err := r.db.ExecContext(ctx, `update users set status = ?, updated_at = ? where id = ?`, status, time.Now().UTC(), id)
+	return resultError(result, err)
+}
+
+func (r userRepository) SetPassword(ctx context.Context, id string, passwordHash string) error {
+	result, err := r.db.ExecContext(ctx, `update users set password_hash = ?, updated_at = ? where id = ?`, passwordHash, time.Now().UTC(), id)
 	return resultError(result, err)
 }
 
@@ -102,6 +130,26 @@ func (r clientRepository) Create(ctx context.Context, client domain.Client) erro
 
 func (r clientRepository) ByID(ctx context.Context, id string) (domain.Client, error) {
 	return scanClient(r.db.QueryRowContext(ctx, `select id, user_id, name, status, credential_hash, version, last_online_at, last_offline_at, created_at, updated_at from clients where id = ?`, id))
+}
+
+func (r clientRepository) List(ctx context.Context) ([]domain.Client, error) {
+	rows, err := r.db.QueryContext(ctx, `select id, user_id, name, status, credential_hash, version, last_online_at, last_offline_at, created_at, updated_at from clients order by created_at, id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	clients := make([]domain.Client, 0)
+	for rows.Next() {
+		client, err := scanClientRows(rows)
+		if err != nil {
+			return nil, err
+		}
+		clients = append(clients, client)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return clients, nil
 }
 
 func (r clientRepository) SetStatus(ctx context.Context, id string, status domain.ClientStatus) error {
@@ -136,6 +184,26 @@ func (r proxyRepository) Create(ctx context.Context, proxy domain.Proxy) error {
 
 func (r proxyRepository) ByID(ctx context.Context, id string) (domain.Proxy, error) {
 	return scanProxy(r.db.QueryRowContext(ctx, `select id, user_id, client_id, name, type, status, entry_host, entry_port, target_host, target_port, cert_file, key_file, description, created_at, updated_at from proxies where id = ?`, id))
+}
+
+func (r proxyRepository) List(ctx context.Context) ([]domain.Proxy, error) {
+	rows, err := r.db.QueryContext(ctx, `select id, user_id, client_id, name, type, status, entry_host, entry_port, target_host, target_port, cert_file, key_file, description, created_at, updated_at from proxies order by created_at, id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	proxies := make([]domain.Proxy, 0)
+	for rows.Next() {
+		proxy, err := scanProxyRows(rows)
+		if err != nil {
+			return nil, err
+		}
+		proxies = append(proxies, proxy)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return proxies, nil
 }
 
 func (r proxyRepository) ByClientID(ctx context.Context, clientID string) ([]domain.Proxy, error) {
@@ -201,6 +269,19 @@ func (r proxyRepository) SetStatus(ctx context.Context, id string, status domain
 	return resultError(result, err)
 }
 
+func (r proxyRepository) Update(ctx context.Context, proxy domain.Proxy) error {
+	if err := proxy.Validate(); err != nil {
+		return err
+	}
+	result, err := r.db.ExecContext(ctx, `update proxies set name = ?, status = ?, entry_host = ?, entry_port = ?, target_host = ?, target_port = ?, cert_file = ?, key_file = ?, description = ?, updated_at = ? where id = ?`, proxy.Name, proxy.Status, proxy.EntryHost, proxy.EntryPort, proxy.TargetHost, proxy.TargetPort, proxy.CertFile, proxy.KeyFile, proxy.Description, time.Now().UTC(), proxy.ID)
+	return resultError(result, err)
+}
+
+func (r proxyRepository) Delete(ctx context.Context, id string) error {
+	result, err := r.db.ExecContext(ctx, `delete from proxies where id = ?`, id)
+	return resultError(result, err)
+}
+
 type certificateRepository struct{ db *sql.DB }
 
 func (r certificateRepository) Create(ctx context.Context, certificate domain.ManagedCertificate) error {
@@ -224,6 +305,26 @@ func (r certificateRepository) ByProxyID(ctx context.Context, proxyID string) (d
 
 func (r certificateRepository) ByHost(ctx context.Context, host string) (domain.ManagedCertificate, error) {
 	return scanManagedCertificate(r.db.QueryRowContext(ctx, managedCertificateSelect+` where lower(host) = lower(?)`, host))
+}
+
+func (r certificateRepository) List(ctx context.Context) ([]domain.ManagedCertificate, error) {
+	rows, err := r.db.QueryContext(ctx, managedCertificateSelect+` order by host, id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	certificates := make([]domain.ManagedCertificate, 0)
+	for rows.Next() {
+		certificate, err := scanManagedCertificateRows(rows)
+		if err != nil {
+			return nil, err
+		}
+		certificates = append(certificates, certificate)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return certificates, nil
 }
 
 func (r certificateRepository) ListRenewable(ctx context.Context, before time.Time) ([]domain.ManagedCertificate, error) {
@@ -292,6 +393,29 @@ func (r auditRepository) Create(ctx context.Context, event domain.AuditEvent) er
 	return translateError(err)
 }
 
+func (r auditRepository) ListRecent(ctx context.Context, limit int) ([]domain.AuditEvent, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := r.db.QueryContext(ctx, `select id, actor_user_id, resource_type, resource_id, action, result, source_ip, error_summary, created_at from audit_events order by created_at desc, id desc limit ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	events := make([]domain.AuditEvent, 0)
+	for rows.Next() {
+		event, err := scanAuditEventRows(rows)
+		if err != nil {
+			return nil, err
+		}
+		events = append(events, event)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return events, nil
+}
+
 type statsRepository struct{ db *sql.DB }
 
 func (r statsRepository) Save(ctx context.Context, snapshots []store.ProxyStats) error {
@@ -358,14 +482,26 @@ func (r statsRepository) List(ctx context.Context) ([]store.ProxyStats, error) {
 
 func scanUser(row *sql.Row) (domain.User, error) {
 	var user domain.User
-	err := row.Scan(&user.ID, &user.Username, &user.Role, &user.Status, &user.CreatedAt, &user.UpdatedAt)
+	err := row.Scan(&user.ID, &user.Username, &user.PasswordHash, &user.Role, &user.Status, &user.CreatedAt, &user.UpdatedAt)
 	return user, translateError(err)
+}
+
+func scanUserRows(rows *sql.Rows) (domain.User, error) {
+	var user domain.User
+	err := rows.Scan(&user.ID, &user.Username, &user.PasswordHash, &user.Role, &user.Status, &user.CreatedAt, &user.UpdatedAt)
+	return user, err
 }
 
 func scanClient(row *sql.Row) (domain.Client, error) {
 	var client domain.Client
 	err := row.Scan(&client.ID, &client.UserID, &client.Name, &client.Status, &client.CredentialHash, &client.Version, &client.LastOnlineAt, &client.LastOfflineAt, &client.CreatedAt, &client.UpdatedAt)
 	return client, translateError(err)
+}
+
+func scanClientRows(rows *sql.Rows) (domain.Client, error) {
+	var client domain.Client
+	err := rows.Scan(&client.ID, &client.UserID, &client.Name, &client.Status, &client.CredentialHash, &client.Version, &client.LastOnlineAt, &client.LastOfflineAt, &client.CreatedAt, &client.UpdatedAt)
+	return client, err
 }
 
 func scanProxy(row *sql.Row) (domain.Proxy, error) {
@@ -414,11 +550,21 @@ func applyManagedCertificateTimes(certificate *domain.ManagedCertificate, notAft
 	}
 }
 
+func scanAuditEventRows(rows *sql.Rows) (domain.AuditEvent, error) {
+	var event domain.AuditEvent
+	err := rows.Scan(&event.ID, &event.ActorUserID, &event.ResourceType, &event.ResourceID, &event.Action, &event.Result, &event.SourceIP, &event.ErrorSummary, &event.CreatedAt)
+	return event, err
+}
+
 func addProxyCertificateColumns(ctx context.Context, db *sql.DB) error {
 	if err := addColumnIfMissing(ctx, db, "proxies", "cert_file", "text not null default ''"); err != nil {
 		return err
 	}
 	return addColumnIfMissing(ctx, db, "proxies", "key_file", "text not null default ''")
+}
+
+func addUserPasswordColumn(ctx context.Context, db *sql.DB) error {
+	return addColumnIfMissing(ctx, db, "users", "password_hash", "text not null default ''")
 }
 
 func addColumnIfMissing(ctx context.Context, db *sql.DB, table string, column string, definition string) error {
@@ -482,6 +628,7 @@ pragma foreign_keys = on;
 create table if not exists users (
     id text primary key,
     username text not null unique,
+    password_hash text not null default '',
     role text not null,
     status text not null,
     created_at timestamp not null,

@@ -7,11 +7,21 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"slices"
 	"time"
 
 	"github.com/simp-frp/go-ginx-2/internal/config"
 	"github.com/simp-frp/go-ginx-2/internal/control"
+	"github.com/simp-frp/go-ginx-2/internal/domain"
 )
+
+type permanentClientError struct {
+	err error
+}
+
+func (err permanentClientError) Error() string { return err.err.Error() }
+
+func (err permanentClientError) Unwrap() error { return err.err }
 
 func RunClient(ctx context.Context, cfg config.Client) error {
 	if err := cfg.Validate(); err != nil {
@@ -21,17 +31,38 @@ func RunClient(ctx context.Context, cfg config.Client) error {
 	if err != nil {
 		return err
 	}
-	client, response, err := control.DialAndAuthenticate(ctx, cfg.ServerAddress, tlsConfig, nil, control.NewAuthRequest(cfg.ClientID, cfg.Credential, cfg.AllowedProtocols))
+	delay := cfg.Reconnect.InitialDelay
+	for {
+		connected, err := runClientSession(ctx, cfg, tlsConfig)
+		if err == nil || errors.Is(err, context.Canceled) {
+			return nil
+		}
+		if connected {
+			delay = cfg.Reconnect.InitialDelay
+		}
+		var permanent permanentClientError
+		if errors.As(err, &permanent) {
+			return permanent
+		}
+		if err := waitReconnect(ctx, delay); err != nil {
+			return nil
+		}
+		delay = nextReconnectDelay(delay, cfg.Reconnect.MaxDelay)
+	}
+}
+
+func runClientSession(ctx context.Context, cfg config.Client, tlsConfig *tls.Config) (bool, error) {
+	client, response, err := dialControl(ctx, cfg, tlsConfig)
 	if err != nil {
-		return fmt.Errorf("dial control server: %w", err)
+		return false, fmt.Errorf("dial control server: %w", err)
 	}
 	if !response.Accepted {
-		return fmt.Errorf("authentication rejected: %s", response.Reason)
+		return false, permanentClientError{err: fmt.Errorf("authentication rejected: %s", response.Reason)}
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 	snapshot, err := client.ReadProxySnapshot()
 	if err != nil {
-		return fmt.Errorf("read proxy snapshot: %w", err)
+		return true, fmt.Errorf("read proxy snapshot: %w", err)
 	}
 	heartbeatDone := make(chan error, 1)
 	go func() { heartbeatDone <- sendHeartbeats(ctx, client, response, cfg.ClientID, len(snapshot.Proxies)) }()
@@ -39,18 +70,75 @@ func RunClient(ctx context.Context, cfg config.Client) error {
 	go func() { serveDone <- client.ServeProxyStreams(ctx) }()
 	select {
 	case <-ctx.Done():
-		return nil
+		_ = client.Close()
+		return true, nil
 	case err := <-heartbeatDone:
+		_ = client.Close()
 		if errors.Is(err, context.Canceled) {
-			return nil
+			return true, nil
 		}
-		return err
+		return true, err
 	case err := <-serveDone:
+		_ = client.Close()
 		if errors.Is(err, context.Canceled) {
-			return nil
+			return true, nil
 		}
-		return err
+		return true, err
 	}
+}
+
+func waitReconnect(ctx context.Context, delay time.Duration) error {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+func nextReconnectDelay(current time.Duration, maxDelay time.Duration) time.Duration {
+	if current >= maxDelay {
+		return maxDelay
+	}
+	next := current * 2
+	if next < current || next > maxDelay {
+		return maxDelay
+	}
+	return next
+}
+
+func dialControl(ctx context.Context, cfg config.Client, tlsConfig *tls.Config) (*control.ClientConn, control.AuthResponse, error) {
+	var quicErr error
+	if slices.Contains(cfg.AllowedProtocols, domain.ProtocolQUIC) {
+		quicCtx := ctx
+		cancel := func() {}
+		if cfg.ServerTLSAddress != "" && slices.Contains(cfg.AllowedProtocols, domain.ProtocolTCPTLS) {
+			quicCtx, cancel = context.WithTimeout(ctx, 500*time.Millisecond)
+		}
+		client, response, err := control.DialAndAuthenticate(quicCtx, cfg.ServerAddress, tlsConfig, nil, control.NewAuthRequest(cfg.ClientID, cfg.Credential, []domain.Protocol{domain.ProtocolQUIC}))
+		cancel()
+		if err == nil || response.Reason != "" {
+			return client, response, err
+		}
+		quicErr = err
+	}
+	if slices.Contains(cfg.AllowedProtocols, domain.ProtocolTCPTLS) {
+		address := cfg.ServerTLSAddress
+		if address == "" {
+			address = cfg.ServerAddress
+		}
+		client, response, err := control.DialTLSAndAuthenticate(ctx, address, tlsConfig, control.NewAuthRequest(cfg.ClientID, cfg.Credential, []domain.Protocol{domain.ProtocolTCPTLS}))
+		if err == nil || quicErr == nil {
+			return client, response, err
+		}
+		return client, response, fmt.Errorf("quic failed: %w; tcp tls failed: %w", quicErr, err)
+	}
+	if quicErr != nil {
+		return nil, control.AuthResponse{}, quicErr
+	}
+	return nil, control.AuthResponse{}, errors.New("no supported control protocol configured")
 }
 
 func sendHeartbeats(ctx context.Context, client *control.ClientConn, response control.AuthResponse, clientID string, activeProxies int) error {

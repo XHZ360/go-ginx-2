@@ -8,6 +8,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/simp-frp/go-ginx-2/internal/admin"
+	"github.com/simp-frp/go-ginx-2/internal/adminapi"
+	"github.com/simp-frp/go-ginx-2/internal/adminquery"
 	"github.com/simp-frp/go-ginx-2/internal/certmanager"
 	"github.com/simp-frp/go-ginx-2/internal/config"
 	"github.com/simp-frp/go-ginx-2/internal/control"
@@ -40,6 +43,7 @@ type ServerRuntime struct {
 	persistentStats    *stats.Persistent
 	ControlListener    *control.Listener
 	ControlTLSListener *control.TLSListener
+	AdminServer        *adminapi.Server
 	TCPListeners       []*tcpproxy.Listener
 	UDPListeners       []*udpproxy.Listener
 	HTTPServer         *httpproxy.Server
@@ -89,6 +93,24 @@ func startServerWithStore(parent context.Context, cfg config.Server, db store.St
 	}
 	runtime := &ServerRuntime{Store: db, Sessions: sessions, Stats: memoryStats, persistentStats: persistentStats, ControlListener: controlListener, cancel: cancel}
 	go func() { _ = controlListener.Serve(runtimeCtx) }()
+	if cfg.AdminCredentialsFile != "" {
+		adminService := admin.Service{Store: db}
+		if cfg.ACMEEnabled {
+			certificateService, err := managedCertificateService(cfg, db)
+			if err != nil {
+				_ = runtime.Close()
+				return nil, err
+			}
+			adminService.Certificates = certificateService
+		}
+		adminServer, err := adminapi.Listen(adminapi.Entry{ListenAddress: cfg.AdminListen, AdminCredentialsFile: cfg.AdminCredentialsFile, Query: adminquery.Service{Store: db, Sessions: sessions, Stats: memoryStats}, Commands: adminService})
+		if err != nil {
+			_ = runtime.Close()
+			return nil, fmt.Errorf("listen admin api: %w", err)
+		}
+		runtime.AdminServer = adminServer
+		go func() { _ = adminServer.Serve(runtimeCtx) }()
+	}
 	if cfg.ControlTLSListen != "" {
 		controlTLSListener, err := control.ListenTLSAddr(cfg.ControlTLSListen, control.Server{
 			Authenticator: control.Authenticator{Store: db, AllowedProtocols: []domain.Protocol{domain.ProtocolTCPTLS}},
@@ -218,6 +240,9 @@ func (runtime *ServerRuntime) Close() error {
 		}
 		if runtime.ControlTLSListener != nil {
 			closeErr = errors.Join(closeErr, runtime.ControlTLSListener.Close())
+		}
+		if runtime.AdminServer != nil {
+			closeErr = errors.Join(closeErr, runtime.AdminServer.Close())
 		}
 		for _, listener := range runtime.TCPListeners {
 			closeErr = errors.Join(closeErr, listener.Close())

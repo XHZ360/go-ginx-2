@@ -8,7 +8,9 @@ import (
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"math/big"
+	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -113,6 +115,38 @@ func TestRunManagesCertificates(t *testing.T) {
 	if certificate.CertFile == "" || certificate.KeyFile == "" || certificate.Status == "" {
 		t.Fatalf("unexpected certificate metadata: %+v", certificate)
 	}
+}
+
+func TestRunBuildsDeployBundle(t *testing.T) {
+	outputDir := filepath.Join(t.TempDir(), "bundle")
+	if err := run([]string{"build-deploy-bundle", "-output", outputDir, "-goos", runtime.GOOS, "-goarch", runtime.GOARCH, "-install-root", "/opt/go-ginx"}); err != nil {
+		t.Fatalf("build deploy bundle: %v", err)
+	}
+	for _, path := range []string{
+		filepath.Join(outputDir, "bin", bundleBinaryName("goginx-server")),
+		filepath.Join(outputDir, "bin", bundleBinaryName("goginx-client")),
+		filepath.Join(outputDir, "bin", bundleBinaryName("goginx-admin")),
+		filepath.Join(outputDir, "config", "server.json"),
+		filepath.Join(outputDir, "config", "client.json"),
+		filepath.Join(outputDir, "config", "admin-credentials.json.example"),
+		filepath.Join(outputDir, "config", "goginx-server.env.example"),
+		filepath.Join(outputDir, "config", "goginx-client.env.example"),
+		filepath.Join(outputDir, "systemd", "goginx-server.service"),
+		filepath.Join(outputDir, "systemd", "goginx-client.service"),
+		filepath.Join(outputDir, "data", "certs", "managed"),
+		filepath.Join(outputDir, "logs"),
+	} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("expected %s: %v", path, err)
+		}
+	}
+}
+
+func bundleBinaryName(name string) string {
+	if runtime.GOOS == "windows" {
+		return name + ".exe"
+	}
+	return name
 }
 
 type adminMainFakeDNSProvider struct{}

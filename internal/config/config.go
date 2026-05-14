@@ -14,6 +14,7 @@ import (
 
 type Server struct {
 	AdminListen            string        `json:"admin_listen"`
+	AdminCredentialsFile   string        `json:"admin_credentials_file"`
 	ControlQUICListen      string        `json:"control_quic_listen"`
 	ControlTLSListen       string        `json:"control_tls_listen"`
 	ControlTLSCertFile     string        `json:"control_tls_cert_file"`
@@ -53,6 +54,7 @@ type Reconnect struct {
 func DefaultServer() Server {
 	return Server{
 		AdminListen:            "127.0.0.1:8080",
+		AdminCredentialsFile:   "",
 		ControlQUICListen:      ":8443",
 		ControlTLSListen:       ":9443",
 		ControlTLSCertFile:     "data/certs/control.crt",

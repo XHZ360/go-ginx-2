@@ -51,6 +51,30 @@ func TestReadMessageRejectsEmptyFrame(t *testing.T) {
 	}
 }
 
+func TestDatagramFrameRoundTrip(t *testing.T) {
+	var buffer bytes.Buffer
+	if err := WriteDatagramFrame(&buffer, []byte("packet")); err != nil {
+		t.Fatalf("write datagram: %v", err)
+	}
+	payload, err := ReadDatagramFrame(&buffer)
+	if err != nil {
+		t.Fatalf("read datagram: %v", err)
+	}
+	if string(payload) != "packet" {
+		t.Fatalf("unexpected datagram payload %q", string(payload))
+	}
+}
+
+func TestDatagramFrameRejectsEmptyFrame(t *testing.T) {
+	if err := WriteDatagramFrame(&bytes.Buffer{}, nil); err == nil {
+		t.Fatal("expected empty datagram write error")
+	}
+	buffer := bytes.NewBuffer([]byte{0, 0, 0, 0})
+	if _, err := ReadDatagramFrame(buffer); err == nil {
+		t.Fatal("expected empty datagram read error")
+	}
+}
+
 func TestWriteMessageUsesProtobufEnvelope(t *testing.T) {
 	var buffer bytes.Buffer
 	if err := WriteMessage(&buffer, MessageHeartbeat, Heartbeat{SessionID: "session-1", ClientID: "client-1", ObservedAt: time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC)}); err != nil {
@@ -97,5 +121,27 @@ func TestProxySnapshotRoundTrip(t *testing.T) {
 	}
 	if decoded.Version != snapshot.Version || len(decoded.Proxies) != 1 || decoded.Proxies[0].ID != "p1" {
 		t.Fatalf("unexpected snapshot: %+v", decoded)
+	}
+}
+
+func TestMuxFrameRoundTrip(t *testing.T) {
+	var buffer bytes.Buffer
+	frame := MuxFrame{StreamID: 7, Type: MuxFrameData, Payload: []byte("hello")}
+	if err := WriteMuxFrame(&buffer, frame); err != nil {
+		t.Fatalf("write mux frame: %v", err)
+	}
+	decoded, err := ReadMuxFrame(&buffer)
+	if err != nil {
+		t.Fatalf("read mux frame: %v", err)
+	}
+	if decoded.StreamID != frame.StreamID || decoded.Type != frame.Type || string(decoded.Payload) != string(frame.Payload) {
+		t.Fatalf("unexpected mux frame: %+v", decoded)
+	}
+}
+
+func TestMuxFrameRejectsOversizedPayload(t *testing.T) {
+	payload := make([]byte, maxMuxPayloadSize+1)
+	if err := WriteMuxFrame(&bytes.Buffer{}, MuxFrame{StreamID: 1, Type: MuxFrameData, Payload: payload}); err == nil {
+		t.Fatal("expected oversized mux payload error")
 	}
 }
