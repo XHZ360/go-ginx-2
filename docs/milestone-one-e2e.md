@@ -61,9 +61,9 @@ Covered behavior:
 - The packaged runtime binaries start successfully from the generated bundle layout.
 - A packaged client reconnects after the packaged server process restarts.
 
-## Admin API/UI
+## Admin API
 
-The admin management tests cover administrator authentication, GraphQL queries and mutations, query-model aggregation, and external process smoke for the V1 management surface:
+The admin management tests cover administrator authentication, session bootstrap, GraphQL queries and mutations, query-model aggregation, and external process smoke for the API-only management listener:
 
 ```powershell
 $env:CGO_ENABLED="0"
@@ -76,10 +76,11 @@ go test ./e2e -run TestExternalProcessesAdminAPIUI -count=1
 Covered behavior:
 
 - Administrator credentials are loaded from protected configuration independent of SQLite product users.
-- HTTP Basic Auth rejects unauthenticated or invalid administrator access.
-- The V1 GraphQL surface exposes dashboard, user, client, proxy, managed-certificate, and recent-audit operations through thin resolvers.
+- Session login rejects invalid administrator credentials and creates cookie-backed administrator sessions for valid credentials.
+- Session bootstrap exposes the current authenticated administrator context without serving HTML.
+- The GraphQL surface exposes dashboard, user, client, proxy, managed-certificate, and recent-audit operations through thin resolvers.
 - Query models combine persisted configuration with runtime session state and cumulative stats.
-- The server-rendered management UI and GraphQL endpoint both work through the real `goginx-server` binary.
+- Removed browser-facing admin paths return `404`, and the session-authenticated admin API works through the real `goginx-server` binary.
 
 ## External Process Smoke
 

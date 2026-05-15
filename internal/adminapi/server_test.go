@@ -6,9 +6,9 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/http/cookiejar"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -20,53 +20,69 @@ import (
 	"github.com/simp-frp/go-ginx-2/internal/store/sqlite"
 )
 
-func TestServerRequiresAndAcceptsBasicAuth(t *testing.T) {
-	server := startAdminTestServer(t)
+func TestServerRemovedRoutesAndSessionBootstrap(t *testing.T) {
+	server := startAdminTestServer(t, nil)
+
 	response, err := http.Get("http://" + server.Addr().String() + "/")
 	if err != nil {
-		t.Fatalf("get unauthenticated page: %v", err)
+		t.Fatalf("get removed root route: %v", err)
 	}
 	defer response.Body.Close()
-	if response.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("expected 401 without auth, got %d", response.StatusCode)
+	if response.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404 for removed root route, got %d", response.StatusCode)
 	}
 
-	request, err := http.NewRequest(http.MethodGet, "http://"+server.Addr().String()+"/", nil)
+	response, err = http.Get("http://" + server.Addr().String() + "/users")
 	if err != nil {
-		t.Fatal(err)
-	}
-	request.SetBasicAuth("admin", "wrong")
-	response, err = http.DefaultClient.Do(request)
-	if err != nil {
-		t.Fatalf("get invalid auth page: %v", err)
+		t.Fatalf("get removed users route: %v", err)
 	}
 	defer response.Body.Close()
-	if response.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("expected 401 invalid auth, got %d", response.StatusCode)
+	if response.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404 for removed users route, got %d", response.StatusCode)
 	}
 
-	request, err = http.NewRequest(http.MethodGet, "http://"+server.Addr().String()+"/", nil)
+	response, err = postJSON(http.DefaultClient, "http://"+server.Addr().String()+"/graphql", map[string]any{"query": `query { dashboardSummary { onlineClientCount } }`}, nil)
 	if err != nil {
-		t.Fatal(err)
-	}
-	request.SetBasicAuth("admin", "secret")
-	response, err = http.DefaultClient.Do(request)
-	if err != nil {
-		t.Fatalf("get authenticated page: %v", err)
+		t.Fatalf("post removed graphql route: %v", err)
 	}
 	defer response.Body.Close()
-	body, err := io.ReadAll(response.Body)
-	if err != nil {
-		t.Fatal(err)
+	if response.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404 for removed graphql route, got %d", response.StatusCode)
 	}
-	if response.StatusCode != http.StatusOK || !strings.Contains(string(body), "Dashboard") {
-		t.Fatalf("unexpected authenticated page status=%d body=%q", response.StatusCode, string(body))
+
+	client := newAdminHTTPClient(t)
+	bootstrap := readBootstrap(t, client, server.Addr().String())
+	if bootstrap.Authenticated {
+		t.Fatal("expected unauthenticated bootstrap without login")
+	}
+
+	response, err = postJSON(client, "http://"+server.Addr().String()+adminAPIPrefix+"/login", map[string]string{"username": "admin", "password": "wrong"}, nil)
+	if err != nil {
+		t.Fatalf("post invalid login: %v", err)
+	}
+	defer response.Body.Close()
+	assertErrorCode(t, response, http.StatusUnauthorized, "UNAUTHENTICATED")
+
+	login := loginAdmin(t, client, server.Addr().String(), "admin", "secret")
+	if !login.Authenticated || login.Username != "admin" || login.CSRFToken == "" {
+		t.Fatalf("unexpected login bootstrap: %+v", login)
+	}
+
+	bootstrap = readBootstrap(t, client, server.Addr().String())
+	if !bootstrap.Authenticated || bootstrap.Username != "admin" || bootstrap.CSRFToken == "" {
+		t.Fatalf("unexpected authenticated bootstrap: %+v", bootstrap)
+	}
+	if bootstrap.PollIntervalSecond != defaultPollSeconds {
+		t.Fatalf("unexpected poll interval: %+v", bootstrap)
 	}
 }
 
-func TestServerGraphQLQueriesAndMutations(t *testing.T) {
-	server := startAdminTestServer(t)
-	queryResult := postGraphQL(t, server.Addr().String(), "admin", "secret", `query { dashboardSummary { onlineClientCount enabledProxyCount cumulativeUploadBytes cumulativeDownloadBytes } auditEvents(limit: 10) { action result } }`)
+func TestServerSessionGraphQLAndCSRF(t *testing.T) {
+	server := startAdminTestServer(t, nil)
+	client := newAdminHTTPClient(t)
+	bootstrap := loginAdmin(t, client, server.Addr().String(), "admin", "secret")
+
+	queryResult := postAdminGraphQL(t, client, server.Addr().String(), `query { dashboardSummary { onlineClientCount enabledProxyCount cumulativeUploadBytes cumulativeDownloadBytes } auditEvents(limit: 10) { action result } }`, "", http.StatusOK)
 	data := queryResult["data"].(map[string]any)
 	dashboard := data["dashboardSummary"].(map[string]any)
 	if dashboard["onlineClientCount"].(float64) != 1 || dashboard["enabledProxyCount"].(float64) != 1 {
@@ -76,13 +92,20 @@ func TestServerGraphQLQueriesAndMutations(t *testing.T) {
 		t.Fatalf("unexpected dashboard bytes: %+v", dashboard)
 	}
 
-	mutationResult := postGraphQL(t, server.Addr().String(), "admin", "secret", `mutation { createUser(username: "bob", password: "secret-2", role: "user") { id username hasPasswordHash } }`)
+	mutationResponse, err := postJSON(client, "http://"+server.Addr().String()+adminAPIPrefix+"/graphql", map[string]any{"query": `mutation { createUser(username: "bob", password: "secret-2", role: "user") { id username hasPasswordHash } }`}, nil)
+	if err != nil {
+		t.Fatalf("post graphql mutation without csrf: %v", err)
+	}
+	defer mutationResponse.Body.Close()
+	assertErrorCode(t, mutationResponse, http.StatusForbidden, "INVALID_CSRF")
+
+	mutationResult := postAdminGraphQL(t, client, server.Addr().String(), `mutation { createUser(username: "bob", password: "secret-2", role: "user") { id username hasPasswordHash } }`, bootstrap.CSRFToken, http.StatusOK)
 	mutationData := mutationResult["data"].(map[string]any)["createUser"].(map[string]any)
 	if mutationData["username"].(string) != "bob" || mutationData["hasPasswordHash"].(bool) != true {
 		t.Fatalf("unexpected create user mutation: %+v", mutationData)
 	}
 
-	auditResult := postGraphQL(t, server.Addr().String(), "admin", "secret", `query { auditEvents(limit: 10) { action result } }`)
+	auditResult := postAdminGraphQL(t, client, server.Addr().String(), `query { auditEvents(limit: 10) { action result } }`, "", http.StatusOK)
 	auditItems := auditResult["data"].(map[string]any)["auditEvents"].([]any)
 	if len(auditItems) == 0 {
 		t.Fatal("expected audit events after mutation")
@@ -93,13 +116,60 @@ func TestServerGraphQLQueriesAndMutations(t *testing.T) {
 	}
 }
 
-func startAdminTestServer(t *testing.T) *Server {
+func TestServerSessionExpiryAndLogout(t *testing.T) {
+	now := time.Now().UTC()
+	server := startAdminTestServer(t, func(entry *Entry) {
+		entry.Now = func() time.Time { return now }
+		entry.SessionIdleTimeout = time.Minute
+		entry.SessionAbsoluteLifetime = 5 * time.Minute
+	})
+	client := newAdminHTTPClient(t)
+	bootstrap := loginAdmin(t, client, server.Addr().String(), "admin", "secret")
+
+	response, err := postJSON(client, "http://"+server.Addr().String()+adminAPIPrefix+"/logout", map[string]any{}, map[string]string{adminCSRFHeader: bootstrap.CSRFToken})
+	if err != nil {
+		t.Fatalf("logout request: %v", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("unexpected logout status: %d", response.StatusCode)
+	}
+	loggedOut := decodeBootstrapResponse(t, response.Body)
+	if loggedOut.Authenticated {
+		t.Fatalf("expected logged out bootstrap, got %+v", loggedOut)
+	}
+
+	bootstrap = readBootstrap(t, client, server.Addr().String())
+	if bootstrap.Authenticated {
+		t.Fatal("expected unauthenticated bootstrap after logout")
+	}
+
+	bootstrap = loginAdmin(t, client, server.Addr().String(), "admin", "secret")
+	now = now.Add(2 * time.Minute)
+	bootstrap = readBootstrap(t, client, server.Addr().String())
+	if bootstrap.Authenticated {
+		t.Fatal("expected session to expire from bootstrap")
+	}
+
+	response, err = postJSON(client, "http://"+server.Addr().String()+adminAPIPrefix+"/graphql", map[string]any{"query": `query { dashboardSummary { onlineClientCount } }`}, nil)
+	if err != nil {
+		t.Fatalf("graphql after expiry: %v", err)
+	}
+	defer response.Body.Close()
+	assertErrorCode(t, response, http.StatusUnauthorized, "UNAUTHENTICATED")
+}
+
+func startAdminTestServer(t *testing.T, mutateEntry func(*Entry)) *Server {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	db, sessions, memory := adminAPITestRuntime(t)
 	credentialsFile := writeAdminCredentials(t)
-	server, err := Listen(Entry{ListenAddress: "127.0.0.1:0", AdminCredentialsFile: credentialsFile, Query: adminquery.Service{Store: db, Sessions: sessions, Stats: memory}, Commands: admin.Service{Store: db}})
+	entry := Entry{ListenAddress: "127.0.0.1:0", AdminCredentialsFile: credentialsFile, Query: adminquery.Service{Store: db, Sessions: sessions, Stats: memory}, Commands: admin.Service{Store: db}}
+	if mutateEntry != nil {
+		mutateEntry(&entry)
+	}
+	server, err := Listen(entry)
 	if err != nil {
 		t.Fatalf("listen admin server: %v", err)
 	}
@@ -162,32 +232,102 @@ func writeAdminCredentials(t *testing.T) string {
 	return path
 }
 
-func postGraphQL(t *testing.T, addr string, username string, password string, query string) map[string]any {
+func newAdminHTTPClient(t *testing.T) *http.Client {
 	t.Helper()
-	body, err := json.Marshal(map[string]any{"query": query})
+	jar, err := cookiejar.New(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	request, err := http.NewRequest(http.MethodPost, "http://"+addr+"/graphql", bytes.NewReader(body))
+	return &http.Client{Jar: jar}
+}
+
+func loginAdmin(t *testing.T, client *http.Client, addr string, username string, password string) sessionBootstrapResponse {
+	t.Helper()
+	response, err := postJSON(client, "http://"+addr+adminAPIPrefix+"/login", map[string]string{"username": username, "password": password}, nil)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("post login: %v", err)
 	}
-	request.Header.Set("Content-Type", "application/json")
-	request.SetBasicAuth(username, password)
-	response, err := http.DefaultClient.Do(request)
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(response.Body)
+		t.Fatalf("unexpected login status %d body=%s", response.StatusCode, string(body))
+	}
+	return decodeBootstrapResponse(t, response.Body)
+}
+
+func readBootstrap(t *testing.T, client *http.Client, addr string) sessionBootstrapResponse {
+	t.Helper()
+	response, err := client.Get("http://" + addr + adminAPIPrefix + "/session")
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("get session bootstrap: %v", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(response.Body)
+		t.Fatalf("unexpected bootstrap status %d body=%s", response.StatusCode, string(body))
+	}
+	return decodeBootstrapResponse(t, response.Body)
+}
+
+func postAdminGraphQL(t *testing.T, client *http.Client, addr string, query string, csrfToken string, expectedStatus int) map[string]any {
+	t.Helper()
+	headers := map[string]string{"Content-Type": "application/json"}
+	if csrfToken != "" {
+		headers[adminCSRFHeader] = csrfToken
+	}
+	response, err := postJSON(client, "http://"+addr+adminAPIPrefix+"/graphql", map[string]any{"query": query}, headers)
+	if err != nil {
+		t.Fatalf("post graphql: %v", err)
 	}
 	defer response.Body.Close()
 	decoded := make(map[string]any)
 	if err := json.NewDecoder(response.Body).Decode(&decoded); err != nil {
 		t.Fatal(err)
 	}
-	if response.StatusCode != http.StatusOK {
-		t.Fatalf("unexpected graphQL status %d: %+v", response.StatusCode, decoded)
+	if response.StatusCode != expectedStatus {
+		t.Fatalf("unexpected graphql status %d: %+v", response.StatusCode, decoded)
 	}
 	if errors, ok := decoded["errors"]; ok {
 		t.Fatalf("graphql returned errors: %+v", errors)
 	}
 	return decoded
+}
+
+func postJSON(client *http.Client, url string, payload any, headers map[string]string) (*http.Response, error) {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+	request, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	request.Header.Set("Content-Type", "application/json")
+	for key, value := range headers {
+		request.Header.Set(key, value)
+	}
+	return client.Do(request)
+}
+
+func assertErrorCode(t *testing.T, response *http.Response, expectedStatus int, expectedCode string) {
+	t.Helper()
+	var decoded apiErrorResponse
+	if err := json.NewDecoder(response.Body).Decode(&decoded); err != nil {
+		t.Fatalf("decode error response: %v", err)
+	}
+	if response.StatusCode != expectedStatus {
+		t.Fatalf("unexpected status %d response=%+v", response.StatusCode, decoded)
+	}
+	if decoded.Error.Code != expectedCode {
+		t.Fatalf("unexpected error code %q response=%+v", decoded.Error.Code, decoded)
+	}
+}
+
+func decodeBootstrapResponse(t *testing.T, reader io.Reader) sessionBootstrapResponse {
+	t.Helper()
+	var response sessionBootstrapResponse
+	if err := json.NewDecoder(reader).Decode(&response); err != nil {
+		t.Fatal(err)
+	}
+	return response
 }

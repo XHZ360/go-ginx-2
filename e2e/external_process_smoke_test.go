@@ -16,6 +16,7 @@ import (
 	"math/big"
 	"net"
 	nethttp "net/http"
+	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/url"
 	"os"
@@ -331,8 +332,11 @@ func TestExternalProcessesAdminAPIUI(t *testing.T) {
 	server := startProcess(t, root, serverBin, "-config", serverConfig)
 	waitForTCPAccept(t, smokeCtx, net.JoinHostPort("127.0.0.1", strconv.Itoa(adminPort)))
 	client := startProcess(t, root, clientBin, "-config", clientConfig)
-	if err := waitForAdminDashboard(smokeCtx, net.JoinHostPort("127.0.0.1", strconv.Itoa(adminPort)), "admin", "secret"); err != nil {
-		t.Fatalf("admin ui smoke failed: %v\nserver output:\n%s\nclient output:\n%s", err, server.Output(), client.Output())
+	if err := waitForRemovedAdminRoute(smokeCtx, net.JoinHostPort("127.0.0.1", strconv.Itoa(adminPort))); err != nil {
+		t.Fatalf("admin removed-route smoke failed: %v\nserver output:\n%s\nclient output:\n%s", err, server.Output(), client.Output())
+	}
+	if err := waitForAdminSession(smokeCtx, net.JoinHostPort("127.0.0.1", strconv.Itoa(adminPort)), "admin", "secret"); err != nil {
+		t.Fatalf("admin session smoke failed: %v\nserver output:\n%s\nclient output:\n%s", err, server.Output(), client.Output())
 	}
 	if err := waitForAdminGraphQL(smokeCtx, net.JoinHostPort("127.0.0.1", strconv.Itoa(adminPort)), "admin", "secret"); err != nil {
 		t.Fatalf("admin graphql smoke failed: %v\nserver output:\n%s\nclient output:\n%s", err, server.Output(), client.Output())
@@ -643,22 +647,17 @@ func waitForTLSEcho(ctx context.Context, address string, serverName string, root
 	return ctx.Err()
 }
 
-func waitForAdminDashboard(ctx context.Context, address string, username string, password string) error {
+func waitForRemovedAdminRoute(ctx context.Context, address string) error {
 	var lastErr error
 	for ctx.Err() == nil {
 		request, err := nethttp.NewRequestWithContext(ctx, nethttp.MethodGet, "http://"+address+"/", nil)
 		if err != nil {
 			return err
 		}
-		request.SetBasicAuth(username, password)
 		response, err := (&nethttp.Client{Timeout: 500 * time.Millisecond}).Do(request)
-		if err == nil && response.StatusCode == nethttp.StatusOK {
-			body, readErr := io.ReadAll(response.Body)
+		if err == nil && response.StatusCode == nethttp.StatusNotFound {
 			_ = response.Body.Close()
-			if readErr == nil && strings.Contains(string(body), "Dashboard") {
 				return nil
-			}
-			lastErr = readErr
 		} else if response != nil {
 			_ = response.Body.Close()
 			lastErr = fmt.Errorf("unexpected status %d", response.StatusCode)
@@ -673,17 +672,56 @@ func waitForAdminDashboard(ctx context.Context, address string, username string,
 	return ctx.Err()
 }
 
+func waitForAdminSession(ctx context.Context, address string, username string, password string) error {
+	var lastErr error
+	for ctx.Err() == nil {
+		client, err := loginAdminAPI(address, username, password)
+		if err == nil {
+			request, requestErr := nethttp.NewRequestWithContext(ctx, nethttp.MethodGet, "http://"+address+"/api/admin/session", nil)
+			if requestErr != nil {
+				return requestErr
+			}
+			response, doErr := client.Do(request)
+			if doErr == nil && response.StatusCode == nethttp.StatusOK {
+				body, readErr := io.ReadAll(response.Body)
+				_ = response.Body.Close()
+				if readErr == nil && strings.Contains(string(body), `"authenticated":true`) {
+					return nil
+				}
+				lastErr = readErr
+			} else if response != nil {
+				_ = response.Body.Close()
+				lastErr = fmt.Errorf("unexpected status %d", response.StatusCode)
+			} else {
+				lastErr = doErr
+			}
+		} else {
+			lastErr = err
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if lastErr != nil {
+		return lastErr
+	}
+	return ctx.Err()
+}
+
 func waitForAdminGraphQL(ctx context.Context, address string, username string, password string) error {
 	var lastErr error
 	for ctx.Err() == nil {
+		client, err := loginAdminAPI(address, username, password)
+		if err != nil {
+			lastErr = err
+			time.Sleep(50 * time.Millisecond)
+			continue
+		}
 		payload := bytes.NewBufferString(`{"query":"query { dashboardSummary { onlineClientCount enabledProxyCount } }"}`)
-		request, err := nethttp.NewRequestWithContext(ctx, nethttp.MethodPost, "http://"+address+"/graphql", payload)
+		request, err := nethttp.NewRequestWithContext(ctx, nethttp.MethodPost, "http://"+address+"/api/admin/graphql", payload)
 		if err != nil {
 			return err
 		}
-		request.SetBasicAuth(username, password)
 		request.Header.Set("Content-Type", "application/json")
-		response, err := (&nethttp.Client{Timeout: 500 * time.Millisecond}).Do(request)
+		response, err := client.Do(request)
 		if err == nil && response.StatusCode == nethttp.StatusOK {
 			body, readErr := io.ReadAll(response.Body)
 			_ = response.Body.Close()
@@ -703,6 +741,30 @@ func waitForAdminGraphQL(ctx context.Context, address string, username string, p
 		return lastErr
 	}
 	return ctx.Err()
+}
+
+func loginAdminAPI(address string, username string, password string) (*nethttp.Client, error) {
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		return nil, err
+	}
+	client := &nethttp.Client{Timeout: 500 * time.Millisecond, Jar: jar}
+	body := bytes.NewBufferString(`{"username":"` + username + `","password":"` + password + `"}`)
+	request, err := nethttp.NewRequest(nethttp.MethodPost, "http://"+address+"/api/admin/login", body)
+	if err != nil {
+		return nil, err
+	}
+	request.Header.Set("Content-Type", "application/json")
+	response, err := client.Do(request)
+	if err != nil {
+		return nil, err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != nethttp.StatusOK {
+		body, _ := io.ReadAll(response.Body)
+		return nil, fmt.Errorf("unexpected login status %d body=%s", response.StatusCode, string(body))
+	}
+	return client, nil
 }
 
 func startEchoOrigin(t *testing.T, ctx context.Context) string {

@@ -23,7 +23,7 @@ The repository currently contains a milestone-one runtime plus a first deploymen
 - `goginx-server` starts SQLite, QUIC control, optional TCP+TLS fallback, TCP entries, HTTP entry, and optional HTTPS entry for SNI passthrough or file-backed TLS termination from config.
 - `goginx-client` authenticates, reads proxy snapshots, sends heartbeats, serves proxy streams, and retries transient control-plane failures with reconnect backoff.
 - `goginx-admin build-deploy-bundle` creates a reproducible deployment bundle with sample config, environment examples, and `systemd` service templates.
-- A first administrator-only management surface is available through protected HTTP Basic Auth, GraphQL, and simple server-rendered UI views for dashboard, users, clients, proxies, managed certificates, and recent audit events.
+- An administrator-only management listener is available through session-based same-origin admin API endpoints for login, logout, session bootstrap, and GraphQL management operations.
 
 ## Commands
 
@@ -149,7 +149,7 @@ The credentials file stores administrator usernames and bcrypt password hashes:
 }
 ```
 
-When enabled, the admin surface is protected by HTTP Basic Auth and is expected to run behind TLS. V1 management scope is administrator-only and currently includes a cumulative dashboard summary, user management, client list/detail, full reverse-proxy CRUD plus lifecycle actions, managed-certificate status/issue/renew, and a minimal recent audit list. Runtime-oriented views refresh by 5-second polling instead of realtime subscriptions.
+When enabled, the admin listener is API-only and is expected to run behind TLS. Browser-facing administrator access uses login-created server-managed sessions backed by `admin_credentials_file`, plus a session bootstrap endpoint and CSRF-protected mutation flow. The currently exposed management GraphQL scope remains administrator-only and includes a cumulative dashboard summary, user management, client list/detail, full reverse-proxy CRUD plus lifecycle actions, managed-certificate status/issue/renew, and a minimal recent audit list. Legacy server-rendered admin pages and the browser-facing legacy `/graphql` route are not served in this slice.
 
 ## Current Limitations
 

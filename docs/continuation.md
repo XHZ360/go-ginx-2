@@ -119,6 +119,11 @@ This file records the current implementation state so work can resume after a re
     - Added dedicated admin query models, user-management password support, reverse-proxy lifecycle mutations, and minimal recent-audit visibility.
     - Added package, daemon, and external-process tests covering authenticated management access and bundled runtime behavior.
 
+27. Current workspace update: replace server-rendered admin with session-authenticated admin API
+    - Replaced browser-facing administrator Basic Auth with session login, session bootstrap, logout, and session-authenticated GraphQL endpoints under `/api/admin/*`.
+    - Removed the server-rendered administrator pages, browser-facing form-post workflow, and legacy `/graphql` route so the admin listener is API-only in this slice.
+    - Added CSRF protection for session-authenticated admin mutations plus tests for login, bootstrap, logout, GraphQL access, and removed-route behavior.
+
 ## Current Capabilities
 
 - `CGO_ENABLED=0 go test ./...` passes.
@@ -127,7 +132,7 @@ This file records the current implementation state so work can resume after a re
 - `goginx-client` retries transient control-plane failures with configured reconnect backoff and does not retry permanent authentication rejection.
 - Server shutdown closes active control connections so clients can reconnect after daemon restarts.
 - `goginx-admin` can generate a reproducible deployment bundle for the first supported `systemd`-based deployment model.
-- `goginx-server` can optionally expose an administrator-only GraphQL and server-rendered management surface backed by Basic Auth and configuration-file credentials.
+- `goginx-server` can optionally expose an administrator-only API-only management listener backed by configuration-file credentials, browser sessions, session bootstrap, logout, CSRF-protected mutations, and a session-authenticated GraphQL endpoint.
 - TCP, UDP, HTTP, HTTPS SNI passthrough, and HTTPS TLS termination proxy paths work through daemon commands, package E2E tests, and external process smoke tests. TCP fallback proxy traffic is covered through daemon tests.
 - `goginx-admin` can seed SQLite resources.
 - Basic TCP/UDP/HTTP stats are implemented with SQLite-backed restart survival for cumulative totals.

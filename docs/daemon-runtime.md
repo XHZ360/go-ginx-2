@@ -18,7 +18,7 @@ This guide covers the implemented milestone-one daemon runtime plus the first su
 12. SQLite-backed cumulative stats persistence for TCP, UDP, and HTTP traffic.
 13. Reproducible deployment bundle generation for server, client, and admin binaries.
 14. Checked-in `systemd` service templates for supervised server and client execution.
-15. Optional administrator-only GraphQL and server-rendered management UI protected by HTTP Basic Auth.
+15. Optional administrator-only API-only management listener with session login, session bootstrap, logout, and GraphQL operations.
 
 ## Seed SQLite
 
@@ -131,13 +131,14 @@ For the supported `systemd` deployment model:
 
 The server starts SQLite, the QUIC control listener, the optional TCP+TLS fallback listener, the HTTP entry listener, the optional HTTPS entry listener, TCP entry listeners, and UDP entry listeners for enabled proxies found in SQLite. The HTTPS entry uses SNI to choose the proxy. If that proxy has `cert_file` and `key_file`, the server terminates TLS and forwards the decrypted HTTP request to the configured local HTTP target; otherwise it checks for an active managed certificate for that HTTPS host and uses it if available. If neither static nor managed certificate material is active, it preserves passthrough behavior and forwards encrypted bytes to the client target. The client authenticates, receives the proxy snapshot, sends heartbeats, serves proxy streams to configured local targets over QUIC or framed TCP+TLS fallback, and retries transient control-plane failures using the configured reconnect backoff.
 
-When `admin_credentials_file` is configured, the server also starts an administrator-only management surface on `admin_listen`. That surface exposes:
+When `admin_credentials_file` is configured, the server also starts an administrator-only management listener on `admin_listen`. That listener exposes:
 
-1. A GraphQL endpoint at `/graphql`.
-2. Simple server-rendered administrator pages for dashboard, users, clients, proxies, managed certificates, and recent audit events.
-3. HTTP Basic Auth protection for administrators loaded from the configured credentials file.
+1. `POST /api/admin/login` for administrator session creation.
+2. `GET /api/admin/session` for browser session bootstrap.
+3. `POST /api/admin/logout` for session invalidation.
+4. `POST /api/admin/graphql` for administrator GraphQL queries and mutations.
 
-The V1 management surface is intentionally narrow: it excludes ordinary-user self-service, quota editing, log search, domain lifecycle management, advanced alerts, and realtime subscriptions. Runtime-oriented administrator views refresh by 5-second polling.
+The first session-authenticated management slice is intentionally narrow: it excludes ordinary-user self-service, quota editing, log search, domain lifecycle management, advanced alerts, and realtime subscriptions. The legacy server-rendered admin UI and browser-facing `/graphql` route are not served in this slice; removed browser paths such as `/`, `/users`, `/clients`, `/proxies`, `/certificates`, and `/audit` return `404 Not Found` until the dedicated frontend shell exists.
 
 When `acme_enabled` is true, the server reads the Cloudflare token from `acme_cloudflare_token_env`, stores managed certificates under `certificate_dir/managed/<host>/`, renews expiring managed certificates inside `acme_renewal_window`, hot reloads future TLS handshakes, and keeps the previous active certificate pair for rollback. SQLite stores only lifecycle metadata and file paths.
 
@@ -168,13 +169,13 @@ $env:CF_DNS_API_TOKEN="<cloudflare-token>"
 14. `systemd` install paths: the generated service files assume the rendered `install_root` passed to `build-deploy-bundle`. Rebuild the bundle or edit the unit files if you deploy somewhere other than that path.
 15. Upgrade and rollback: replace the bundle contents in the install root, then restart the units. Roll back by restoring the previous bundle directory contents and restarting the same units.
 16. Administrator management credentials: `admin_credentials_file` must point to a readable JSON file containing administrator usernames and bcrypt password hashes. The file is separate from SQLite users and should be readable only by the service account.
-17. Management transport protection: the V1 admin surface uses HTTP Basic Auth and is expected to run behind TLS. Local loopback access is accepted for development and automated tests.
+17. Management transport protection: the admin listener uses session-authenticated same-origin API routes and is expected to run behind TLS. Local loopback access is accepted for development and automated tests; loopback testing may issue non-`Secure` cookies because browsers and HTTP clients do not send `Secure` cookies over plain `http://127.0.0.1` development traffic.
 
 ## Not Implemented
 
 1. Forward proxying.
 2. Quotas and rate limits.
-3. GraphQL and admin UI.
+3. Dedicated separated frontend admin UI.
 4. Wildcard/platform-domain ownership verification.
 5. Native installers and non-`systemd` service managers.
 6. Ordinary-user self-service, quota/settings UI, log search, advanced alerts, backup/restore, and broader production hardening.
