@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -201,6 +202,23 @@ func (cfg Client) Validate() error {
 	return nil
 }
 
+func (cfg Server) RuntimeListenerClaims(includeAdmin bool) ([]domain.ListenerClaim, error) {
+	claims := make([]domain.ListenerClaim, 0, 5)
+	claims = append(claims, listenerClaimFromAddress("control_quic_listen", domain.ListenerNetworkUDP, cfg.ControlQUICListen)...)
+	claims = append(claims, listenerClaimFromAddress("control_tls_listen", domain.ListenerNetworkTCP, cfg.ControlTLSListen)...)
+	if includeAdmin {
+		claims = append(claims, listenerClaimFromAddress("admin_listen", domain.ListenerNetworkTCP, cfg.AdminListen)...)
+	}
+	claims = append(claims, listenerClaimFromAddress("http_entry_listen", domain.ListenerNetworkTCP, cfg.HTTPEntryListen)...)
+	claims = append(claims, listenerClaimFromAddress("https_entry_listen", domain.ListenerNetworkTCP, cfg.HTTPSEntryListen)...)
+	for index := range claims {
+		if claims[index].Port == 0 {
+			return nil, fmt.Errorf("%s port is invalid", claims[index].Source)
+		}
+	}
+	return claims, nil
+}
+
 func loadJSON(path string, target any) error {
 	content, err := os.ReadFile(path)
 	if err != nil {
@@ -222,4 +240,20 @@ func requireAddress(name, value string) error {
 		return fmt.Errorf("%s must be host:port: %w", name, err)
 	}
 	return nil
+}
+
+func listenerClaimFromAddress(sourceName string, network string, value string) []domain.ListenerClaim {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	_, portText, err := net.SplitHostPort(value)
+	if err != nil {
+		return []domain.ListenerClaim{{Network: network, Source: sourceName}}
+	}
+	port, err := strconv.Atoi(portText)
+	if err != nil {
+		return []domain.ListenerClaim{{Network: network, Source: sourceName}}
+	}
+	return []domain.ListenerClaim{{Network: network, Port: port, Source: sourceName, ResourceID: sourceName}}
 }

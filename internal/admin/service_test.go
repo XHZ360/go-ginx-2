@@ -215,6 +215,134 @@ func TestServiceEnforcesProxyLifecycleRules(t *testing.T) {
 	}
 }
 
+func TestServiceListenerAdmissionRejectsStaticListenerConflicts(t *testing.T) {
+	ctx := context.Background()
+	db := openTestStore(t)
+	service := Service{Store: db, StaticListenerClaims: []domain.ListenerClaim{
+		{Network: domain.ListenerNetworkTCP, Port: 10022, Source: "admin_listen", ResourceID: "admin_listen"},
+		{Network: domain.ListenerNetworkUDP, Port: 10053, Source: "control_quic_listen", ResourceID: "control_quic_listen"},
+	}}
+	user, client := createAdminTestOwnership(ctx, t, service)
+
+	if _, err := service.CreateProxy(ctx, CreateProxyInput{ID: "tcp-static-conflict", UserID: user.ID, ClientID: client.ID, Name: "ssh", Type: domain.ProxyTCP, EntryPort: 10022, TargetHost: "127.0.0.1", TargetPort: 22, ActorID: "admin-1"}); !errors.Is(err, domain.ErrEntryConflict) {
+		t.Fatalf("expected tcp static listener conflict, got %v", err)
+	}
+	if _, err := service.CreateProxy(ctx, CreateProxyInput{ID: "udp-static-conflict", UserID: user.ID, ClientID: client.ID, Name: "dns", Type: domain.ProxyUDP, EntryPort: 10053, TargetHost: "127.0.0.1", TargetPort: 53, ActorID: "admin-1"}); !errors.Is(err, domain.ErrEntryConflict) {
+		t.Fatalf("expected udp static listener conflict, got %v", err)
+	}
+}
+
+func TestServiceListenerAdmissionUsesEnabledProxyClaims(t *testing.T) {
+	ctx := context.Background()
+	db := openTestStore(t)
+	service := Service{Store: db}
+	user, client := createAdminTestOwnership(ctx, t, service)
+
+	if _, err := service.CreateProxy(ctx, CreateProxyInput{ID: "tcp-active", UserID: user.ID, ClientID: client.ID, Name: "ssh", Type: domain.ProxyTCP, EntryPort: 10022, TargetHost: "127.0.0.1", TargetPort: 22, ActorID: "admin-1"}); err != nil {
+		t.Fatalf("create active tcp proxy: %v", err)
+	}
+	if _, err := service.CreateProxy(ctx, CreateProxyInput{ID: "udp-active", UserID: user.ID, ClientID: client.ID, Name: "dns", Type: domain.ProxyUDP, EntryPort: 10053, TargetHost: "127.0.0.1", TargetPort: 53, ActorID: "admin-1"}); err != nil {
+		t.Fatalf("create active udp proxy: %v", err)
+	}
+
+	if _, err := service.CreateProxy(ctx, CreateProxyInput{ID: "tcp-conflict", UserID: user.ID, ClientID: client.ID, Name: "ssh-2", Type: domain.ProxyTCP, EntryPort: 10022, TargetHost: "127.0.0.1", TargetPort: 2222, ActorID: "admin-1"}); !errors.Is(err, domain.ErrEntryConflict) {
+		t.Fatalf("expected tcp enabled-proxy conflict, got %v", err)
+	}
+	if _, err := service.CreateProxy(ctx, CreateProxyInput{ID: "udp-conflict", UserID: user.ID, ClientID: client.ID, Name: "dns-2", Type: domain.ProxyUDP, EntryPort: 10053, TargetHost: "127.0.0.1", TargetPort: 5353, ActorID: "admin-1"}); !errors.Is(err, domain.ErrEntryConflict) {
+		t.Fatalf("expected udp enabled-proxy conflict, got %v", err)
+	}
+}
+
+func TestServiceListenerAdmissionAllowsDisabledProxyEdits(t *testing.T) {
+	ctx := context.Background()
+	db := openTestStore(t)
+	service := Service{Store: db, StaticListenerClaims: []domain.ListenerClaim{
+		{Network: domain.ListenerNetworkTCP, Port: 10022, Source: "admin_listen", ResourceID: "admin_listen"},
+		{Network: domain.ListenerNetworkUDP, Port: 10053, Source: "control_quic_listen", ResourceID: "control_quic_listen"},
+	}}
+	user, client := createAdminTestOwnership(ctx, t, service)
+
+	if err := db.Proxies().Create(ctx, domain.Proxy{ID: "tcp-disabled", UserID: user.ID, ClientID: client.ID, Name: "disabled-tcp", Type: domain.ProxyTCP, Status: domain.ProxyDisabled, EntryPort: 10024, TargetHost: "127.0.0.1", TargetPort: 24}); err != nil {
+		t.Fatalf("seed disabled tcp proxy: %v", err)
+	}
+	if err := db.Proxies().Create(ctx, domain.Proxy{ID: "udp-disabled", UserID: user.ID, ClientID: client.ID, Name: "disabled-udp", Type: domain.ProxyUDP, Status: domain.ProxyDisabled, EntryPort: 10054, TargetHost: "127.0.0.1", TargetPort: 54}); err != nil {
+		t.Fatalf("seed disabled udp proxy: %v", err)
+	}
+
+	updatedTCP, err := service.UpdateProxy(ctx, UpdateProxyInput{ID: "tcp-disabled", Type: domain.ProxyTCP, Name: "disabled-tcp-updated", EntryPort: 10022, TargetHost: "127.0.0.1", TargetPort: 24, ActorID: "admin-1"})
+	if err != nil {
+		t.Fatalf("update disabled tcp proxy: %v", err)
+	}
+	if updatedTCP.EntryPort != 10022 || updatedTCP.Status != domain.ProxyDisabled {
+		t.Fatalf("unexpected disabled tcp update: %+v", updatedTCP)
+	}
+	updatedUDP, err := service.UpdateProxy(ctx, UpdateProxyInput{ID: "udp-disabled", Type: domain.ProxyUDP, Name: "disabled-udp-updated", EntryPort: 10053, TargetHost: "127.0.0.1", TargetPort: 54, ActorID: "admin-1"})
+	if err != nil {
+		t.Fatalf("update disabled udp proxy: %v", err)
+	}
+	if updatedUDP.EntryPort != 10053 || updatedUDP.Status != domain.ProxyDisabled {
+		t.Fatalf("unexpected disabled udp update: %+v", updatedUDP)
+	}
+}
+
+func TestServiceListenerAdmissionCoversCreateUpdateAndEnable(t *testing.T) {
+	ctx := context.Background()
+	db := openTestStore(t)
+	service := Service{Store: db, StaticListenerClaims: []domain.ListenerClaim{{Network: domain.ListenerNetworkTCP, Port: 10030, Source: "http_entry_listen", ResourceID: "http_entry_listen"}}}
+	user, client := createAdminTestOwnership(ctx, t, service)
+
+	created, err := service.CreateProxy(ctx, CreateProxyInput{ID: "tcp-create-success", UserID: user.ID, ClientID: client.ID, Name: "ssh", Type: domain.ProxyTCP, EntryPort: 10031, TargetHost: "127.0.0.1", TargetPort: 22, ActorID: "admin-1"})
+	if err != nil {
+		t.Fatalf("create proxy success: %v", err)
+	}
+	if created.EntryPort != 10031 {
+		t.Fatalf("unexpected created proxy: %+v", created)
+	}
+	if _, err := service.CreateProxy(ctx, CreateProxyInput{ID: "tcp-create-failure", UserID: user.ID, ClientID: client.ID, Name: "ssh-conflict", Type: domain.ProxyTCP, EntryPort: 10030, TargetHost: "127.0.0.1", TargetPort: 2200, ActorID: "admin-1"}); !errors.Is(err, domain.ErrEntryConflict) {
+		t.Fatalf("expected create conflict, got %v", err)
+	}
+
+	if _, err := service.CreateProxy(ctx, CreateProxyInput{ID: "tcp-update-peer", UserID: user.ID, ClientID: client.ID, Name: "ssh-peer", Type: domain.ProxyTCP, EntryPort: 10032, TargetHost: "127.0.0.1", TargetPort: 2222, ActorID: "admin-1"}); err != nil {
+		t.Fatalf("create peer proxy: %v", err)
+	}
+	updated, err := service.UpdateProxy(ctx, UpdateProxyInput{ID: created.ID, Type: domain.ProxyTCP, Name: "ssh-renamed", EntryPort: 10031, TargetHost: "127.0.0.1", TargetPort: 23, ActorID: "admin-1"})
+	if err != nil {
+		t.Fatalf("update proxy self replacement: %v", err)
+	}
+	if updated.Name != "ssh-renamed" || updated.EntryPort != 10031 || updated.TargetPort != 23 {
+		t.Fatalf("unexpected updated proxy: %+v", updated)
+	}
+	if _, err := service.UpdateProxy(ctx, UpdateProxyInput{ID: created.ID, Type: domain.ProxyTCP, Name: "ssh-conflict", EntryPort: 10032, TargetHost: "127.0.0.1", TargetPort: 23, ActorID: "admin-1"}); !errors.Is(err, domain.ErrEntryConflict) {
+		t.Fatalf("expected update conflict, got %v", err)
+	}
+
+	if err := db.Proxies().Create(ctx, domain.Proxy{ID: "tcp-enable-success", UserID: user.ID, ClientID: client.ID, Name: "disabled-ok", Type: domain.ProxyTCP, Status: domain.ProxyDisabled, EntryPort: 10033, TargetHost: "127.0.0.1", TargetPort: 33}); err != nil {
+		t.Fatalf("seed enable success proxy: %v", err)
+	}
+	if err := db.Proxies().Create(ctx, domain.Proxy{ID: "tcp-enable-failure", UserID: user.ID, ClientID: client.ID, Name: "disabled-conflict", Type: domain.ProxyTCP, Status: domain.ProxyDisabled, EntryPort: 10030, TargetHost: "127.0.0.1", TargetPort: 30}); err != nil {
+		t.Fatalf("seed enable conflict proxy: %v", err)
+	}
+	if err := service.EnableProxy(ctx, "tcp-enable-success", "admin-1"); err != nil {
+		t.Fatalf("enable proxy success: %v", err)
+	}
+	if err := service.EnableProxy(ctx, "tcp-enable-failure", "admin-1"); !errors.Is(err, domain.ErrEntryConflict) {
+		t.Fatalf("expected enable conflict, got %v", err)
+	}
+}
+
+func createAdminTestOwnership(ctx context.Context, t *testing.T, service Service) (domain.User, domain.Client) {
+	t.Helper()
+	user, err := service.CreateUser(ctx, CreateUserInput{ID: "user-1", Username: "alice", ActorID: "admin-1"})
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	client, err := service.CreateClient(ctx, CreateClientInput{ID: "client-1", UserID: user.ID, Name: "home", Credential: "secret", ActorID: "admin-1"})
+	if err != nil {
+		t.Fatalf("create client: %v", err)
+	}
+	return user, client
+}
+
 type adminFakeDNSProvider struct{}
 
 func (adminFakeDNSProvider) Present(context.Context, string, string) error { return nil }

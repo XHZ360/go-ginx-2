@@ -11,12 +11,15 @@ import (
 	"time"
 
 	"github.com/graphql-go/graphql"
+	"github.com/graphql-go/graphql/gqlerrors"
 	"github.com/graphql-go/graphql/language/ast"
 	"github.com/graphql-go/graphql/language/parser"
 	"github.com/graphql-go/graphql/language/source"
 	"github.com/simp-frp/go-ginx-2/internal/admin"
 	"github.com/simp-frp/go-ginx-2/internal/adminquery"
+	"github.com/simp-frp/go-ginx-2/internal/contracterr"
 	"github.com/simp-frp/go-ginx-2/internal/domain"
+	"github.com/simp-frp/go-ginx-2/internal/store"
 )
 
 const (
@@ -38,13 +41,13 @@ type Server struct {
 }
 
 type Entry struct {
-	ListenAddress            string
-	AdminCredentialsFile     string
-	Query                    adminquery.Service
-	Commands                 admin.Service
-	SessionIdleTimeout       time.Duration
-	SessionAbsoluteLifetime  time.Duration
-	Now                      func() time.Time
+	ListenAddress           string
+	AdminCredentialsFile    string
+	Query                   adminquery.Service
+	Commands                admin.Service
+	SessionIdleTimeout      time.Duration
+	SessionAbsoluteLifetime time.Duration
+	Now                     func() time.Time
 }
 
 type credentialsFile struct {
@@ -88,6 +91,36 @@ type graphqlRequest struct {
 	Query         string                 `json:"query"`
 	OperationName string                 `json:"operationName"`
 	Variables     map[string]interface{} `json:"variables"`
+}
+
+type graphqlContractError struct {
+	code    string
+	message string
+	fields  map[string]string
+	err     error
+}
+
+type clientPayload struct {
+	Client     adminquery.ClientDetail
+	Credential string
+}
+
+type proxyPayload struct {
+	Proxy adminquery.ProxyDetail
+	ID    string
+	Status string
+}
+
+type userPayload struct {
+	User   adminquery.UserDetail
+	ID     string
+	Status string
+}
+
+type certificatePayload struct {
+	Certificate adminquery.ManagedCertificateSummary
+	ProxyID     string
+	Status      string
 }
 
 func Listen(entry Entry) (*Server, error) {
@@ -222,11 +255,11 @@ func (server *Server) loginHandler(w http.ResponseWriter, r *http.Request) {
 		fields["password"] = "password is required"
 	}
 	if len(fields) > 0 {
-		writeErrorJSON(w, http.StatusBadRequest, "VALIDATION_FAILED", "validation failed", fields)
+		writeErrorJSON(w, http.StatusBadRequest, contracterr.CodeValidationFailed, "validation failed", fields)
 		return
 	}
 	if !domain.CheckPasswordHash(request.Password, server.creds[request.Username]) {
-		writeErrorJSON(w, http.StatusUnauthorized, "UNAUTHENTICATED", "invalid administrator credentials", nil)
+		writeErrorJSON(w, http.StatusUnauthorized, contracterr.CodeUnauthenticated, "invalid administrator credentials", nil)
 		return
 	}
 	if existingID, ok := server.sessionIDFromRequest(r); ok {
@@ -234,7 +267,7 @@ func (server *Server) loginHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	session, err := server.sessions.Create(request.Username)
 	if err != nil {
-		writeErrorJSON(w, http.StatusInternalServerError, "INTERNAL", err.Error(), nil)
+		writeErrorJSON(w, http.StatusInternalServerError, contracterr.CodeInternal, "internal server error", nil)
 		return
 	}
 	server.writeSessionCookie(w, r, session)
@@ -284,21 +317,21 @@ func (server *Server) graphqlHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	session, ok := server.authenticateSession(w, r)
 	if !ok {
-		writeErrorJSON(w, http.StatusUnauthorized, "UNAUTHENTICATED", "administrator session is required", nil)
+		server.writeGraphQLError(w, http.StatusUnauthorized, newGraphQLContractError(contracterr.CodeUnauthenticated, "administrator session is required", nil, nil))
 		return
 	}
 	var request graphqlRequest
 	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-		writeErrorJSON(w, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil)
+		server.writeGraphQLError(w, http.StatusBadRequest, newGraphQLContractError(contracterr.CodeValidationFailed, "invalid graphql request", nil, err))
 		return
 	}
 	operationType, err := graphqlOperationType(request)
 	if err != nil {
-		writeErrorJSON(w, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil)
+		server.writeGraphQLError(w, http.StatusBadRequest, newGraphQLContractError(contracterr.CodeValidationFailed, "invalid graphql operation", nil, err))
 		return
 	}
 	if operationType == "mutation" && !server.hasValidCSRFToken(r, session) {
-		writeErrorJSON(w, http.StatusForbidden, "INVALID_CSRF", "csrf token is invalid", nil)
+		server.writeGraphQLError(w, http.StatusForbidden, newGraphQLContractError(contracterr.CodeForbidden, "csrf token is invalid", nil, nil))
 		return
 	}
 	result := graphql.Do(graphql.Params{
@@ -308,8 +341,8 @@ func (server *Server) graphqlHandler(w http.ResponseWriter, r *http.Request) {
 		OperationName:  request.OperationName,
 		Context:        contextWithActor(r.Context(), session.Username),
 	})
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(result)
+	result.Errors = sanitizeGraphQLErrors(result.Errors)
+	writeJSON(w, http.StatusOK, result)
 }
 
 func (server *Server) sessionIDFromRequest(r *http.Request) (string, bool) {
@@ -427,27 +460,39 @@ func graphqlOperationType(request graphqlRequest) (string, error) {
 }
 
 func (server *Server) buildSchema() (graphql.Schema, error) {
-	managedCertificateType := graphql.NewObject(graphql.ObjectConfig{Name: "ManagedCertificate", Fields: graphql.Fields{
+	pageInfoType := graphql.NewObject(graphql.ObjectConfig{Name: "AdminPageInfo", Fields: graphql.Fields{
+		"page":       &graphql.Field{Type: graphql.NewNonNull(graphql.Int)},
+		"pageSize":   &graphql.Field{Type: graphql.NewNonNull(graphql.Int)},
+		"totalCount": &graphql.Field{Type: graphql.NewNonNull(graphql.Int)},
+		"totalPages": &graphql.Field{Type: graphql.NewNonNull(graphql.Int)},
+		"hasNext":    &graphql.Field{Type: graphql.NewNonNull(graphql.Boolean)},
+		"hasPrev":    &graphql.Field{Type: graphql.NewNonNull(graphql.Boolean)},
+	}})
+	managedCertificateType := graphql.NewObject(graphql.ObjectConfig{Name: "AdminManagedCertificate", Fields: graphql.Fields{
 		"proxyId":       &graphql.Field{Type: graphql.String},
 		"certificateId": &graphql.Field{Type: graphql.String},
 		"host":          &graphql.Field{Type: graphql.String},
 		"status":        &graphql.Field{Type: graphql.String},
-		"certFile":      &graphql.Field{Type: graphql.String},
-		"keyFile":       &graphql.Field{Type: graphql.String},
+		"notAfter":      &graphql.Field{Type: graphql.String, Resolve: nullableCertificateTimeResolve(func(value adminquery.ManagedCertificateSummary) *time.Time { return value.NotAfter })},
+		"lastIssuedAt":  &graphql.Field{Type: graphql.String, Resolve: nullableCertificateTimeResolve(func(value adminquery.ManagedCertificateSummary) *time.Time { return value.LastIssuedAt })},
+		"lastRenewedAt": &graphql.Field{Type: graphql.String, Resolve: nullableCertificateTimeResolve(func(value adminquery.ManagedCertificateSummary) *time.Time { return value.LastRenewedAt })},
 		"lastError":     &graphql.Field{Type: graphql.String},
 	}})
-	auditType := graphql.NewObject(graphql.ObjectConfig{Name: "AuditEvent", Fields: graphql.Fields{
+	auditType := graphql.NewObject(graphql.ObjectConfig{Name: "AdminAuditEvent", Fields: graphql.Fields{
 		"id":           &graphql.Field{Type: graphql.String},
-		"actorUserId":  &graphql.Field{Type: graphql.String},
+		"actorType":    &graphql.Field{Type: graphql.String},
+		"actorId":      &graphql.Field{Type: graphql.String},
 		"resourceType": &graphql.Field{Type: graphql.String},
 		"resourceId":   &graphql.Field{Type: graphql.String},
 		"action":       &graphql.Field{Type: graphql.String},
 		"result":       &graphql.Field{Type: graphql.String},
 		"createdAt":    &graphql.Field{Type: graphql.String, Resolve: timeResolve(func(event adminquery.AuditListItem) time.Time { return event.CreatedAt })},
 	}})
-	clientRuntimeType := graphql.NewObject(graphql.ObjectConfig{Name: "ClientRuntime", Fields: graphql.Fields{
+	clientRuntimeType := graphql.NewObject(graphql.ObjectConfig{Name: "AdminClientRuntime", Fields: graphql.Fields{
 		"online":        &graphql.Field{Type: graphql.Boolean},
 		"protocol":      &graphql.Field{Type: graphql.String},
+		"connectedAt":   &graphql.Field{Type: graphql.String, Resolve: nullableClientRuntimeTimeResolve(func(value adminquery.ClientRuntime) *time.Time { return value.ConnectedAt })},
+		"lastHeartbeat": &graphql.Field{Type: graphql.String, Resolve: nullableClientRuntimeTimeResolve(func(value adminquery.ClientRuntime) *time.Time { return value.LastHeartbeat })},
 		"configVersion": &graphql.Field{Type: graphql.Int},
 		"activeProxies": &graphql.Field{Type: graphql.Int},
 		"activeStreams": &graphql.Field{Type: graphql.Int},
@@ -455,53 +500,71 @@ func (server *Server) buildSchema() (graphql.Schema, error) {
 		"downloadBytes": &graphql.Field{Type: graphql.Int},
 		"errorSummary":  &graphql.Field{Type: graphql.String},
 	}})
-	clientType := graphql.NewObject(graphql.ObjectConfig{Name: "Client", Fields: graphql.Fields{
+	proxySummaryType := graphql.NewObject(graphql.ObjectConfig{Name: "AdminProxySummary", Fields: graphql.Fields{
+		"id":                   &graphql.Field{Type: graphql.String},
+		"name":                 &graphql.Field{Type: graphql.String},
+		"type":                 &graphql.Field{Type: graphql.String},
+		"status":               &graphql.Field{Type: graphql.String},
+		"runtimeStatus":        &graphql.Field{Type: graphql.String},
+		"entryHost":            &graphql.Field{Type: graphql.String},
+		"entryPort":            &graphql.Field{Type: graphql.Int},
+		"targetHost":           &graphql.Field{Type: graphql.String},
+		"targetPort":           &graphql.Field{Type: graphql.Int},
+		"activeTCPConnections": &graphql.Field{Type: graphql.Int},
+	}})
+	clientType := graphql.NewObject(graphql.ObjectConfig{Name: "AdminClient", Fields: graphql.Fields{
 		"id":            &graphql.Field{Type: graphql.String},
 		"userId":        &graphql.Field{Type: graphql.String},
 		"name":          &graphql.Field{Type: graphql.String},
 		"status":        &graphql.Field{Type: graphql.String},
 		"version":       &graphql.Field{Type: graphql.Int},
 		"runtime":       &graphql.Field{Type: clientRuntimeType},
-		"proxyIds":      &graphql.Field{Type: graphql.NewList(graphql.String)},
 		"lastOnlineAt":  &graphql.Field{Type: graphql.String, Resolve: nullableTimeResolveClientOnline()},
 		"lastOfflineAt": &graphql.Field{Type: graphql.String, Resolve: nullableTimeResolveClientOffline()},
+		"createdAt":     &graphql.Field{Type: graphql.String, Resolve: clientCreatedAtResolve()},
+		"updatedAt":     &graphql.Field{Type: graphql.String, Resolve: clientUpdatedAtResolve()},
 	}})
-	userType := graphql.NewObject(graphql.ObjectConfig{Name: "User", Fields: graphql.Fields{
-		"id":       &graphql.Field{Type: graphql.String},
-		"username": &graphql.Field{Type: graphql.String},
-		"role":     &graphql.Field{Type: graphql.String},
-		"status":   &graphql.Field{Type: graphql.String},
-		"clientCount":   &graphql.Field{Type: graphql.Int},
-		"proxyCount":    &graphql.Field{Type: graphql.Int},
-		"uploadBytes":   &graphql.Field{Type: graphql.Int},
-		"downloadBytes": &graphql.Field{Type: graphql.Int},
-		"hasPasswordHash": &graphql.Field{Type: graphql.Boolean, Resolve: func(params graphql.ResolveParams) (interface{}, error) {
-			switch value := params.Source.(type) {
-			case adminquery.UserListItem:
-				return value.HasPasswordHash, nil
-			case adminquery.UserDetail:
-				return value.HasPasswordHash, nil
-			case domain.User:
-				return value.PasswordHash != "", nil
-			default:
-				return false, nil
-			}
-		}},
+	clientDetailType := graphql.NewObject(graphql.ObjectConfig{Name: "AdminClientDetail", Fields: graphql.Fields{
+		"id":             &graphql.Field{Type: graphql.String},
+		"userId":         &graphql.Field{Type: graphql.String},
+		"name":           &graphql.Field{Type: graphql.String},
+		"status":         &graphql.Field{Type: graphql.String},
+		"version":        &graphql.Field{Type: graphql.Int},
+		"runtime":        &graphql.Field{Type: clientRuntimeType},
+		"lastOnlineAt":   &graphql.Field{Type: graphql.String, Resolve: clientDetailTimeResolve(func(value adminquery.ClientDetail) *time.Time { return value.LastOnlineAt })},
+		"lastOfflineAt":  &graphql.Field{Type: graphql.String, Resolve: clientDetailTimeResolve(func(value adminquery.ClientDetail) *time.Time { return value.LastOfflineAt })},
+		"managedProxies": &graphql.Field{Type: graphql.NewList(proxySummaryType)},
+		"createdAt":      &graphql.Field{Type: graphql.String, Resolve: timeResolve(func(value adminquery.ClientDetail) time.Time { return value.CreatedAt })},
+		"updatedAt":      &graphql.Field{Type: graphql.String, Resolve: timeResolve(func(value adminquery.ClientDetail) time.Time { return value.UpdatedAt })},
 	}})
-	proxyType := graphql.NewObject(graphql.ObjectConfig{Name: "Proxy", Fields: graphql.Fields{
+	userType := graphql.NewObject(graphql.ObjectConfig{Name: "AdminUser", Fields: graphql.Fields{
+		"id":              &graphql.Field{Type: graphql.String},
+		"username":        &graphql.Field{Type: graphql.String},
+		"role":            &graphql.Field{Type: graphql.String},
+		"status":          &graphql.Field{Type: graphql.String},
+		"clientCount":     &graphql.Field{Type: graphql.Int},
+		"proxyCount":      &graphql.Field{Type: graphql.Int},
+		"uploadBytes":     &graphql.Field{Type: graphql.Int},
+		"downloadBytes":   &graphql.Field{Type: graphql.Int},
+		"lastActivityAt":  &graphql.Field{Type: graphql.String, Resolve: nullableUserTimeResolve(func(value adminquery.UserListItem) *time.Time { return value.LastActivityAt })},
+		"hasPasswordHash": &graphql.Field{Type: graphql.Boolean},
+		"createdAt":       &graphql.Field{Type: graphql.String, Resolve: userCreatedAtResolve()},
+		"updatedAt":       &graphql.Field{Type: graphql.String, Resolve: userUpdatedAtResolve()},
+	}})
+	proxyConfigType := graphql.NewObject(graphql.ObjectConfig{Name: "AdminProxyConfig", Fields: graphql.Fields{
+		"entryHost":  &graphql.Field{Type: graphql.String},
+		"entryPort":  &graphql.Field{Type: graphql.Int},
+		"targetHost": &graphql.Field{Type: graphql.String},
+		"targetPort": &graphql.Field{Type: graphql.Int},
+	}})
+	proxyType := graphql.NewObject(graphql.ObjectConfig{Name: "AdminProxy", Fields: graphql.Fields{
 		"id":                   &graphql.Field{Type: graphql.String},
 		"userId":               &graphql.Field{Type: graphql.String},
 		"clientId":             &graphql.Field{Type: graphql.String},
 		"name":                 &graphql.Field{Type: graphql.String},
 		"type":                 &graphql.Field{Type: graphql.String},
 		"status":               &graphql.Field{Type: graphql.String},
-		"entryHost":            &graphql.Field{Type: graphql.String},
-		"entryPort":            &graphql.Field{Type: graphql.Int},
-		"targetHost":           &graphql.Field{Type: graphql.String},
-		"targetPort":           &graphql.Field{Type: graphql.Int},
 		"description":          &graphql.Field{Type: graphql.String},
-		"certFile":             &graphql.Field{Type: graphql.String},
-		"keyFile":              &graphql.Field{Type: graphql.String},
 		"runtimeStatus":        &graphql.Field{Type: graphql.String},
 		"activeTCPConnections": &graphql.Field{Type: graphql.Int},
 		"uploadBytes":          &graphql.Field{Type: graphql.Int},
@@ -509,9 +572,12 @@ func (server *Server) buildSchema() (graphql.Schema, error) {
 		"tcpErrorCount":        &graphql.Field{Type: graphql.Int},
 		"udpErrorCount":        &graphql.Field{Type: graphql.Int},
 		"httpErrorCount":       &graphql.Field{Type: graphql.Int},
+		"config":               &graphql.Field{Type: proxyConfigType},
 		"certificate":          &graphql.Field{Type: managedCertificateType},
+		"createdAt":            &graphql.Field{Type: graphql.String, Resolve: proxyCreatedAtResolve()},
+		"updatedAt":            &graphql.Field{Type: graphql.String, Resolve: proxyUpdatedAtResolve()},
 	}})
-	dashboardType := graphql.NewObject(graphql.ObjectConfig{Name: "DashboardSummary", Fields: graphql.Fields{
+	dashboardType := graphql.NewObject(graphql.ObjectConfig{Name: "AdminDashboard", Fields: graphql.Fields{
 		"onlineClientCount":        &graphql.Field{Type: graphql.Int},
 		"enabledProxyCount":        &graphql.Field{Type: graphql.Int},
 		"activeTCPConnectionCount": &graphql.Field{Type: graphql.Int},
@@ -521,69 +587,465 @@ func (server *Server) buildSchema() (graphql.Schema, error) {
 		"cumulativeUDPErrorCount":  &graphql.Field{Type: graphql.Int},
 		"cumulativeHTTPErrorCount": &graphql.Field{Type: graphql.Int},
 	}})
+
+	paginationInput := graphql.NewInputObject(graphql.InputObjectConfig{Name: "AdminPaginationInput", Fields: graphql.InputObjectConfigFieldMap{
+		"page":     &graphql.InputObjectFieldConfig{Type: graphql.Int},
+		"pageSize": &graphql.InputObjectFieldConfig{Type: graphql.Int},
+	}})
+	sortInput := graphql.NewInputObject(graphql.InputObjectConfig{Name: "AdminSortInput", Fields: graphql.InputObjectConfigFieldMap{
+		"field":     &graphql.InputObjectFieldConfig{Type: graphql.String},
+		"direction": &graphql.InputObjectFieldConfig{Type: graphql.String},
+	}})
+	userFilterInput := graphql.NewInputObject(graphql.InputObjectConfig{Name: "AdminUserFilterInput", Fields: graphql.InputObjectConfigFieldMap{
+		"query":  &graphql.InputObjectFieldConfig{Type: graphql.String},
+		"role":   &graphql.InputObjectFieldConfig{Type: graphql.String},
+		"status": &graphql.InputObjectFieldConfig{Type: graphql.String},
+	}})
+	clientFilterInput := graphql.NewInputObject(graphql.InputObjectConfig{Name: "AdminClientFilterInput", Fields: graphql.InputObjectConfigFieldMap{
+		"query":  &graphql.InputObjectFieldConfig{Type: graphql.String},
+		"userId": &graphql.InputObjectFieldConfig{Type: graphql.String},
+		"status": &graphql.InputObjectFieldConfig{Type: graphql.String},
+		"online": &graphql.InputObjectFieldConfig{Type: graphql.Boolean},
+	}})
+	proxyFilterInput := graphql.NewInputObject(graphql.InputObjectConfig{Name: "AdminProxyFilterInput", Fields: graphql.InputObjectConfigFieldMap{
+		"query":    &graphql.InputObjectFieldConfig{Type: graphql.String},
+		"userId":   &graphql.InputObjectFieldConfig{Type: graphql.String},
+		"clientId": &graphql.InputObjectFieldConfig{Type: graphql.String},
+		"type":     &graphql.InputObjectFieldConfig{Type: graphql.String},
+		"status":   &graphql.InputObjectFieldConfig{Type: graphql.String},
+	}})
+	certificateFilterInput := graphql.NewInputObject(graphql.InputObjectConfig{Name: "AdminCertificateFilterInput", Fields: graphql.InputObjectConfigFieldMap{
+		"query":  &graphql.InputObjectFieldConfig{Type: graphql.String},
+		"status": &graphql.InputObjectFieldConfig{Type: graphql.String},
+	}})
+	auditFilterInput := graphql.NewInputObject(graphql.InputObjectConfig{Name: "AdminAuditFilterInput", Fields: graphql.InputObjectConfigFieldMap{
+		"query":        &graphql.InputObjectFieldConfig{Type: graphql.String},
+		"actorType":    &graphql.InputObjectFieldConfig{Type: graphql.String},
+		"actorId":      &graphql.InputObjectFieldConfig{Type: graphql.String},
+		"resourceType": &graphql.InputObjectFieldConfig{Type: graphql.String},
+		"action":       &graphql.InputObjectFieldConfig{Type: graphql.String},
+		"result":       &graphql.InputObjectFieldConfig{Type: graphql.String},
+	}})
+	usersInput := graphql.NewInputObject(graphql.InputObjectConfig{Name: "AdminUsersInput", Fields: graphql.InputObjectConfigFieldMap{
+		"page":   &graphql.InputObjectFieldConfig{Type: paginationInput},
+		"filter": &graphql.InputObjectFieldConfig{Type: userFilterInput},
+		"sort":   &graphql.InputObjectFieldConfig{Type: sortInput},
+	}})
+	clientsInput := graphql.NewInputObject(graphql.InputObjectConfig{Name: "AdminClientsInput", Fields: graphql.InputObjectConfigFieldMap{
+		"page":   &graphql.InputObjectFieldConfig{Type: paginationInput},
+		"filter": &graphql.InputObjectFieldConfig{Type: clientFilterInput},
+		"sort":   &graphql.InputObjectFieldConfig{Type: sortInput},
+	}})
+	proxiesInput := graphql.NewInputObject(graphql.InputObjectConfig{Name: "AdminProxiesInput", Fields: graphql.InputObjectConfigFieldMap{
+		"page":   &graphql.InputObjectFieldConfig{Type: paginationInput},
+		"filter": &graphql.InputObjectFieldConfig{Type: proxyFilterInput},
+		"sort":   &graphql.InputObjectFieldConfig{Type: sortInput},
+	}})
+	certificatesInput := graphql.NewInputObject(graphql.InputObjectConfig{Name: "AdminCertificatesInput", Fields: graphql.InputObjectConfigFieldMap{
+		"page":   &graphql.InputObjectFieldConfig{Type: paginationInput},
+		"filter": &graphql.InputObjectFieldConfig{Type: certificateFilterInput},
+		"sort":   &graphql.InputObjectFieldConfig{Type: sortInput},
+	}})
+	auditInput := graphql.NewInputObject(graphql.InputObjectConfig{Name: "AdminAuditInput", Fields: graphql.InputObjectConfigFieldMap{
+		"page":   &graphql.InputObjectFieldConfig{Type: paginationInput},
+		"filter": &graphql.InputObjectFieldConfig{Type: auditFilterInput},
+		"sort":   &graphql.InputObjectFieldConfig{Type: sortInput},
+	}})
+	proxyConfigInput := graphql.NewInputObject(graphql.InputObjectConfig{Name: "AdminProxyConfigInput", Fields: graphql.InputObjectConfigFieldMap{
+		"entryHost":  &graphql.InputObjectFieldConfig{Type: graphql.String},
+		"entryPort":  &graphql.InputObjectFieldConfig{Type: graphql.Int},
+		"targetHost": &graphql.InputObjectFieldConfig{Type: graphql.String},
+		"targetPort": &graphql.InputObjectFieldConfig{Type: graphql.Int},
+		"certFile":   &graphql.InputObjectFieldConfig{Type: graphql.String},
+		"keyFile":    &graphql.InputObjectFieldConfig{Type: graphql.String},
+	}})
+	createUserInput := graphql.NewInputObject(graphql.InputObjectConfig{Name: "AdminCreateUserInput", Fields: graphql.InputObjectConfigFieldMap{
+		"username": &graphql.InputObjectFieldConfig{Type: graphql.NewNonNull(graphql.String)},
+		"password": &graphql.InputObjectFieldConfig{Type: graphql.String},
+		"role":     &graphql.InputObjectFieldConfig{Type: graphql.String},
+	}})
+	userIDInput := graphql.NewInputObject(graphql.InputObjectConfig{Name: "AdminUserIDInput", Fields: graphql.InputObjectConfigFieldMap{
+		"id": &graphql.InputObjectFieldConfig{Type: graphql.NewNonNull(graphql.String)},
+	}})
+	setUserPasswordInput := graphql.NewInputObject(graphql.InputObjectConfig{Name: "AdminSetUserPasswordInput", Fields: graphql.InputObjectConfigFieldMap{
+		"id":       &graphql.InputObjectFieldConfig{Type: graphql.NewNonNull(graphql.String)},
+		"password": &graphql.InputObjectFieldConfig{Type: graphql.NewNonNull(graphql.String)},
+	}})
+	createClientInput := graphql.NewInputObject(graphql.InputObjectConfig{Name: "AdminCreateClientInput", Fields: graphql.InputObjectConfigFieldMap{
+		"userId":     &graphql.InputObjectFieldConfig{Type: graphql.NewNonNull(graphql.String)},
+		"name":       &graphql.InputObjectFieldConfig{Type: graphql.NewNonNull(graphql.String)},
+		"credential": &graphql.InputObjectFieldConfig{Type: graphql.String},
+	}})
+	createProxyInput := graphql.NewInputObject(graphql.InputObjectConfig{Name: "AdminCreateProxyInput", Fields: graphql.InputObjectConfigFieldMap{
+		"userId":      &graphql.InputObjectFieldConfig{Type: graphql.NewNonNull(graphql.String)},
+		"clientId":    &graphql.InputObjectFieldConfig{Type: graphql.NewNonNull(graphql.String)},
+		"name":        &graphql.InputObjectFieldConfig{Type: graphql.NewNonNull(graphql.String)},
+		"type":        &graphql.InputObjectFieldConfig{Type: graphql.NewNonNull(graphql.String)},
+		"description": &graphql.InputObjectFieldConfig{Type: graphql.String},
+		"config":      &graphql.InputObjectFieldConfig{Type: graphql.NewNonNull(proxyConfigInput)},
+	}})
+	updateProxyInput := graphql.NewInputObject(graphql.InputObjectConfig{Name: "AdminUpdateProxyInput", Fields: graphql.InputObjectConfigFieldMap{
+		"id":          &graphql.InputObjectFieldConfig{Type: graphql.NewNonNull(graphql.String)},
+		"type":        &graphql.InputObjectFieldConfig{Type: graphql.String},
+		"name":        &graphql.InputObjectFieldConfig{Type: graphql.NewNonNull(graphql.String)},
+		"description": &graphql.InputObjectFieldConfig{Type: graphql.String},
+		"config":      &graphql.InputObjectFieldConfig{Type: graphql.NewNonNull(proxyConfigInput)},
+	}})
+	certificateInput := graphql.NewInputObject(graphql.InputObjectConfig{Name: "AdminCertificateMutationInput", Fields: graphql.InputObjectConfigFieldMap{
+		"proxyId": &graphql.InputObjectFieldConfig{Type: graphql.NewNonNull(graphql.String)},
+	}})
+
+	usersPageType := graphql.NewObject(graphql.ObjectConfig{Name: "AdminUsersPage", Fields: graphql.Fields{
+		"items":      &graphql.Field{Type: graphql.NewList(userType)},
+		"totalCount": &graphql.Field{Type: graphql.Int},
+		"pageInfo":   &graphql.Field{Type: pageInfoType},
+	}})
+	clientsPageType := graphql.NewObject(graphql.ObjectConfig{Name: "AdminClientsPage", Fields: graphql.Fields{
+		"items":      &graphql.Field{Type: graphql.NewList(clientType)},
+		"totalCount": &graphql.Field{Type: graphql.Int},
+		"pageInfo":   &graphql.Field{Type: pageInfoType},
+	}})
+	proxiesPageType := graphql.NewObject(graphql.ObjectConfig{Name: "AdminProxiesPage", Fields: graphql.Fields{
+		"items":      &graphql.Field{Type: graphql.NewList(proxyType)},
+		"totalCount": &graphql.Field{Type: graphql.Int},
+		"pageInfo":   &graphql.Field{Type: pageInfoType},
+	}})
+	certificatesPageType := graphql.NewObject(graphql.ObjectConfig{Name: "AdminCertificatesPage", Fields: graphql.Fields{
+		"items":      &graphql.Field{Type: graphql.NewList(managedCertificateType)},
+		"totalCount": &graphql.Field{Type: graphql.Int},
+		"pageInfo":   &graphql.Field{Type: pageInfoType},
+	}})
+	auditPageType := graphql.NewObject(graphql.ObjectConfig{Name: "AdminAuditPage", Fields: graphql.Fields{
+		"items":      &graphql.Field{Type: graphql.NewList(auditType)},
+		"totalCount": &graphql.Field{Type: graphql.Int},
+		"pageInfo":   &graphql.Field{Type: pageInfoType},
+	}})
+	userPayloadType := graphql.NewObject(graphql.ObjectConfig{Name: "AdminUserPayload", Fields: graphql.Fields{
+		"user":   &graphql.Field{Type: userType},
+		"userId": &graphql.Field{Type: graphql.String, Resolve: func(params graphql.ResolveParams) (interface{}, error) { return extractUserPayload(params.Source).ID, nil }},
+		"status": &graphql.Field{Type: graphql.String, Resolve: func(params graphql.ResolveParams) (interface{}, error) { return extractUserPayload(params.Source).Status, nil }},
+	}})
+	clientPayloadType := graphql.NewObject(graphql.ObjectConfig{Name: "AdminClientPayload", Fields: graphql.Fields{
+		"client":     &graphql.Field{Type: clientDetailType, Resolve: func(params graphql.ResolveParams) (interface{}, error) { return extractClientPayload(params.Source).Client, nil }},
+		"clientId":   &graphql.Field{Type: graphql.String, Resolve: func(params graphql.ResolveParams) (interface{}, error) { return extractClientPayload(params.Source).Client.ID, nil }},
+		"credential": &graphql.Field{Type: graphql.String, Resolve: func(params graphql.ResolveParams) (interface{}, error) { return extractClientPayload(params.Source).Credential, nil }},
+	}})
+	proxyPayloadType := graphql.NewObject(graphql.ObjectConfig{Name: "AdminProxyPayload", Fields: graphql.Fields{
+		"proxy":   &graphql.Field{Type: proxyType, Resolve: func(params graphql.ResolveParams) (interface{}, error) { return extractProxyPayload(params.Source).Proxy, nil }},
+		"proxyId": &graphql.Field{Type: graphql.String, Resolve: func(params graphql.ResolveParams) (interface{}, error) { return extractProxyPayload(params.Source).ID, nil }},
+		"status":  &graphql.Field{Type: graphql.String, Resolve: func(params graphql.ResolveParams) (interface{}, error) { return extractProxyPayload(params.Source).Status, nil }},
+	}})
+	certificatePayloadType := graphql.NewObject(graphql.ObjectConfig{Name: "AdminCertificatePayload", Fields: graphql.Fields{
+		"certificate": &graphql.Field{Type: managedCertificateType, Resolve: func(params graphql.ResolveParams) (interface{}, error) { return extractCertificatePayload(params.Source).Certificate, nil }},
+		"proxyId":     &graphql.Field{Type: graphql.String, Resolve: func(params graphql.ResolveParams) (interface{}, error) { return extractCertificatePayload(params.Source).ProxyID, nil }},
+		"status":      &graphql.Field{Type: graphql.String, Resolve: func(params graphql.ResolveParams) (interface{}, error) { return extractCertificatePayload(params.Source).Status, nil }},
+	}})
+
 	query := graphql.NewObject(graphql.ObjectConfig{Name: "Query", Fields: graphql.Fields{
-		"dashboardSummary": &graphql.Field{Type: dashboardType, Resolve: func(params graphql.ResolveParams) (interface{}, error) {
+		"dashboard": &graphql.Field{Type: dashboardType, Resolve: server.wrapResolve(func(params graphql.ResolveParams) (interface{}, error) {
 			return server.query.DashboardSummary(params.Context)
-		}},
-		"users": &graphql.Field{Type: graphql.NewList(userType), Resolve: func(params graphql.ResolveParams) (interface{}, error) {
-			return server.query.ListUsers(params.Context)
-		}},
-		"user": &graphql.Field{Type: userType, Args: graphql.FieldConfigArgument{"id": &graphql.ArgumentConfig{Type: graphql.NewNonNull(graphql.String)}}, Resolve: func(params graphql.ResolveParams) (interface{}, error) {
+		})},
+		"users": &graphql.Field{Type: usersPageType, Args: graphql.FieldConfigArgument{"input": &graphql.ArgumentConfig{Type: usersInput}}, Resolve: server.wrapResolve(func(params graphql.ResolveParams) (interface{}, error) {
+			return server.query.ListUsers(params.Context, userListInputFromArgs(params.Args))
+		})},
+		"user": &graphql.Field{Type: userType, Args: graphql.FieldConfigArgument{"id": &graphql.ArgumentConfig{Type: graphql.NewNonNull(graphql.String)}}, Resolve: server.wrapResolve(func(params graphql.ResolveParams) (interface{}, error) {
 			return server.query.UserDetail(params.Context, params.Args["id"].(string))
-		}},
-		"clients": &graphql.Field{Type: graphql.NewList(clientType), Resolve: func(params graphql.ResolveParams) (interface{}, error) {
-			return server.query.ListClients(params.Context)
-		}},
-		"client": &graphql.Field{Type: clientType, Args: graphql.FieldConfigArgument{"id": &graphql.ArgumentConfig{Type: graphql.NewNonNull(graphql.String)}}, Resolve: func(params graphql.ResolveParams) (interface{}, error) {
+		})},
+		"clients": &graphql.Field{Type: clientsPageType, Args: graphql.FieldConfigArgument{"input": &graphql.ArgumentConfig{Type: clientsInput}}, Resolve: server.wrapResolve(func(params graphql.ResolveParams) (interface{}, error) {
+			return server.query.ListClients(params.Context, clientListInputFromArgs(params.Args))
+		})},
+		"client": &graphql.Field{Type: clientDetailType, Args: graphql.FieldConfigArgument{"id": &graphql.ArgumentConfig{Type: graphql.NewNonNull(graphql.String)}}, Resolve: server.wrapResolve(func(params graphql.ResolveParams) (interface{}, error) {
 			return server.query.ClientDetail(params.Context, params.Args["id"].(string))
-		}},
-		"proxies": &graphql.Field{Type: graphql.NewList(proxyType), Resolve: func(params graphql.ResolveParams) (interface{}, error) {
-			return server.query.ListProxies(params.Context)
-		}},
-		"proxy": &graphql.Field{Type: proxyType, Args: graphql.FieldConfigArgument{"id": &graphql.ArgumentConfig{Type: graphql.NewNonNull(graphql.String)}}, Resolve: func(params graphql.ResolveParams) (interface{}, error) {
+		})},
+		"proxies": &graphql.Field{Type: proxiesPageType, Args: graphql.FieldConfigArgument{"input": &graphql.ArgumentConfig{Type: proxiesInput}}, Resolve: server.wrapResolve(func(params graphql.ResolveParams) (interface{}, error) {
+			return server.query.ListProxies(params.Context, proxyListInputFromArgs(params.Args))
+		})},
+		"proxy": &graphql.Field{Type: proxyType, Args: graphql.FieldConfigArgument{"id": &graphql.ArgumentConfig{Type: graphql.NewNonNull(graphql.String)}}, Resolve: server.wrapResolve(func(params graphql.ResolveParams) (interface{}, error) {
 			return server.query.ProxyDetail(params.Context, params.Args["id"].(string))
-		}},
-		"managedCertificates": &graphql.Field{Type: graphql.NewList(managedCertificateType), Resolve: func(params graphql.ResolveParams) (interface{}, error) {
-			return server.query.ListManagedCertificates(params.Context)
-		}},
-		"auditEvents": &graphql.Field{Type: graphql.NewList(auditType), Args: graphql.FieldConfigArgument{"limit": &graphql.ArgumentConfig{Type: graphql.Int}}, Resolve: func(params graphql.ResolveParams) (interface{}, error) {
-			limit, _ := params.Args["limit"].(int)
-			return server.query.ListRecentAuditEvents(params.Context, limit)
-		}},
+		})},
+		"certificates": &graphql.Field{Type: certificatesPageType, Args: graphql.FieldConfigArgument{"input": &graphql.ArgumentConfig{Type: certificatesInput}}, Resolve: server.wrapResolve(func(params graphql.ResolveParams) (interface{}, error) {
+			return server.query.ListManagedCertificates(params.Context, certificateListInputFromArgs(params.Args))
+		})},
+		"audit": &graphql.Field{Type: auditPageType, Args: graphql.FieldConfigArgument{"input": &graphql.ArgumentConfig{Type: auditInput}}, Resolve: server.wrapResolve(func(params graphql.ResolveParams) (interface{}, error) {
+			return server.query.ListRecentAuditEvents(params.Context, auditListInputFromArgs(params.Args))
+		})},
 	}})
 	mutation := graphql.NewObject(graphql.ObjectConfig{Name: "Mutation", Fields: graphql.Fields{
-		"createUser": &graphql.Field{Type: userType, Args: graphql.FieldConfigArgument{"username": &graphql.ArgumentConfig{Type: graphql.NewNonNull(graphql.String)}, "password": &graphql.ArgumentConfig{Type: graphql.String}, "role": &graphql.ArgumentConfig{Type: graphql.String}}, Resolve: func(params graphql.ResolveParams) (interface{}, error) {
-			return server.commands.CreateUser(params.Context, admin.CreateUserInput{Username: params.Args["username"].(string), Password: stringArg(params.Args, "password"), Role: domain.Role(defaultString(stringArg(params.Args, "role"), string(domain.RoleUser))), ActorID: actorFromContext(params.Context)})
-		}},
-		"disableUser": &graphql.Field{Type: graphql.Boolean, Args: graphql.FieldConfigArgument{"id": &graphql.ArgumentConfig{Type: graphql.NewNonNull(graphql.String)}}, Resolve: func(params graphql.ResolveParams) (interface{}, error) {
-			return true, server.commands.DisableUser(params.Context, params.Args["id"].(string), actorFromContext(params.Context))
-		}},
-		"setUserPassword": &graphql.Field{Type: graphql.Boolean, Args: graphql.FieldConfigArgument{"id": &graphql.ArgumentConfig{Type: graphql.NewNonNull(graphql.String)}, "password": &graphql.ArgumentConfig{Type: graphql.NewNonNull(graphql.String)}}, Resolve: func(params graphql.ResolveParams) (interface{}, error) {
-			return true, server.commands.SetUserPassword(params.Context, params.Args["id"].(string), params.Args["password"].(string), actorFromContext(params.Context))
-		}},
-		"createProxy": &graphql.Field{Type: proxyType, Args: proxyMutationArgs(true), Resolve: func(params graphql.ResolveParams) (interface{}, error) {
-			return server.commands.CreateProxy(params.Context, createProxyInputFromArgs(params.Args, actorFromContext(params.Context)))
-		}},
-		"updateProxy": &graphql.Field{Type: proxyType, Args: proxyMutationArgs(false), Resolve: func(params graphql.ResolveParams) (interface{}, error) {
-			return server.commands.UpdateProxy(params.Context, updateProxyInputFromArgs(params.Args, actorFromContext(params.Context)))
-		}},
-		"enableProxy": &graphql.Field{Type: graphql.Boolean, Args: graphql.FieldConfigArgument{"id": &graphql.ArgumentConfig{Type: graphql.NewNonNull(graphql.String)}}, Resolve: func(params graphql.ResolveParams) (interface{}, error) {
-			return true, server.commands.EnableProxy(params.Context, params.Args["id"].(string), actorFromContext(params.Context))
-		}},
-		"disableProxy": &graphql.Field{Type: graphql.Boolean, Args: graphql.FieldConfigArgument{"id": &graphql.ArgumentConfig{Type: graphql.NewNonNull(graphql.String)}}, Resolve: func(params graphql.ResolveParams) (interface{}, error) {
-			return true, server.commands.DisableProxy(params.Context, params.Args["id"].(string), actorFromContext(params.Context))
-		}},
-		"deleteProxy": &graphql.Field{Type: graphql.Boolean, Args: graphql.FieldConfigArgument{"id": &graphql.ArgumentConfig{Type: graphql.NewNonNull(graphql.String)}}, Resolve: func(params graphql.ResolveParams) (interface{}, error) {
-			return true, server.commands.DeleteProxy(params.Context, params.Args["id"].(string), actorFromContext(params.Context))
-		}},
-		"issueManagedCertificate": &graphql.Field{Type: managedCertificateType, Args: graphql.FieldConfigArgument{"proxyId": &graphql.ArgumentConfig{Type: graphql.NewNonNull(graphql.String)}}, Resolve: func(params graphql.ResolveParams) (interface{}, error) {
-			return server.commands.IssueManagedCertificate(params.Context, admin.CertificateInput{ProxyID: params.Args["proxyId"].(string), ActorID: actorFromContext(params.Context)})
-		}},
-		"renewManagedCertificate": &graphql.Field{Type: managedCertificateType, Args: graphql.FieldConfigArgument{"proxyId": &graphql.ArgumentConfig{Type: graphql.NewNonNull(graphql.String)}}, Resolve: func(params graphql.ResolveParams) (interface{}, error) {
-			return server.commands.RenewManagedCertificate(params.Context, admin.CertificateInput{ProxyID: params.Args["proxyId"].(string), ActorID: actorFromContext(params.Context)})
-		}},
+		"createUser": &graphql.Field{Type: userPayloadType, Args: graphql.FieldConfigArgument{"input": &graphql.ArgumentConfig{Type: graphql.NewNonNull(createUserInput)}}, Resolve: server.wrapResolve(func(params graphql.ResolveParams) (interface{}, error) {
+			input := mapArg(params.Args, "input")
+			created, err := server.commands.CreateUser(params.Context, admin.CreateUserInput{Username: stringValue(input, "username"), Password: stringValue(input, "password"), Role: domain.Role(defaultString(stringValue(input, "role"), string(domain.RoleUser))), ActorID: actorFromContext(params.Context)})
+			if err != nil {
+				return nil, err
+			}
+			detail, err := server.query.UserDetail(params.Context, created.ID)
+			if err != nil {
+				return nil, err
+			}
+			return userPayload{User: detail, ID: created.ID, Status: string(detail.Status)}, nil
+		})},
+		"disableUser": &graphql.Field{Type: userPayloadType, Args: graphql.FieldConfigArgument{"input": &graphql.ArgumentConfig{Type: graphql.NewNonNull(userIDInput)}}, Resolve: server.wrapResolve(func(params graphql.ResolveParams) (interface{}, error) {
+			input := mapArg(params.Args, "input")
+			userID := stringValue(input, "id")
+			if err := server.commands.DisableUser(params.Context, userID, actorFromContext(params.Context)); err != nil {
+				return nil, err
+			}
+			detail, err := server.query.UserDetail(params.Context, userID)
+			if err != nil {
+				return nil, err
+			}
+			return userPayload{User: detail, ID: userID, Status: string(detail.Status)}, nil
+		})},
+		"setUserPassword": &graphql.Field{Type: userPayloadType, Args: graphql.FieldConfigArgument{"input": &graphql.ArgumentConfig{Type: graphql.NewNonNull(setUserPasswordInput)}}, Resolve: server.wrapResolve(func(params graphql.ResolveParams) (interface{}, error) {
+			input := mapArg(params.Args, "input")
+			userID := stringValue(input, "id")
+			if err := server.commands.SetUserPassword(params.Context, userID, stringValue(input, "password"), actorFromContext(params.Context)); err != nil {
+				return nil, err
+			}
+			detail, err := server.query.UserDetail(params.Context, userID)
+			if err != nil {
+				return nil, err
+			}
+			return userPayload{User: detail, ID: userID, Status: string(detail.Status)}, nil
+		})},
+		"createClient": &graphql.Field{Type: clientPayloadType, Args: graphql.FieldConfigArgument{"input": &graphql.ArgumentConfig{Type: graphql.NewNonNull(createClientInput)}}, Resolve: server.wrapResolve(func(params graphql.ResolveParams) (interface{}, error) {
+			input := mapArg(params.Args, "input")
+			created, err := server.commands.CreateClientWithCredential(params.Context, admin.CreateClientInput{UserID: stringValue(input, "userId"), Name: stringValue(input, "name"), Credential: stringValue(input, "credential"), ActorID: actorFromContext(params.Context)})
+			if err != nil {
+				return nil, err
+			}
+			detail, err := server.query.ClientDetail(params.Context, created.Client.ID)
+			if err != nil {
+				return nil, err
+			}
+			return clientPayload{Client: detail, Credential: created.Credential}, nil
+		})},
+		"enableClient": &graphql.Field{Type: clientPayloadType, Args: graphql.FieldConfigArgument{"input": &graphql.ArgumentConfig{Type: graphql.NewNonNull(userIDInput)}}, Resolve: server.wrapResolve(func(params graphql.ResolveParams) (interface{}, error) {
+			clientID := stringValue(mapArg(params.Args, "input"), "id")
+			if err := server.commands.EnableClient(params.Context, clientID, actorFromContext(params.Context)); err != nil {
+				return nil, err
+			}
+			detail, err := server.query.ClientDetail(params.Context, clientID)
+			if err != nil {
+				return nil, err
+			}
+			return clientPayload{Client: detail}, nil
+		})},
+		"disableClient": &graphql.Field{Type: clientPayloadType, Args: graphql.FieldConfigArgument{"input": &graphql.ArgumentConfig{Type: graphql.NewNonNull(userIDInput)}}, Resolve: server.wrapResolve(func(params graphql.ResolveParams) (interface{}, error) {
+			clientID := stringValue(mapArg(params.Args, "input"), "id")
+			if err := server.commands.DisableClient(params.Context, clientID, actorFromContext(params.Context)); err != nil {
+				return nil, err
+			}
+			detail, err := server.query.ClientDetail(params.Context, clientID)
+			if err != nil {
+				return nil, err
+			}
+			return clientPayload{Client: detail}, nil
+		})},
+		"rotateClientCredential": &graphql.Field{Type: clientPayloadType, Args: graphql.FieldConfigArgument{"input": &graphql.ArgumentConfig{Type: graphql.NewNonNull(userIDInput)}}, Resolve: server.wrapResolve(func(params graphql.ResolveParams) (interface{}, error) {
+			clientID := stringValue(mapArg(params.Args, "input"), "id")
+			rotated, err := server.commands.RotateClientCredential(params.Context, admin.RotateClientCredentialInput{ClientID: clientID, ActorID: actorFromContext(params.Context)})
+			if err != nil {
+				return nil, err
+			}
+			detail, err := server.query.ClientDetail(params.Context, clientID)
+			if err != nil {
+				return nil, err
+			}
+			return clientPayload{Client: detail, Credential: rotated.Credential}, nil
+		})},
+		"createProxy": &graphql.Field{Type: proxyPayloadType, Args: graphql.FieldConfigArgument{"input": &graphql.ArgumentConfig{Type: graphql.NewNonNull(createProxyInput)}}, Resolve: server.wrapResolve(func(params graphql.ResolveParams) (interface{}, error) {
+			created, err := server.commands.CreateProxy(params.Context, createProxyInputFromArgs(mapArg(params.Args, "input"), actorFromContext(params.Context)))
+			if err != nil {
+				return nil, err
+			}
+			detail, err := server.query.ProxyDetail(params.Context, created.ID)
+			if err != nil {
+				return nil, err
+			}
+			return proxyPayload{Proxy: detail, ID: created.ID, Status: string(detail.Status)}, nil
+		})},
+		"updateProxy": &graphql.Field{Type: proxyPayloadType, Args: graphql.FieldConfigArgument{"input": &graphql.ArgumentConfig{Type: graphql.NewNonNull(updateProxyInput)}}, Resolve: server.wrapResolve(func(params graphql.ResolveParams) (interface{}, error) {
+			updated, err := server.commands.UpdateProxy(params.Context, updateProxyInputFromArgs(mapArg(params.Args, "input"), actorFromContext(params.Context)))
+			if err != nil {
+				return nil, err
+			}
+			detail, err := server.query.ProxyDetail(params.Context, updated.ID)
+			if err != nil {
+				return nil, err
+			}
+			return proxyPayload{Proxy: detail, ID: updated.ID, Status: string(detail.Status)}, nil
+		})},
+		"enableProxy": &graphql.Field{Type: proxyPayloadType, Args: graphql.FieldConfigArgument{"input": &graphql.ArgumentConfig{Type: graphql.NewNonNull(userIDInput)}}, Resolve: server.wrapResolve(func(params graphql.ResolveParams) (interface{}, error) {
+			proxyID := stringValue(mapArg(params.Args, "input"), "id")
+			if err := server.commands.EnableProxy(params.Context, proxyID, actorFromContext(params.Context)); err != nil {
+				return nil, err
+			}
+			detail, err := server.query.ProxyDetail(params.Context, proxyID)
+			if err != nil {
+				return nil, err
+			}
+			return proxyPayload{Proxy: detail, ID: proxyID, Status: string(detail.Status)}, nil
+		})},
+		"disableProxy": &graphql.Field{Type: proxyPayloadType, Args: graphql.FieldConfigArgument{"input": &graphql.ArgumentConfig{Type: graphql.NewNonNull(userIDInput)}}, Resolve: server.wrapResolve(func(params graphql.ResolveParams) (interface{}, error) {
+			proxyID := stringValue(mapArg(params.Args, "input"), "id")
+			if err := server.commands.DisableProxy(params.Context, proxyID, actorFromContext(params.Context)); err != nil {
+				return nil, err
+			}
+			detail, err := server.query.ProxyDetail(params.Context, proxyID)
+			if err != nil {
+				return nil, err
+			}
+			return proxyPayload{Proxy: detail, ID: proxyID, Status: string(detail.Status)}, nil
+		})},
+		"deleteProxy": &graphql.Field{Type: proxyPayloadType, Args: graphql.FieldConfigArgument{"input": &graphql.ArgumentConfig{Type: graphql.NewNonNull(userIDInput)}}, Resolve: server.wrapResolve(func(params graphql.ResolveParams) (interface{}, error) {
+			proxyID := stringValue(mapArg(params.Args, "input"), "id")
+			if err := server.commands.DeleteProxy(params.Context, proxyID, actorFromContext(params.Context)); err != nil {
+				return nil, err
+			}
+			return proxyPayload{ID: proxyID, Status: string(domain.ProxyDisabled)}, nil
+		})},
+		"issueManagedCertificate": &graphql.Field{Type: certificatePayloadType, Args: graphql.FieldConfigArgument{"input": &graphql.ArgumentConfig{Type: graphql.NewNonNull(certificateInput)}}, Resolve: server.wrapResolve(func(params graphql.ResolveParams) (interface{}, error) {
+			proxyID := stringValue(mapArg(params.Args, "input"), "proxyId")
+			certificate, err := server.commands.IssueManagedCertificate(params.Context, admin.CertificateInput{ProxyID: proxyID, ActorID: actorFromContext(params.Context)})
+			if err != nil {
+				return nil, err
+			}
+			page, err := server.query.ListManagedCertificates(params.Context, adminquery.CertificateListInput{Page: adminquery.PageInput{Page: 1, PageSize: 1000}})
+			if err != nil {
+				return nil, err
+			}
+			return certificatePayload{Certificate: findCertificate(page.Items, certificate.ProxyID), ProxyID: proxyID, Status: string(certificate.Status)}, nil
+		})},
+		"renewManagedCertificate": &graphql.Field{Type: certificatePayloadType, Args: graphql.FieldConfigArgument{"input": &graphql.ArgumentConfig{Type: graphql.NewNonNull(certificateInput)}}, Resolve: server.wrapResolve(func(params graphql.ResolveParams) (interface{}, error) {
+			proxyID := stringValue(mapArg(params.Args, "input"), "proxyId")
+			certificate, err := server.commands.RenewManagedCertificate(params.Context, admin.CertificateInput{ProxyID: proxyID, ActorID: actorFromContext(params.Context)})
+			if err != nil {
+				return nil, err
+			}
+			page, err := server.query.ListManagedCertificates(params.Context, adminquery.CertificateListInput{Page: adminquery.PageInput{Page: 1, PageSize: 1000}})
+			if err != nil {
+				return nil, err
+			}
+			return certificatePayload{Certificate: findCertificate(page.Items, certificate.ProxyID), ProxyID: proxyID, Status: string(certificate.Status)}, nil
+		})},
 	}})
 	return graphql.NewSchema(graphql.SchemaConfig{Query: query, Mutation: mutation})
+}
+
+func (server *Server) wrapResolve(next graphql.FieldResolveFn) graphql.FieldResolveFn {
+	return func(params graphql.ResolveParams) (interface{}, error) {
+		value, err := next(params)
+		if err != nil {
+			return value, translateGraphQLError(err)
+		}
+		return value, nil
+	}
+}
+
+func (server *Server) writeGraphQLError(w http.ResponseWriter, status int, err error) {
+	formatted := formatGraphQLError(err)
+	writeJSON(w, status, graphql.Result{Errors: []gqlerrors.FormattedError{formatted}})
+}
+
+func newGraphQLContractError(code string, message string, fields map[string]string, err error) error {
+	return graphqlContractError{code: code, message: message, fields: fields, err: err}
+}
+
+func (err graphqlContractError) Error() string {
+	if strings.TrimSpace(err.message) != "" {
+		return err.message
+	}
+	if err.err != nil {
+		return err.err.Error()
+	}
+	return contracterr.CodeInternal
+}
+
+func (err graphqlContractError) Unwrap() error { return err.err }
+
+func (err graphqlContractError) Extensions() map[string]interface{} {
+	extensions := map[string]interface{}{"code": err.code}
+	if len(err.fields) > 0 {
+		extensions["fields"] = err.fields
+	}
+	return extensions
+}
+
+func translateGraphQLError(err error) error {
+	var contractError *contracterr.Error
+	if errors.As(err, &contractError) {
+		message := contractError.Message
+		if strings.TrimSpace(message) == "" {
+			message = safeMessage(contractError.Code)
+		}
+		return newGraphQLContractError(contractError.Code, message, contractError.Fields, err)
+	}
+	if errors.Is(err, domain.ErrEntryConflict) {
+		return newGraphQLContractError(contracterr.CodeEntryConflict, "requested listener conflicts with an active listener", nil, err)
+	}
+	if errors.Is(err, store.ErrNotFound) {
+		return newGraphQLContractError(contracterr.CodeNotFound, "resource was not found", nil, err)
+	}
+	if errors.Is(err, store.ErrAlreadyExists) || errors.Is(err, store.ErrConflict) {
+		return newGraphQLContractError(contracterr.CodeConflict, "resource conflict", nil, err)
+	}
+	return newGraphQLContractError(contracterr.CodeInternal, safeMessage(contracterr.CodeInternal), nil, err)
+}
+
+func sanitizeGraphQLErrors(errorsIn []gqlerrors.FormattedError) []gqlerrors.FormattedError {
+	if len(errorsIn) == 0 {
+		return nil
+	}
+	result := make([]gqlerrors.FormattedError, 0, len(errorsIn))
+	for _, current := range errorsIn {
+		if code, ok := current.Extensions["code"].(string); ok && code != "" {
+			result = append(result, current)
+			continue
+		}
+		current.Extensions = map[string]interface{}{"code": contracterr.CodeValidationFailed}
+		if strings.TrimSpace(current.Message) == "" {
+			current.Message = "invalid graphql request"
+		}
+		result = append(result, current)
+	}
+	return result
+}
+
+func formatGraphQLError(err error) gqlerrors.FormattedError {
+	if contractError, ok := err.(graphqlContractError); ok {
+		formatted := gqlerrors.FormattedError{Message: contractError.Error(), Extensions: contractError.Extensions()}
+		return formatted
+	}
+	formatted := gqlerrors.FormatError(err)
+	if formatted.Extensions == nil {
+		formatted.Extensions = map[string]interface{}{}
+	}
+	if _, ok := formatted.Extensions["code"]; !ok {
+		formatted.Extensions["code"] = contracterr.CodeInternal
+		formatted.Message = safeMessage(contracterr.CodeInternal)
+	}
+	return formatted
+}
+
+func safeMessage(code string) string {
+	switch code {
+	case contracterr.CodeUnauthenticated:
+		return "authentication is required"
+	case contracterr.CodeForbidden:
+		return "request is forbidden"
+	case contracterr.CodeValidationFailed:
+		return "validation failed"
+	case contracterr.CodeNotFound:
+		return "resource was not found"
+	case contracterr.CodeConflict:
+		return "resource conflict"
+	case contracterr.CodeUnsupported:
+		return "operation is not supported"
+	case contracterr.CodeEntryConflict:
+		return "requested listener conflicts with an active listener"
+	default:
+		return "internal server error"
+	}
 }
 
 func defaultString(value string, fallback string) string {
@@ -593,46 +1055,120 @@ func defaultString(value string, fallback string) string {
 	return value
 }
 
-func stringArg(args map[string]interface{}, key string) string {
-	value, _ := args[key].(string)
-	return value
-}
-
-func proxyMutationArgs(create bool) graphql.FieldConfigArgument {
-	args := graphql.FieldConfigArgument{
-		"id":          &graphql.ArgumentConfig{Type: graphql.String},
-		"type":        &graphql.ArgumentConfig{Type: graphql.String},
-		"userId":      &graphql.ArgumentConfig{Type: graphql.String},
-		"clientId":    &graphql.ArgumentConfig{Type: graphql.String},
-		"name":        &graphql.ArgumentConfig{Type: graphql.NewNonNull(graphql.String)},
-		"entryHost":   &graphql.ArgumentConfig{Type: graphql.String},
-		"entryPort":   &graphql.ArgumentConfig{Type: graphql.Int},
-		"targetHost":  &graphql.ArgumentConfig{Type: graphql.NewNonNull(graphql.String)},
-		"targetPort":  &graphql.ArgumentConfig{Type: graphql.NewNonNull(graphql.Int)},
-		"certFile":    &graphql.ArgumentConfig{Type: graphql.String},
-		"keyFile":     &graphql.ArgumentConfig{Type: graphql.String},
-		"description": &graphql.ArgumentConfig{Type: graphql.String},
-	}
-	if create {
-		args["type"].Type = graphql.NewNonNull(graphql.String)
-		args["userId"].Type = graphql.NewNonNull(graphql.String)
-		args["clientId"].Type = graphql.NewNonNull(graphql.String)
-	} else {
-		args["id"].Type = graphql.NewNonNull(graphql.String)
-	}
-	return args
-}
-
 func createProxyInputFromArgs(args map[string]interface{}, actor string) admin.CreateProxyInput {
-	entryPort, _ := args["entryPort"].(int)
-	targetPort, _ := args["targetPort"].(int)
-	return admin.CreateProxyInput{ID: stringArg(args, "id"), UserID: stringArg(args, "userId"), ClientID: stringArg(args, "clientId"), Name: args["name"].(string), Type: domain.ProxyType(args["type"].(string)), EntryHost: stringArg(args, "entryHost"), EntryPort: entryPort, TargetHost: args["targetHost"].(string), TargetPort: targetPort, CertFile: stringArg(args, "certFile"), KeyFile: stringArg(args, "keyFile"), Description: stringArg(args, "description"), ActorID: actor}
+	config := mapValue(args, "config")
+	return admin.CreateProxyInput{UserID: stringValue(args, "userId"), ClientID: stringValue(args, "clientId"), Name: stringValue(args, "name"), Type: domain.ProxyType(stringValue(args, "type")), EntryHost: stringValue(config, "entryHost"), EntryPort: intValue(config, "entryPort"), TargetHost: stringValue(config, "targetHost"), TargetPort: intValue(config, "targetPort"), CertFile: stringValue(config, "certFile"), KeyFile: stringValue(config, "keyFile"), Description: stringValue(args, "description"), ActorID: actor}
 }
 
 func updateProxyInputFromArgs(args map[string]interface{}, actor string) admin.UpdateProxyInput {
-	entryPort, _ := args["entryPort"].(int)
-	targetPort, _ := args["targetPort"].(int)
-	return admin.UpdateProxyInput{ID: args["id"].(string), Type: domain.ProxyType(stringArg(args, "type")), Name: args["name"].(string), EntryHost: stringArg(args, "entryHost"), EntryPort: entryPort, TargetHost: args["targetHost"].(string), TargetPort: targetPort, CertFile: stringArg(args, "certFile"), KeyFile: stringArg(args, "keyFile"), Description: stringArg(args, "description"), ActorID: actor}
+	config := mapValue(args, "config")
+	return admin.UpdateProxyInput{ID: stringValue(args, "id"), Type: domain.ProxyType(stringValue(args, "type")), Name: stringValue(args, "name"), EntryHost: stringValue(config, "entryHost"), EntryPort: intValue(config, "entryPort"), TargetHost: stringValue(config, "targetHost"), TargetPort: intValue(config, "targetPort"), CertFile: stringValue(config, "certFile"), KeyFile: stringValue(config, "keyFile"), Description: stringValue(args, "description"), ActorID: actor}
+}
+
+func userListInputFromArgs(args map[string]interface{}) adminquery.UserListInput {
+	input := mapArg(args, "input")
+	return adminquery.UserListInput{Page: pageInput(mapValue(input, "page")), Filter: adminquery.UserFilter{Query: stringValue(mapValue(input, "filter"), "query"), Role: stringValue(mapValue(input, "filter"), "role"), Status: stringValue(mapValue(input, "filter"), "status")}, Sort: sortInput(mapValue(input, "sort"))}
+}
+
+func clientListInputFromArgs(args map[string]interface{}) adminquery.ClientListInput {
+	input := mapArg(args, "input")
+	filter := mapValue(input, "filter")
+	return adminquery.ClientListInput{Page: pageInput(mapValue(input, "page")), Filter: adminquery.ClientFilter{Query: stringValue(filter, "query"), UserID: stringValue(filter, "userId"), Status: stringValue(filter, "status"), Online: boolPointer(filter, "online")}, Sort: sortInput(mapValue(input, "sort"))}
+}
+
+func proxyListInputFromArgs(args map[string]interface{}) adminquery.ProxyListInput {
+	input := mapArg(args, "input")
+	filter := mapValue(input, "filter")
+	return adminquery.ProxyListInput{Page: pageInput(mapValue(input, "page")), Filter: adminquery.ProxyFilter{Query: stringValue(filter, "query"), UserID: stringValue(filter, "userId"), ClientID: stringValue(filter, "clientId"), Type: stringValue(filter, "type"), Status: stringValue(filter, "status")}, Sort: sortInput(mapValue(input, "sort"))}
+}
+
+func certificateListInputFromArgs(args map[string]interface{}) adminquery.CertificateListInput {
+	input := mapArg(args, "input")
+	filter := mapValue(input, "filter")
+	return adminquery.CertificateListInput{Page: pageInput(mapValue(input, "page")), Filter: adminquery.CertificateFilter{Query: stringValue(filter, "query"), Status: stringValue(filter, "status")}, Sort: sortInput(mapValue(input, "sort"))}
+}
+
+func auditListInputFromArgs(args map[string]interface{}) adminquery.AuditListInput {
+	input := mapArg(args, "input")
+	filter := mapValue(input, "filter")
+	return adminquery.AuditListInput{Page: pageInput(mapValue(input, "page")), Filter: adminquery.AuditFilter{Query: stringValue(filter, "query"), ActorType: stringValue(filter, "actorType"), ActorID: stringValue(filter, "actorId"), ResourceType: stringValue(filter, "resourceType"), Action: stringValue(filter, "action"), Result: stringValue(filter, "result")}, Sort: sortInput(mapValue(input, "sort"))}
+}
+
+func pageInput(value map[string]interface{}) adminquery.PageInput {
+	return adminquery.PageInput{Page: intValue(value, "page"), PageSize: intValue(value, "pageSize")}
+}
+
+func sortInput(value map[string]interface{}) adminquery.SortInput {
+	return adminquery.SortInput{Field: stringValue(value, "field"), Direction: stringValue(value, "direction")}
+}
+
+func mapArg(args map[string]interface{}, key string) map[string]interface{} {
+	return mapValue(args, key)
+}
+
+func mapValue(values map[string]interface{}, key string) map[string]interface{} {
+	if values == nil {
+		return nil
+	}
+	value, _ := values[key].(map[string]interface{})
+	return value
+}
+
+func stringValue(values map[string]interface{}, key string) string {
+	if values == nil {
+		return ""
+	}
+	value, _ := values[key].(string)
+	return value
+}
+
+func intValue(values map[string]interface{}, key string) int {
+	if values == nil {
+		return 0
+	}
+	value, _ := values[key].(int)
+	return value
+}
+
+func boolPointer(values map[string]interface{}, key string) *bool {
+	if values == nil {
+		return nil
+	}
+	value, ok := values[key].(bool)
+	if !ok {
+		return nil
+	}
+	copy := value
+	return &copy
+}
+
+func extractUserPayload(source interface{}) userPayload {
+	value, _ := source.(userPayload)
+	return value
+}
+
+func extractClientPayload(source interface{}) clientPayload {
+	value, _ := source.(clientPayload)
+	return value
+}
+
+func extractProxyPayload(source interface{}) proxyPayload {
+	value, _ := source.(proxyPayload)
+	return value
+}
+
+func extractCertificatePayload(source interface{}) certificatePayload {
+	value, _ := source.(certificatePayload)
+	return value
+}
+
+func findCertificate(items []adminquery.ManagedCertificateSummary, proxyID string) adminquery.ManagedCertificateSummary {
+	for _, item := range items {
+		if item.ProxyID == proxyID {
+			return item
+		}
+	}
+	return adminquery.ManagedCertificateSummary{ProxyID: proxyID}
 }
 
 func timeResolve[T any](selector func(T) time.Time) graphql.FieldResolveFn {
@@ -644,12 +1180,31 @@ func timeResolve[T any](selector func(T) time.Time) graphql.FieldResolveFn {
 	}
 }
 
+func nullableCertificateTimeResolve(selector func(adminquery.ManagedCertificateSummary) *time.Time) graphql.FieldResolveFn {
+	return func(params graphql.ResolveParams) (interface{}, error) {
+		if value, ok := params.Source.(adminquery.ManagedCertificateSummary); ok {
+			if when := selector(value); when != nil {
+				return when.Format(time.RFC3339), nil
+			}
+		}
+		return nil, nil
+	}
+}
+
+func nullableClientRuntimeTimeResolve(selector func(adminquery.ClientRuntime) *time.Time) graphql.FieldResolveFn {
+	return func(params graphql.ResolveParams) (interface{}, error) {
+		if value, ok := params.Source.(adminquery.ClientRuntime); ok {
+			if when := selector(value); when != nil {
+				return when.Format(time.RFC3339), nil
+			}
+		}
+		return nil, nil
+	}
+}
+
 func nullableTimeResolveClientOnline() graphql.FieldResolveFn {
 	return func(params graphql.ResolveParams) (interface{}, error) {
 		if client, ok := params.Source.(adminquery.ClientListItem); ok && client.LastOnlineAt != nil {
-			return client.LastOnlineAt.Format(time.RFC3339), nil
-		}
-		if client, ok := params.Source.(adminquery.ClientDetail); ok && client.LastOnlineAt != nil {
 			return client.LastOnlineAt.Format(time.RFC3339), nil
 		}
 		return nil, nil
@@ -661,9 +1216,103 @@ func nullableTimeResolveClientOffline() graphql.FieldResolveFn {
 		if client, ok := params.Source.(adminquery.ClientListItem); ok && client.LastOfflineAt != nil {
 			return client.LastOfflineAt.Format(time.RFC3339), nil
 		}
-		if client, ok := params.Source.(adminquery.ClientDetail); ok && client.LastOfflineAt != nil {
-			return client.LastOfflineAt.Format(time.RFC3339), nil
+		return nil, nil
+	}
+}
+
+func clientDetailTimeResolve(selector func(adminquery.ClientDetail) *time.Time) graphql.FieldResolveFn {
+	return func(params graphql.ResolveParams) (interface{}, error) {
+		if client, ok := params.Source.(adminquery.ClientDetail); ok {
+			if when := selector(client); when != nil {
+				return when.Format(time.RFC3339), nil
+			}
 		}
 		return nil, nil
+	}
+}
+
+func nullableUserTimeResolve(selector func(adminquery.UserListItem) *time.Time) graphql.FieldResolveFn {
+	return func(params graphql.ResolveParams) (interface{}, error) {
+		if value, ok := params.Source.(adminquery.UserListItem); ok {
+			if when := selector(value); when != nil {
+				return when.Format(time.RFC3339), nil
+			}
+		}
+		if value, ok := params.Source.(adminquery.UserDetail); ok {
+			if when := selector(value.UserListItem); when != nil {
+				return when.Format(time.RFC3339), nil
+			}
+		}
+		return nil, nil
+	}
+}
+
+func userCreatedAtResolve() graphql.FieldResolveFn {
+	return func(params graphql.ResolveParams) (interface{}, error) {
+		switch value := params.Source.(type) {
+		case adminquery.UserListItem:
+			return value.CreatedAt.Format(time.RFC3339), nil
+		case adminquery.UserDetail:
+			return value.CreatedAt.Format(time.RFC3339), nil
+		default:
+			return "", nil
+		}
+	}
+}
+
+func userUpdatedAtResolve() graphql.FieldResolveFn {
+	return func(params graphql.ResolveParams) (interface{}, error) {
+		switch value := params.Source.(type) {
+		case adminquery.UserListItem:
+			return value.UpdatedAt.Format(time.RFC3339), nil
+		case adminquery.UserDetail:
+			return value.UpdatedAt.Format(time.RFC3339), nil
+		default:
+			return "", nil
+		}
+	}
+}
+
+func clientCreatedAtResolve() graphql.FieldResolveFn {
+	return func(params graphql.ResolveParams) (interface{}, error) {
+		if value, ok := params.Source.(adminquery.ClientListItem); ok {
+			return value.CreatedAt.Format(time.RFC3339), nil
+		}
+		return "", nil
+	}
+}
+
+func clientUpdatedAtResolve() graphql.FieldResolveFn {
+	return func(params graphql.ResolveParams) (interface{}, error) {
+		if value, ok := params.Source.(adminquery.ClientListItem); ok {
+			return value.UpdatedAt.Format(time.RFC3339), nil
+		}
+		return "", nil
+	}
+}
+
+func proxyCreatedAtResolve() graphql.FieldResolveFn {
+	return func(params graphql.ResolveParams) (interface{}, error) {
+		switch value := params.Source.(type) {
+		case adminquery.ProxyListItem:
+			return value.CreatedAt.Format(time.RFC3339), nil
+		case adminquery.ProxyDetail:
+			return value.CreatedAt.Format(time.RFC3339), nil
+		default:
+			return "", nil
+		}
+	}
+}
+
+func proxyUpdatedAtResolve() graphql.FieldResolveFn {
+	return func(params graphql.ResolveParams) (interface{}, error) {
+		switch value := params.Source.(type) {
+		case adminquery.ProxyListItem:
+			return value.UpdatedAt.Format(time.RFC3339), nil
+		case adminquery.ProxyDetail:
+			return value.UpdatedAt.Format(time.RFC3339), nil
+		default:
+			return "", nil
+		}
 	}
 }

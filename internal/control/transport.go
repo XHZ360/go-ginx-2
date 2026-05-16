@@ -261,17 +261,21 @@ func (server Server) handleControl(ctx context.Context, stream io.ReadWriteClose
 		_ = WriteMessage(stream, MessageAuthResponse, AuthResponse{Accepted: false, Reason: "session id generation failed"})
 		return
 	}
-	registered, _, err := server.Sessions.Register(session.RegisterInput{
+	registerInput := session.RegisterInput{
 		SessionID:     sessionID,
 		ClientID:      result.Client.ID,
 		UserID:        result.User.ID,
 		Protocol:      result.SelectedProtocol,
 		ConfigVersion: result.ConfigVersion,
 		StreamOpener:  opener,
-	})
-	if err != nil {
-		_ = WriteMessage(stream, MessageAuthResponse, AuthResponse{Accepted: false, Reason: err.Error()})
-		return
+	}
+	registered := session.Session{ID: sessionID}
+	if _, ok := opener.(*tcpTLSMux); !ok {
+		registered, _, err = server.Sessions.Register(registerInput)
+		if err != nil {
+			_ = WriteMessage(stream, MessageAuthResponse, AuthResponse{Accepted: false, Reason: err.Error()})
+			return
+		}
 	}
 	muxReady := false
 	if mux, ok := opener.(*tcpTLSMux); ok {
@@ -293,6 +297,10 @@ func (server Server) handleControl(ctx context.Context, stream io.ReadWriteClose
 	}
 	if mux, ok := opener.(*tcpTLSMux); ok {
 		mux.Start()
+		registered, _, err = server.Sessions.Register(registerInput)
+		if err != nil {
+			return
+		}
 		muxReady = true
 		stream = mux.ControlStream()
 	}

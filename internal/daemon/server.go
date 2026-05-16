@@ -94,7 +94,12 @@ func startServerWithStore(parent context.Context, cfg config.Server, db store.St
 	runtime := &ServerRuntime{Store: db, Sessions: sessions, Stats: memoryStats, persistentStats: persistentStats, ControlListener: controlListener, cancel: cancel}
 	go func() { _ = controlListener.Serve(runtimeCtx) }()
 	if cfg.AdminCredentialsFile != "" {
-		adminService := admin.Service{Store: db}
+		staticListenerClaims, err := cfg.RuntimeListenerClaims(true)
+		if err != nil {
+			_ = runtime.Close()
+			return nil, fmt.Errorf("assemble runtime listener claims: %w", err)
+		}
+		adminService := admin.Service{Store: db, StaticListenerClaims: staticListenerClaims}
 		if cfg.ACMEEnabled {
 			certificateService, err := managedCertificateService(cfg, db)
 			if err != nil {

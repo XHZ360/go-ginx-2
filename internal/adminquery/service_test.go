@@ -59,12 +59,15 @@ func TestServiceListsRecentAuditEvents(t *testing.T) {
 		t.Fatalf("create audit 2: %v", err)
 	}
 	service := Service{Store: db}
-	events, err := service.ListRecentAuditEvents(ctx, 10)
+	events, err := service.ListRecentAuditEvents(ctx, AuditListInput{Page: PageInput{Page: 1, PageSize: 10}})
 	if err != nil {
 		t.Fatalf("list recent audit: %v", err)
 	}
-	if len(events) != 2 || events[0].ID != "audit-2" || events[1].ID != "audit-1" {
+	if len(events.Items) != 2 || events.Items[0].ID != "audit-2" || events.Items[1].ID != "audit-1" {
 		t.Fatalf("unexpected audit ordering: %+v", events)
+	}
+	if events.Items[0].ActorType != "admin" || events.Items[0].ActorID != "admin-1" {
+		t.Fatalf("unexpected audit actor identity: %+v", events.Items[0])
 	}
 }
 

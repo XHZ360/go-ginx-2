@@ -155,13 +155,15 @@ func TestTCPTLSHandshakeRegistersSession(t *testing.T) {
 	if !response.Accepted || response.SessionID != "session-1" || response.SelectedProtocol != domain.ProtocolTCPTLS {
 		t.Fatalf("unexpected auth response: %+v", response)
 	}
-	latest, ok := sessions.Latest("client-1")
-	if !ok || latest.ID != response.SessionID || latest.UserID != "user-1" || latest.Protocol != domain.ProtocolTCPTLS {
-		t.Fatalf("expected registered tcp+tls session, got %+v", latest)
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		latest, ok := sessions.Latest("client-1")
+		if ok && latest.ID == response.SessionID && latest.UserID == "user-1" && latest.Protocol == domain.ProtocolTCPTLS && latest.StreamOpener != nil {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
-	if latest.StreamOpener == nil {
-		t.Fatalf("tcp+tls session must expose proxy stream opener")
-	}
+	t.Fatal("tcp+tls session was not published after mux became ready")
 }
 
 func TestTCPTLSHandshakeSendsProxySnapshot(t *testing.T) {
