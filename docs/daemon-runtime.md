@@ -20,7 +20,7 @@ This guide covers the implemented milestone-one daemon runtime plus the first su
 14. Checked-in `systemd` service templates for supervised server and client execution.
 15. Configless server startup with managed `data/` state and generated control-channel TLS material.
 16. One-time client join tokens that write managed client state for later no-`-config` startup.
-17. Optional administrator-only management listener with session login, session bootstrap, logout, GraphQL operations, client enrollment, and same-origin dedicated frontend delivery from embedded assets or an explicit frontend directory override.
+17. Optional administrator-only management listener with session login, session bootstrap, logout, GraphQL operations, client enrollment, and same-origin dedicated frontend delivery from the runtime `admin-ui/` directory or an explicit frontend directory override.
 
 ## Seed SQLite
 
@@ -51,6 +51,8 @@ Initialize the first administrator locally:
 
 Generate a client join token:
 
+You can generate it from the admin UI Clients page with `Create join token`, or use the CLI:
+
 ```powershell
 ./.tmp/goginx-admin.exe create-client-join -id client-1 -user admin-1 -name home
 ```
@@ -62,7 +64,7 @@ On the client host:
 ./.tmp/goginx-client.exe
 ```
 
-The join command redeems the token through `/api/client/enroll`, writes `data/client-state.json`, writes `data/certs/server-ca.crt`, and subsequent client runs use that managed state.
+The join command redeems the token through `/api/client/enroll`, writes `data/client-state.json`, writes `data/certs/server-ca.crt`, and subsequent client runs use that managed state. By default these paths are under the deployment root derived from the `goginx-client` binary location; when the binary is under `bin/`, the deployment root is the parent of `bin/`.
 
 Managed startup accepts environment overrides for file-free deployments that need non-default ports or paths, including `GOGINX_ADMIN_LISTEN`, `GOGINX_CONTROL_QUIC_LISTEN`, `GOGINX_CONTROL_TLS_LISTEN`, `GOGINX_HTTP_ENTRY_LISTEN`, `GOGINX_SQLITE_PATH`, `GOGINX_DATA_DIR`, and `GOGINX_CERTIFICATE_DIR`.
 
@@ -97,7 +99,7 @@ Explicit JSON config remains supported for advanced deployments. Create `server.
 
 `control_quic_listen` is the primary control listener. `control_tls_listen` enables TCP+TLS fallback for authentication, proxy snapshots, heartbeats, and framed proxy substreams. TCP+TLS fallback is reliable but uses one TCP connection, so slow streams can cause normal TCP head-of-line effects.
 
-`admin_frontend_dir` is optional. When set, it must point to a directory containing the dedicated admin frontend build output, including `index.html`. The admin listener serves those browser routes and assets on the same origin as the administrator API while keeping `/api/admin/*` reserved for backend endpoints.
+When `admin_frontend_dir` is empty, the server loads the dedicated admin frontend from `admin-ui/` under the deployment root. If the server binary is under `bin/`, the deployment root is the parent of `bin/`; otherwise it is the binary directory. `admin_frontend_dir` is optional and, when set, must point to another directory containing the dedicated admin frontend build output, including `index.html`. The admin listener serves those browser routes and assets on the same origin as the administrator API while keeping `/api/admin/*` reserved for backend endpoints.
 
 The control certificate must be valid for the client `server_name`, and the client must trust the CA that signed it.
 
@@ -138,6 +140,10 @@ go build -o ./.tmp/goginx-admin.exe ./cmd/goginx-admin
 Build the first supported deployment bundle for a Linux `systemd` installation:
 
 ```powershell
+Set-Location admin-ui
+npm ci
+npm run build
+Set-Location ..
 $env:CGO_ENABLED="0"
 go run ./cmd/goginx-admin build-deploy-bundle -output ./.tmp/linux-systemd-bundle -goos linux -goarch amd64 -install-root /opt/go-ginx
 ```
@@ -145,13 +151,14 @@ go run ./cmd/goginx-admin build-deploy-bundle -output ./.tmp/linux-systemd-bundl
 The core bundle layout is stable and contains:
 
 1. `bin/` with `goginx-server`, `goginx-client`, and `goginx-admin`.
-2. `config/` with optional sample `server.json`, `client.json`, and environment examples.
-3. `data/` with SQLite and certificate directories.
-4. `logs/` for operator-managed log files.
-5. `systemd/` with rendered `goginx-server.service` and `goginx-client.service` units.
-6. `config/admin-credentials.json.example` for the optional administrator management surface.
+2. `admin-ui/` with the management frontend build output used by default at runtime.
+3. `config/` with optional sample `server.json`, `client.json`, and environment examples.
+4. `data/` with SQLite and certificate directories.
+5. `logs/` for operator-managed log files.
+6. `systemd/` with rendered `goginx-server.service` and `goginx-client.service` units.
+7. `config/admin-credentials.json.example` for the optional administrator management surface.
 
-Deployments use embedded admin frontend assets by default. Deployments that need a custom frontend may include built assets in a directory inside the install root, such as `web/admin/`, and set `admin_frontend_dir` through explicit config.
+Deployments use the install-root `admin-ui/` directory by default. Rebuild the frontend before packaging; `build-deploy-bundle` fails if `admin-ui/dist` is missing. Deployments that need a custom frontend may include built assets in a different directory inside the install root, such as `web/admin/`, and set `admin_frontend_dir` through explicit config.
 
 Run the server from the desired state directory:
 
@@ -159,13 +166,13 @@ Run the server from the desired state directory:
 ./.tmp/goginx-server.exe
 ```
 
-After `goginx-client join <token>`, run the client from the directory that contains the managed `data/client-state.json`:
+After `goginx-client join <token>`, run the client:
 
 ```powershell
 ./.tmp/goginx-client.exe
 ```
 
-If the client exits with a missing `data/client-state.json` error, it was started before the join flow wrote managed state, or it was started from a different working directory. Run `goginx-client join <new-token>` from the intended release root, confirm `data/client-state.json` exists there, then start the client service.
+If the client exits with a missing `data/client-state.json` error, it was started before the join flow wrote managed state, or a custom path was used inconsistently. Run `goginx-client join <new-token>`, confirm `data/client-state.json` exists under the deployment root, then start the client service.
 
 For the supported `systemd` deployment model:
 
@@ -185,7 +192,7 @@ When configless server startup is used, the server starts an administrator-only 
 3. `POST /api/admin/logout` for session invalidation.
 4. `POST /api/admin/graphql` for administrator GraphQL queries and mutations.
 
-The same listener serves the dedicated admin frontend on non-API `GET` and `HEAD` routes. Browser routes such as `/`, `/login`, `/users`, `/clients`, `/proxies`, `/certificates`, and `/audit` resolve through the frontend shell, deep links serve `index.html`, and real asset files are served directly from embedded assets by default. Missing asset-like paths such as `/assets/missing.js` still return `404 Not Found`. `admin_frontend_dir` is now an override for development or custom deployments rather than a baseline requirement.
+The same listener serves the dedicated admin frontend on non-API `GET` and `HEAD` routes. Browser routes such as `/`, `/login`, `/users`, `/clients`, `/proxies`, `/certificates`, and `/audit` resolve through the frontend shell, deep links serve `index.html`, and real asset files are served directly from the selected frontend directory. Missing asset-like paths such as `/assets/missing.js` still return `404 Not Found`. `admin_frontend_dir` is an override for development or custom deployments rather than a baseline requirement.
 
 The first session-authenticated management slice is intentionally narrow: it excludes ordinary-user self-service, quota editing, log search, domain lifecycle management, advanced alerts, and realtime subscriptions. The legacy server-rendered admin UI and browser-facing `/graphql` route are not served in this slice.
 
@@ -216,12 +223,12 @@ $env:CF_DNS_API_TOKEN="<cloudflare-token>"
 12. Managed certificate issuance fails immediately if the Cloudflare token environment variable is missing, the proxy host is not delegated to Cloudflare, or the process cannot reach the ACME directory or Cloudflare API.
 13. Client reconnect loops: transient dial or runtime failures now retry using the configured reconnect backoff, including control-listener outages or daemon restarts. Authentication rejection still exits immediately, so re-check the stored credential instead of waiting for automatic recovery.
 14. `systemd` install paths: the generated service files assume the rendered `install_root` passed to `build-deploy-bundle`. Rebuild the bundle or edit the unit files if you deploy somewhere other than that path.
-15. Upgrade and rollback: replace the bundle contents in the install root, then restart the units. Roll back by restoring the previous bundle directory contents and restarting the same units.
+15. Upgrade and rollback: replace the bundle contents in the install root, including `admin-ui/`, then restart the units. Roll back by restoring the previous bundle directory contents and restarting the same units.
 16. Administrator management credentials: `admin_credentials_file` must point to a readable JSON file containing administrator usernames and bcrypt password hashes. The file is separate from SQLite users and should be readable only by the service account.
 17. Management transport protection: the admin listener uses session-authenticated same-origin API routes and is expected to run behind TLS. Local loopback access is accepted for development and automated tests; loopback testing may issue non-`Secure` cookies because browsers and HTTP clients do not send `Secure` cookies over plain `http://127.0.0.1` development traffic.
 18. Configless port conflicts: set `GOGINX_ADMIN_LISTEN`, `GOGINX_CONTROL_QUIC_LISTEN`, `GOGINX_CONTROL_TLS_LISTEN`, or `GOGINX_HTTP_ENTRY_LISTEN` to free addresses, or switch to explicit JSON config.
 19. Managed control TLS state: if `data/certs/control-ca.crt`, `control.crt`, or `control.key` is missing or corrupted, stop the server and restore the set from backup; deleting the set forces regeneration and breaks existing joined clients until they join again.
-20. Missing administrator bootstrap: configless management login has no default password. Run `goginx-admin init-admin` against the server SQLite path before logging in.
+20. Missing administrator bootstrap: configless management login has no default password. Run `goginx-admin init-admin` before logging in. By default the CLI writes to `data/go-ginx.db` under the deployment root derived from the `goginx-admin` binary location; use `-db` when targeting a custom server SQLite path.
 21. Join token failures: expired, already-used, tampered, or revoked join tokens are rejected by `/api/client/enroll`; generate a new token with `goginx-admin create-client-join`.
 22. Client managed state damage: if `data/client-state.json` or `data/certs/server-ca.crt` is missing on the client host, run `goginx-client join <new-token>` again.
 

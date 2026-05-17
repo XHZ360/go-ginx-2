@@ -17,7 +17,7 @@
 
 ## 统一约束
 
-- 生产运行时可由管理监听器同源托管前端资源；配置 `admin_frontend_dir` 后，`/`、`/login` 以及各深链接页面由前端壳处理。
+- 生产运行时由管理监听器同源托管前端资源；默认使用部署根目录下的 `admin-ui/` 构建产物，配置 `admin_frontend_dir` 后改用该目录，`/`、`/login` 以及各深链接页面由前端壳处理。
 - `/api/admin/*` 始终保留为管理后台 API 命名空间，不与前端路由冲突。
 - 所有受保护页面先通过 `GET /api/admin/session` 完成会话引导。
 - 业务数据统一通过 `POST /api/admin/graphql` 获取或提交。

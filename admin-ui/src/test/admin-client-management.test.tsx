@@ -115,7 +115,10 @@ function createFetchMock(options?: { createValidationFailure?: boolean; rotateFa
       return graphQL({ data: {} });
     }
 
-    const body = JSON.parse(String(init?.body ?? '{}')) as { query?: string; variables?: { input?: { filter?: { userId?: string }; userId?: string; name?: string } } };
+    const body = JSON.parse(String(init?.body ?? '{}')) as {
+      query?: string;
+      variables?: { input?: { filter?: { userId?: string }; userId?: string; name?: string; serverAddress?: string } };
+    };
     const query = body.query ?? '';
     const variables = body.variables ?? {};
 
@@ -132,6 +135,17 @@ function createFetchMock(options?: { createValidationFailure?: boolean; rotateFa
     }
     if (query.includes('query Client(')) {
       return graphQL({ data: { client: client('client-1', 'user-1', 'home-node') } });
+    }
+    if (query.includes('mutation CreateClientJoin')) {
+      return graphQL({
+        data: {
+          createClientJoin: {
+            clientId: 'client-joined',
+            token: 'goginx_join_generated-token',
+            client: client('client-joined', variables.input?.userId ?? '', variables.input?.name ?? ''),
+          },
+        },
+      });
     }
     if (query.includes('mutation CreateClient')) {
       if (options?.createValidationFailure) {
@@ -195,6 +209,28 @@ describe('admin client management', () => {
     await screen.findByText('generated-secret');
     expect(fetchMock).toHaveBeenCalledWith('/api/admin/graphql', expect.objectContaining({
       body: expect.stringContaining('"userId":"user-1"'),
+    }));
+  });
+
+  it('generates a client join token from the clients page', async () => {
+    const fetchMock = createFetchMock();
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderAdmin(['/clients?userId=user-1']);
+
+    await screen.findByText('home-node');
+    await userEvent.click(screen.getByRole('button', { name: 'Create join token' }));
+
+    const dialog = screen.getByRole('dialog', { name: 'Create join token' });
+    expect(within(dialog).getByLabelText('Owner user')).toHaveValue('user-1');
+    await userEvent.type(within(dialog).getByLabelText('Name'), 'garage-node');
+    await userEvent.clear(within(dialog).getByLabelText('Server address'));
+    await userEvent.type(within(dialog).getByLabelText('Server address'), 'edge.example.com:8443');
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Create join token' }));
+
+    await screen.findByText('goginx_join_generated-token');
+    expect(fetchMock).toHaveBeenCalledWith('/api/admin/graphql', expect.objectContaining({
+      body: expect.stringContaining('"serverAddress":"edge.example.com:8443"'),
     }));
   });
 

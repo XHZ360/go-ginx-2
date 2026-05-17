@@ -29,6 +29,10 @@ func BuildBundle(ctx context.Context, options BundleOptions) error {
 	if err := options.validate(); err != nil {
 		return err
 	}
+	adminFrontendDist, err := requireAdminFrontendDist(options)
+	if err != nil {
+		return err
+	}
 	if err := os.RemoveAll(options.OutputDir); err != nil {
 		return err
 	}
@@ -58,11 +62,10 @@ func BuildBundle(ctx context.Context, options BundleOptions) error {
 			return err
 		}
 	}
-	adminFrontendIncluded, err := copyAdminFrontendAssets(options)
-	if err != nil {
+	if err := copyAdminFrontendAssets(adminFrontendDist, filepath.Join(options.OutputDir, bundledAdminFrontendDir)); err != nil {
 		return err
 	}
-	if err := writeJSONFile(filepath.Join(options.OutputDir, "config", "server.json"), defaultServerBundleConfig(adminFrontendIncluded)); err != nil {
+	if err := writeJSONFile(filepath.Join(options.OutputDir, "config", "server.json"), defaultServerBundleConfig()); err != nil {
 		return err
 	}
 	if err := writeJSONFile(filepath.Join(options.OutputDir, "config", "client.json"), defaultClientBundleConfig()); err != nil {
@@ -130,7 +133,7 @@ func writeJSONFile(path string, value any) error {
 	return os.WriteFile(path, append(content, '\n'), 0o644)
 }
 
-func defaultServerBundleConfig(includeAdminFrontend bool) config.Server {
+func defaultServerBundleConfig() config.Server {
 	server := config.DefaultServer()
 	server.AdminEnabled = true
 	server.AdminCredentialsFile = ""
@@ -143,22 +146,34 @@ func defaultServerBundleConfig(includeAdminFrontend bool) config.Server {
 	return server
 }
 
-func copyAdminFrontendAssets(options BundleOptions) (bool, error) {
+func requireAdminFrontendDist(options BundleOptions) (string, error) {
 	sourceDir := filepath.Join(options.RepoRoot, "admin-ui", "dist")
 	info, err := os.Stat(sourceDir)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return false, nil
+			return "", fmt.Errorf("admin frontend build output is required at %s; run npm ci and npm run build in %s before build-deploy-bundle", sourceDir, filepath.Join(options.RepoRoot, "admin-ui"))
 		}
-		return false, err
+		return "", fmt.Errorf("stat admin frontend dist: %w", err)
 	}
 	if !info.IsDir() {
-		return false, fmt.Errorf("admin frontend dist path is not a directory: %s", sourceDir)
+		return "", fmt.Errorf("admin frontend dist path is not a directory: %s", sourceDir)
 	}
-	if err := copyDir(sourceDir, filepath.Join(options.OutputDir, bundledAdminFrontendDir)); err != nil {
-		return false, err
+	indexPath := filepath.Join(sourceDir, "index.html")
+	indexInfo, err := os.Stat(indexPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return "", fmt.Errorf("admin frontend index is required at %s; run npm run build in %s before build-deploy-bundle", indexPath, filepath.Join(options.RepoRoot, "admin-ui"))
+		}
+		return "", fmt.Errorf("stat admin frontend index: %w", err)
 	}
-	return true, nil
+	if indexInfo.IsDir() {
+		return "", fmt.Errorf("admin frontend index path is a directory: %s", indexPath)
+	}
+	return sourceDir, nil
+}
+
+func copyAdminFrontendAssets(sourceDir string, destDir string) error {
+	return copyDir(sourceDir, destDir)
 }
 
 func copyDir(sourceDir string, destDir string) error {

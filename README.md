@@ -18,7 +18,7 @@
 - 管理能力：
   - `goginx-admin` 可创建管理员、用户、客户端、一次性 join token、代理记录和部署包。
   - 管理监听器提供登录、会话引导、登出、GraphQL 管理操作、客户端注册和同源管理前端。
-  - 管理前端默认使用嵌入式静态资源，`admin_frontend_dir` 可覆盖为自定义构建目录。
+  - 管理前端默认使用部署根目录 `admin-ui/` 静态资源，`admin_frontend_dir` 可覆盖为自定义构建目录。
 - 部署：`build-deploy-bundle` 可生成包含服务端、客户端、管理 CLI、示例配置、目录结构和 `systemd` service 的部署包。
 
 ## 仓库结构
@@ -79,6 +79,8 @@ $env:CGO_ENABLED="0"
 
 3. 生成客户端一次性加入 token：
 
+可以在管理 UI 的 Clients 页面点击 `Create join token` 生成；也可以使用 CLI：
+
 ```bash
 token="$(./bin/goginx-admin create-client-join -id client-1 -user admin-1 -name home)"
 ```
@@ -111,6 +113,8 @@ token="$(./bin/goginx-admin create-client-join \
 
 后续客户端直接运行 `./bin/goginx-client` 即可读取托管状态。
 
+默认 state/CA 路径按 `goginx-client` 二进制所在的部署根目录解析；如果二进制位于 `bin/`，部署根目录就是 `bin/` 的上一级，因此从 `bin/` 或其他目录启动都仍会使用同一个 `data/client-state.json`。
+
 5. 打开管理后台：
 
 ```text
@@ -121,7 +125,7 @@ http://127.0.0.1:8080
 
 ## 管理 CLI 示例
 
-以下命令同样假设在 Release 包根目录执行。CLI 默认使用 `data/go-ginx.db`，也可用 `-db` 指定数据库路径。
+以下命令可在 Release 包根目录执行。CLI 默认使用部署根目录下的 `data/go-ginx.db`，如果二进制位于 `bin/`，部署根目录就是 `bin/` 的上一级；也可用 `-db` 指定数据库路径。
 
 创建普通用户和客户端凭据：
 
@@ -303,7 +307,7 @@ npm run test
 npm run build
 ```
 
-服务端默认使用 `internal/adminapi/embedded_admin/` 中的嵌入式前端资源。开发或自定义部署时，可将构建产物目录配置到 `admin_frontend_dir`。
+服务端默认使用部署根目录下的 `admin-ui/` 构建产物目录。若服务端二进制位于 `bin/`，部署根目录就是 `bin/` 的上一级；开发或自定义部署时，可将其他构建产物目录配置到 `admin_frontend_dir`。
 
 ## 源码开发与发布构建
 
@@ -342,17 +346,22 @@ go test ./e2e -run "TestExternalProcessesProxy(TCP|UDP|HTTP|HTTPS)$" -count=1
 生成 Linux `systemd` 发布包：
 
 ```powershell
+Set-Location admin-ui
+npm ci
+npm run build
+Set-Location ..
 $env:CGO_ENABLED="0"
 go run ./cmd/goginx-admin build-deploy-bundle -output ./dist/linux-systemd-bundle -goos linux -goarch amd64 -install-root /opt/go-ginx
 ```
 
-将 `./dist/linux-systemd-bundle` 作为 Release 产物发布；目标服务器只需要拿到这个目录或其压缩包。
+`build-deploy-bundle` 会把 `admin-ui/dist` 复制为发布包根目录下的 `admin-ui/`。将 `./dist/linux-systemd-bundle` 作为 Release 产物发布；目标服务器只需要拿到这个目录或其压缩包。
 
 ## Release 部署包部署
 
 Linux `systemd` Release 包核心内容：
 
 - `bin/`：`goginx-server`、`goginx-client`、`goginx-admin`
+- `admin-ui/`：管理前端构建产物，默认由管理监听器同源服务
 - `config/`：示例配置和环境文件
 - `data/`：SQLite 与证书目录
 - `logs/`：日志目录
@@ -368,6 +377,7 @@ sudo cp systemd/goginx-server.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now goginx-server
 sudo ./bin/goginx-admin init-admin -id admin-1 -username admin -password "<password>"
+# 也可以在管理 UI 的 Clients 页面点击 Create join token 生成。
 token="$(sudo ./bin/goginx-admin create-client-join -id client-1 -user admin-1 -name home)"
 ```
 
@@ -384,13 +394,13 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now goginx-client
 ```
 
-`goginx-client` 服务默认读取 `data/client-state.json`，这个文件只会由 `./bin/goginx-client join <token>` 生成。若先启动服务，会看到 `load client config: ... data/client-state.json ... cannot find the path specified`；处理方式是在客户端机器的 Release 包根目录重新执行 join，然后再启动服务。
+`goginx-client` 服务默认读取部署根目录下的 `data/client-state.json`，这个文件只会由 `./bin/goginx-client join <token>` 生成。若先启动服务，会看到 `load client config: ... data/client-state.json ... cannot find the path specified`；处理方式是在客户端机器上先执行 join，然后再启动服务。若使用自定义路径，启动和 join 都需要显式传入对应 `-config`、`-state` 或 `-ca-file`。
 
 如果不是 `systemd` 环境，也可以直接在 Release 包根目录运行 `./bin/goginx-server` 或 `./bin/goginx-client`，并由外部进程管理器负责守护进程生命周期。
 
 ### 8080 返回 404 的排查
 
-Release 包的推荐启动方式是直接运行 `./bin/goginx-server`，或使用包内 `systemd/goginx-server.service`。这条路径会启用管理监听器，并从二进制内嵌的前端资源提供 `/`、`/login`、`/dashboard` 等页面。
+Release 包的推荐启动方式是直接运行 `./bin/goginx-server`，或使用包内 `systemd/goginx-server.service`。这条路径会启用管理监听器，并从部署根目录下的 `admin-ui/` 提供 `/`、`/login`、`/dashboard` 等页面；该默认前端路径按二进制所在位置推导，不依赖启动时的当前工作目录。
 
 如果访问 `8080` 返回 `404`，先检查实际访问到的是不是管理监听器：
 
@@ -399,7 +409,9 @@ curl -i http://127.0.0.1:8080/
 curl -i http://127.0.0.1:8080/api/admin/session
 ```
 
-正常情况下，第一个请求应返回管理前端 HTML，第二个请求应返回 JSON 会话状态。若服务日志显示 `admin=disabled`，说明不是按无配置 Release 路径启动，或显式配置关闭了 `admin_enabled`。若使用 `-config config/server.json`，请确认该配置中的 `admin_enabled` 为 `true`，并且控制通道证书文件已经存在；首次部署更推荐先使用无配置启动，让服务自动生成 `data/` 状态和控制通道 TLS 材料。
+正常情况下，第一个请求应返回管理前端 HTML，第二个请求应返回 JSON 会话状态。若服务启动失败并提示 admin frontend 目录错误，请确认 Release 根目录包含 `admin-ui/index.html`，或显式设置 `admin_frontend_dir`。若服务日志显示 `admin=disabled`，说明不是按无配置 Release 路径启动，或显式配置关闭了 `admin_enabled`。若使用 `-config config/server.json`，请确认该配置中的 `admin_enabled` 为 `true`，并且控制通道证书文件已经存在；首次部署更推荐先使用无配置启动，让服务自动生成 `data/` 状态和控制通道 TLS 材料。
+
+更新管理前端时，重新构建 `admin-ui/dist`，把构建产物同步到 Release 根目录的 `admin-ui/`，然后重启 `goginx-server`。服务端不会热加载前端文件。
 
 ## 当前限制
 

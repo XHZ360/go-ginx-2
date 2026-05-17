@@ -29,20 +29,20 @@ func TestServerRemovedRoutesAndSessionBootstrap(t *testing.T) {
 
 	response, err := http.Get("http://" + server.Addr().String() + "/")
 	if err != nil {
-		t.Fatalf("get embedded root route: %v", err)
+		t.Fatalf("get frontend root route: %v", err)
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		t.Fatalf("expected embedded frontend for root route, got %d", response.StatusCode)
+		t.Fatalf("expected frontend for root route, got %d", response.StatusCode)
 	}
 
 	response, err = http.Get("http://" + server.Addr().String() + "/users")
 	if err != nil {
-		t.Fatalf("get embedded users route: %v", err)
+		t.Fatalf("get frontend users route: %v", err)
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		t.Fatalf("expected embedded frontend for users route, got %d", response.StatusCode)
+		t.Fatalf("expected frontend for users route, got %d", response.StatusCode)
 	}
 
 	response, err = postJSON(http.DefaultClient, "http://"+server.Addr().String()+"/graphql", map[string]any{"query": `query { dashboard { onlineClientCount } }`}, nil)
@@ -79,6 +79,20 @@ func TestServerRemovedRoutesAndSessionBootstrap(t *testing.T) {
 	if bootstrap.PollIntervalSecond != defaultPollSeconds {
 		t.Fatalf("unexpected poll interval: %+v", bootstrap)
 	}
+}
+
+func TestServerFrontendRoutesAndAssetsFromDefaultAdminUIDirectory(t *testing.T) {
+	deploymentRoot := t.TempDir()
+	writeAdminFrontendFixtureAt(t, filepath.Join(deploymentRoot, defaultAdminFrontendDir))
+	setDefaultAdminExecutable(t, deploymentRoot)
+	t.Chdir(t.TempDir())
+	server := startAdminTestServer(t, func(entry *Entry) {
+		entry.AdminFrontendDir = ""
+	})
+
+	assertFrontendResponse(t, "http://"+server.Addr().String()+"/", "<title>Admin UI</title>", "text/html; charset=utf-8")
+	assertFrontendResponse(t, "http://"+server.Addr().String()+"/dashboard", "<title>Admin UI</title>", "text/html; charset=utf-8")
+	assertFrontendResponse(t, "http://"+server.Addr().String()+"/assets/app.js", "window.__adminFrontend = true;", "text/javascript; charset=utf-8")
 }
 
 func TestServerFrontendRoutesAndAssetsWhenConfigured(t *testing.T) {
@@ -125,6 +139,46 @@ func TestServerFrontendRoutesAndAssetsWhenConfigured(t *testing.T) {
 	}
 }
 
+func TestLoadAdminFrontendDefaultDirectoryFailures(t *testing.T) {
+	tests := []struct {
+		name  string
+		setup func(*testing.T, string)
+		want  string
+	}{
+		{name: "missing directory", want: defaultAdminFrontendDir},
+		{name: "not directory", setup: func(t *testing.T, workDir string) {
+			t.Helper()
+			if err := os.WriteFile(filepath.Join(workDir, defaultAdminFrontendDir), []byte("not a dir"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}, want: "must be a directory"},
+		{name: "missing index", setup: func(t *testing.T, workDir string) {
+			t.Helper()
+			if err := os.MkdirAll(filepath.Join(workDir, defaultAdminFrontendDir, "assets"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}, want: "index.html"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			deploymentRoot := t.TempDir()
+			if tt.setup != nil {
+				tt.setup(t, deploymentRoot)
+			}
+			setDefaultAdminExecutable(t, deploymentRoot)
+			t.Chdir(t.TempDir())
+
+			_, err := loadAdminFrontend("")
+			if err == nil {
+				t.Fatal("expected default admin frontend load to fail")
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("expected error containing %q, got %v", tt.want, err)
+			}
+		})
+	}
+}
+
 func TestServerFrontendRoutesStillRequireProtectedTransport(t *testing.T) {
 	frontendDir := writeAdminFrontendFixture(t)
 	server := startAdminTestServer(t, func(entry *Entry) {
@@ -167,7 +221,7 @@ func TestServerAuthenticatesSQLiteAdministrators(t *testing.T) {
 	if err := db.Users().SetPassword(context.Background(), "user-1", ordinaryHash); err != nil {
 		t.Fatal(err)
 	}
-	server, err := Listen(Entry{ListenAddress: "127.0.0.1:0", Query: adminquery.Service{Store: db, Sessions: sessions, Stats: memory}, Commands: admin.Service{Store: db}})
+	server, err := Listen(Entry{ListenAddress: "127.0.0.1:0", AdminFrontendDir: writeAdminFrontendFixture(t), Query: adminquery.Service{Store: db, Sessions: sessions, Stats: memory}, Commands: admin.Service{Store: db}})
 	if err != nil {
 		t.Fatalf("listen sqlite admin server: %v", err)
 	}
@@ -201,7 +255,7 @@ func TestServerRedeemsClientEnrollmentToken(t *testing.T) {
 	if err := db.ClientEnrollments().Create(context.Background(), domain.ClientEnrollment{ID: payload.EnrollmentID, ClientID: payload.ClientID, SecretHash: enrollment.HashSecret(payload.Secret), TokenHash: enrollment.HashToken(token), ExpiresAt: expiresAt}); err != nil {
 		t.Fatal(err)
 	}
-	server, err := Listen(Entry{ListenAddress: "127.0.0.1:0", Query: adminquery.Service{Store: db, Sessions: sessions, Stats: memory}, Commands: admin.Service{Store: db}, Enrollment: enrollment.Service{Store: db}})
+	server, err := Listen(Entry{ListenAddress: "127.0.0.1:0", AdminFrontendDir: writeAdminFrontendFixture(t), Query: adminquery.Service{Store: db, Sessions: sessions, Stats: memory}, Commands: admin.Service{Store: db}, Enrollment: enrollment.Service{Store: db}})
 	if err != nil {
 		t.Fatalf("listen enrollment server: %v", err)
 	}
@@ -339,6 +393,39 @@ func TestServerClientCredentialAndValidationContract(t *testing.T) {
 	credential := createPayload["credential"].(string)
 	if clientID == "" || credential == "" {
 		t.Fatalf("expected one-time credential in create payload: %+v", createPayload)
+	}
+
+	caFile := filepath.ToSlash(filepath.Join(t.TempDir(), "control-ca.crt"))
+	if err := os.WriteFile(caFile, []byte("ca-pem"), 0o600); err != nil {
+		t.Fatalf("write control ca: %v", err)
+	}
+	joinResult := postAdminGraphQL(t, client, server.Addr().String(), `mutation {
+  createClientJoin(input: {
+    userId: "user-1"
+    name: "join-node"
+    enrollmentUrl: "http://127.0.0.1:8080/api/client/enroll"
+    serverAddress: "127.0.0.1:8443"
+    serverTLSAddress: "127.0.0.1:9443"
+    serverName: "go-ginx-control.test"
+    serverCAFile: "`+caFile+`"
+    ttlSeconds: 600
+  }) {
+    clientId
+    token
+    client { id name status }
+  }
+}`, bootstrap.CSRFToken, http.StatusOK)
+	joinPayload := joinResult["data"].(map[string]any)["createClientJoin"].(map[string]any)
+	joinToken := joinPayload["token"].(string)
+	if joinPayload["clientId"].(string) == "" || joinToken == "" {
+		t.Fatalf("expected join token payload: %+v", joinPayload)
+	}
+	tokenPayload, err := enrollment.DecodeToken(joinToken)
+	if err != nil {
+		t.Fatalf("decode join token: %v", err)
+	}
+	if tokenPayload.ClientID != joinPayload["clientId"].(string) || tokenPayload.ServerAddress != "127.0.0.1:8443" || tokenPayload.CAPEM != "ca-pem" {
+		t.Fatalf("unexpected token payload: %+v", tokenPayload)
 	}
 
 	rotateResult := postAdminGraphQL(t, client, server.Addr().String(), `mutation {
@@ -495,7 +582,7 @@ func startAdminTestServer(t *testing.T, mutateEntry func(*Entry)) *Server {
 	t.Cleanup(cancel)
 	db, sessions, memory := adminAPITestRuntime(t)
 	credentialsFile := writeAdminCredentials(t)
-	entry := Entry{ListenAddress: "127.0.0.1:0", AdminCredentialsFile: credentialsFile, Query: adminquery.Service{Store: db, Sessions: sessions, Stats: memory}, Commands: admin.Service{Store: db}}
+	entry := Entry{ListenAddress: "127.0.0.1:0", AdminCredentialsFile: credentialsFile, AdminFrontendDir: writeAdminFrontendFixture(t), Query: adminquery.Service{Store: db, Sessions: sessions, Stats: memory}, Commands: admin.Service{Store: db}}
 	if mutateEntry != nil {
 		mutateEntry(&entry)
 	}
@@ -508,9 +595,24 @@ func startAdminTestServer(t *testing.T, mutateEntry func(*Entry)) *Server {
 	return server
 }
 
+func setDefaultAdminExecutable(t *testing.T, deploymentRoot string) {
+	t.Helper()
+	previous := executablePath
+	executablePath = func() (string, error) {
+		return filepath.Join(deploymentRoot, defaultBinaryDir, "goginx-server"), nil
+	}
+	t.Cleanup(func() {
+		executablePath = previous
+	})
+}
+
 func writeAdminFrontendFixture(t *testing.T) string {
 	t.Helper()
-	dir := t.TempDir()
+	return writeAdminFrontendFixtureAt(t, t.TempDir())
+}
+
+func writeAdminFrontendFixtureAt(t *testing.T, dir string) string {
+	t.Helper()
 	assetsDir := filepath.Join(dir, "assets")
 	if err := os.MkdirAll(assetsDir, 0o755); err != nil {
 		t.Fatal(err)

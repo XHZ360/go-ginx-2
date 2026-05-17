@@ -32,6 +32,10 @@ var (
 	}
 )
 
+const defaultBinaryDir = "bin"
+
+var executablePath = os.Executable
+
 func main() {
 	if err := run(os.Args[1:]); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -46,7 +50,7 @@ func run(args []string) error {
 	command := args[0]
 	flags := flag.NewFlagSet(command, flag.ContinueOnError)
 	flags.SetOutput(os.Stderr)
-	dbPath := flags.String("db", "data/go-ginx.db", "SQLite database path")
+	dbPath := flags.String("db", defaultAdminDBPath(), "SQLite database path")
 	actorID := flags.String("actor", "system", "audit actor user ID")
 
 	switch command {
@@ -323,9 +327,12 @@ type certificateServiceConfig struct {
 }
 
 func openService(dbPath string, certificateCfg ...certificateServiceConfig) (admin.Service, func(), error) {
+	if err := ensureDatabaseParentDir(dbPath); err != nil {
+		return admin.Service{}, nil, err
+	}
 	db, err := sqlite.Open(dbPath)
 	if err != nil {
-		return admin.Service{}, nil, err
+		return admin.Service{}, nil, fmt.Errorf("open sqlite database %s: %w", dbPath, err)
 	}
 	service := admin.Service{Store: db}
 	if len(certificateCfg) > 0 {
@@ -337,4 +344,45 @@ func openService(dbPath string, certificateCfg ...certificateServiceConfig) (adm
 		service.Certificates = certmanager.Service{Store: db, Issuer: newACMEIssuer(), DNSProvider: provider, Storage: httpsproxy.ManagedCertificateStorage{CertificateDir: certificateCfg[0].CertificateDir}, Settings: domain.ACMEProviderSettings{DirectoryURL: certificateCfg[0].DirectoryURL, AccountEmail: certificateCfg[0].AccountEmail, TermsAccepted: certificateCfg[0].TermsAccepted, RenewalWindow: certificateCfg[0].RenewalWindow, DNSProvider: "cloudflare", DNSProviderTokenEnv: certificateCfg[0].TokenEnv}}
 	}
 	return service, func() { _ = db.Close() }, nil
+}
+
+func defaultAdminDBPath() string {
+	root, err := deploymentRoot()
+	if err != nil {
+		return config.DefaultServer().SQLitePath
+	}
+	return filepath.Join(root, config.DefaultServer().SQLitePath)
+}
+
+func deploymentRoot() (string, error) {
+	executable, err := executablePath()
+	if err != nil {
+		return "", fmt.Errorf("resolve executable path: %w", err)
+	}
+	absExecutable, err := filepath.Abs(executable)
+	if err != nil {
+		return "", fmt.Errorf("resolve absolute executable path: %w", err)
+	}
+	if resolved, err := filepath.EvalSymlinks(absExecutable); err == nil {
+		absExecutable = resolved
+	}
+	root := filepath.Dir(absExecutable)
+	if filepath.Base(root) == defaultBinaryDir {
+		root = filepath.Dir(root)
+	}
+	return root, nil
+}
+
+func ensureDatabaseParentDir(dbPath string) error {
+	if strings.TrimSpace(dbPath) == "" || dbPath == ":memory:" || strings.HasPrefix(dbPath, "file:") {
+		return nil
+	}
+	parent := filepath.Dir(dbPath)
+	if parent == "." || parent == "" {
+		return nil
+	}
+	if err := os.MkdirAll(parent, 0o755); err != nil {
+		return fmt.Errorf("create sqlite database directory %s: %w", parent, err)
+	}
+	return nil
 }

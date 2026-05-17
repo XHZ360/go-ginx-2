@@ -7,11 +7,12 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 )
 
 func TestBuildBundleCreatesExpectedLayout(t *testing.T) {
-	root := testBundleRepoRoot(t, false)
+	root := testBundleRepoRoot(t, true)
 	outputDir := filepath.Join(t.TempDir(), "bundle")
 	if err := BuildBundle(context.Background(), BundleOptions{RepoRoot: root, OutputDir: outputDir, GoOS: runtime.GOOS, GoArch: runtime.GOARCH, InstallRoot: "/opt/go-ginx"}); err != nil {
 		t.Fatalf("build bundle: %v", err)
@@ -29,6 +30,7 @@ func TestBuildBundleCreatesExpectedLayout(t *testing.T) {
 		filepath.Join(outputDir, "systemd", "goginx-client.service"),
 		filepath.Join(outputDir, "data", "certs", "managed"),
 		filepath.Join(outputDir, "logs"),
+		filepath.Join(outputDir, bundledAdminFrontendDir, "index.html"),
 	} {
 		if _, err := os.Stat(path); err != nil {
 			t.Fatalf("expected %s: %v", path, err)
@@ -42,7 +44,7 @@ func TestBuildBundleCreatesExpectedLayout(t *testing.T) {
 		t.Fatalf("unexpected server control TLS paths: %+v", serverConfig)
 	}
 	if serverConfig.AdminFrontendDir != "" {
-		t.Fatalf("expected empty admin_frontend_dir when frontend dist is missing, got %q", serverConfig.AdminFrontendDir)
+		t.Fatalf("expected empty admin_frontend_dir for default admin-ui directory, got %q", serverConfig.AdminFrontendDir)
 	}
 	clientConfig := readBundledClientConfig(t, filepath.Join(outputDir, "config", "client.json"))
 	if clientConfig.ServerName != "go-ginx-control.local" || clientConfig.ServerCAFile != "data/certs/server-ca.crt" {
@@ -62,8 +64,17 @@ func TestBuildBundleCreatesExpectedLayout(t *testing.T) {
 	if bytes.Contains(clientService, []byte("-config")) {
 		t.Fatalf("expected configless client service, got %s", string(clientService))
 	}
-	if _, err := os.Stat(filepath.Join(outputDir, bundledAdminFrontendDir)); !os.IsNotExist(err) {
-		t.Fatalf("expected bundled admin frontend directory to be absent when dist is missing, got err=%v", err)
+}
+
+func TestBuildBundleRequiresAdminFrontendAssets(t *testing.T) {
+	root := testBundleRepoRoot(t, false)
+	outputDir := filepath.Join(t.TempDir(), "bundle")
+	err := BuildBundle(context.Background(), BundleOptions{RepoRoot: root, OutputDir: outputDir, GoOS: runtime.GOOS, GoArch: runtime.GOARCH, InstallRoot: "/opt/go-ginx"})
+	if err == nil {
+		t.Fatal("expected build bundle to require admin frontend assets")
+	}
+	if !strings.Contains(err.Error(), "admin frontend build output is required") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 

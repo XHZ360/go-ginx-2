@@ -29,13 +29,17 @@ import (
 )
 
 const (
-	adminAPIPrefix         = "/api/admin"
-	clientEnrollmentPrefix = "/api/client"
-	adminSessionCookieName = "goginx_admin_session"
-	adminSessionCookiePath = "/api/admin"
-	adminCSRFHeader        = "X-GoGinx-CSRF-Token"
-	defaultPollSeconds     = 5
+	adminAPIPrefix          = "/api/admin"
+	clientEnrollmentPrefix  = "/api/client"
+	defaultBinaryDir        = "bin"
+	defaultAdminFrontendDir = "admin-ui"
+	adminSessionCookieName  = "goginx_admin_session"
+	adminSessionCookiePath  = "/api/admin"
+	adminCSRFHeader         = "X-GoGinx-CSRF-Token"
+	defaultPollSeconds      = 5
 )
+
+var executablePath = os.Executable
 
 type Server struct {
 	query      adminquery.Service
@@ -129,6 +133,7 @@ type graphqlContractError struct {
 type clientPayload struct {
 	Client     adminquery.ClientDetail
 	Credential string
+	Token      string
 }
 
 type proxyPayload struct {
@@ -280,7 +285,11 @@ func (server *Server) routeHandler(next http.Handler) http.Handler {
 func loadAdminFrontend(dir string) (*adminFrontend, error) {
 	trimmed := strings.TrimSpace(dir)
 	if trimmed == "" {
-		return embeddedAdminFrontend()
+		defaultRoot, err := defaultAdminFrontendPath()
+		if err != nil {
+			return nil, err
+		}
+		trimmed = defaultRoot
 	}
 	absRoot, err := filepath.Abs(trimmed)
 	if err != nil {
@@ -288,21 +297,40 @@ func loadAdminFrontend(dir string) (*adminFrontend, error) {
 	}
 	info, err := os.Stat(absRoot)
 	if err != nil {
-		return nil, fmt.Errorf("stat admin frontend dir: %w", err)
+		return nil, fmt.Errorf("stat admin frontend dir %q: %w", absRoot, err)
 	}
 	if !info.IsDir() {
-		return nil, errors.New("admin frontend dir must be a directory")
+		return nil, fmt.Errorf("admin frontend dir %q must be a directory", absRoot)
 	}
 	indexPath := filepath.Join(absRoot, "index.html")
 	indexBytes, err := os.ReadFile(indexPath)
 	if err != nil {
-		return nil, fmt.Errorf("read admin frontend index: %w", err)
+		return nil, fmt.Errorf("read admin frontend index %q: %w", indexPath, err)
 	}
 	indexInfo, err := os.Stat(indexPath)
 	if err != nil {
-		return nil, fmt.Errorf("stat admin frontend index: %w", err)
+		return nil, fmt.Errorf("stat admin frontend index %q: %w", indexPath, err)
 	}
 	return &adminFrontend{indexBytes: indexBytes, indexModAt: indexInfo.ModTime(), fileSystem: http.Dir(absRoot)}, nil
+}
+
+func defaultAdminFrontendPath() (string, error) {
+	executable, err := executablePath()
+	if err != nil {
+		return "", fmt.Errorf("resolve executable path: %w", err)
+	}
+	absExecutable, err := filepath.Abs(executable)
+	if err != nil {
+		return "", fmt.Errorf("resolve absolute executable path: %w", err)
+	}
+	if resolved, err := filepath.EvalSymlinks(absExecutable); err == nil {
+		absExecutable = resolved
+	}
+	deploymentRoot := filepath.Dir(absExecutable)
+	if filepath.Base(deploymentRoot) == defaultBinaryDir {
+		deploymentRoot = filepath.Dir(deploymentRoot)
+	}
+	return filepath.Join(deploymentRoot, defaultAdminFrontendDir), nil
 }
 
 func (server *Server) serveFrontend(w http.ResponseWriter, r *http.Request) bool {
@@ -854,6 +882,17 @@ func (server *Server) buildSchema() (graphql.Schema, error) {
 		"name":       &graphql.InputObjectFieldConfig{Type: graphql.NewNonNull(graphql.String)},
 		"credential": &graphql.InputObjectFieldConfig{Type: graphql.String},
 	}})
+	createClientJoinInput := graphql.NewInputObject(graphql.InputObjectConfig{Name: "AdminCreateClientJoinInput", Fields: graphql.InputObjectConfigFieldMap{
+		"id":               &graphql.InputObjectFieldConfig{Type: graphql.String},
+		"userId":           &graphql.InputObjectFieldConfig{Type: graphql.NewNonNull(graphql.String)},
+		"name":             &graphql.InputObjectFieldConfig{Type: graphql.NewNonNull(graphql.String)},
+		"enrollmentUrl":    &graphql.InputObjectFieldConfig{Type: graphql.NewNonNull(graphql.String)},
+		"serverAddress":    &graphql.InputObjectFieldConfig{Type: graphql.NewNonNull(graphql.String)},
+		"serverTLSAddress": &graphql.InputObjectFieldConfig{Type: graphql.String},
+		"serverName":       &graphql.InputObjectFieldConfig{Type: graphql.NewNonNull(graphql.String)},
+		"serverCAFile":     &graphql.InputObjectFieldConfig{Type: graphql.String},
+		"ttlSeconds":       &graphql.InputObjectFieldConfig{Type: graphql.Int},
+	}})
 	createProxyInput := graphql.NewInputObject(graphql.InputObjectConfig{Name: "AdminCreateProxyInput", Fields: graphql.InputObjectConfigFieldMap{
 		"userId":      &graphql.InputObjectFieldConfig{Type: graphql.NewNonNull(graphql.String)},
 		"clientId":    &graphql.InputObjectFieldConfig{Type: graphql.NewNonNull(graphql.String)},
@@ -916,6 +955,9 @@ func (server *Server) buildSchema() (graphql.Schema, error) {
 		}},
 		"credential": &graphql.Field{Type: graphql.String, Resolve: func(params graphql.ResolveParams) (interface{}, error) {
 			return extractClientPayload(params.Source).Credential, nil
+		}},
+		"token": &graphql.Field{Type: graphql.String, Resolve: func(params graphql.ResolveParams) (interface{}, error) {
+			return extractClientPayload(params.Source).Token, nil
 		}},
 	}})
 	proxyPayloadType := graphql.NewObject(graphql.ObjectConfig{Name: "AdminProxyPayload", Fields: graphql.Fields{
@@ -1018,6 +1060,17 @@ func (server *Server) buildSchema() (graphql.Schema, error) {
 				return nil, err
 			}
 			return clientPayload{Client: detail, Credential: created.Credential}, nil
+		})},
+		"createClientJoin": &graphql.Field{Type: clientPayloadType, Args: graphql.FieldConfigArgument{"input": &graphql.ArgumentConfig{Type: graphql.NewNonNull(createClientJoinInput)}}, Resolve: server.wrapResolve(func(params graphql.ResolveParams) (interface{}, error) {
+			created, err := server.commands.CreateClientJoin(params.Context, createClientJoinInputFromArgs(mapArg(params.Args, "input"), actorFromContext(params.Context)))
+			if err != nil {
+				return nil, err
+			}
+			detail, err := server.query.ClientDetail(params.Context, created.Client.ID)
+			if err != nil {
+				return nil, err
+			}
+			return clientPayload{Client: detail, Token: created.Token}, nil
 		})},
 		"enableClient": &graphql.Field{Type: clientPayloadType, Args: graphql.FieldConfigArgument{"input": &graphql.ArgumentConfig{Type: graphql.NewNonNull(userIDInput)}}, Resolve: server.wrapResolve(func(params graphql.ResolveParams) (interface{}, error) {
 			clientID := stringValue(mapArg(params.Args, "input"), "id")
@@ -1258,6 +1311,14 @@ func defaultString(value string, fallback string) string {
 func createProxyInputFromArgs(args map[string]interface{}, actor string) admin.CreateProxyInput {
 	config := mapValue(args, "config")
 	return admin.CreateProxyInput{UserID: stringValue(args, "userId"), ClientID: stringValue(args, "clientId"), Name: stringValue(args, "name"), Type: domain.ProxyType(stringValue(args, "type")), EntryHost: stringValue(config, "entryHost"), EntryPort: intValue(config, "entryPort"), TargetHost: stringValue(config, "targetHost"), TargetPort: intValue(config, "targetPort"), CertFile: stringValue(config, "certFile"), KeyFile: stringValue(config, "keyFile"), Description: stringValue(args, "description"), ActorID: actor}
+}
+
+func createClientJoinInputFromArgs(args map[string]interface{}, actor string) admin.CreateClientJoinInput {
+	input := admin.CreateClientJoinInput{ID: stringValue(args, "id"), UserID: stringValue(args, "userId"), Name: stringValue(args, "name"), ActorID: actor, EnrollmentURL: stringValue(args, "enrollmentUrl"), ServerAddress: stringValue(args, "serverAddress"), ServerTLSAddress: stringValue(args, "serverTLSAddress"), ServerName: stringValue(args, "serverName"), ServerCAFile: stringValue(args, "serverCAFile")}
+	if ttlSeconds := intValue(args, "ttlSeconds"); ttlSeconds > 0 {
+		input.TTL = time.Duration(ttlSeconds) * time.Second
+	}
+	return input
 }
 
 func updateProxyInputFromArgs(args map[string]interface{}, actor string) admin.UpdateProxyInput {

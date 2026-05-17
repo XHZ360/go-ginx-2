@@ -60,7 +60,7 @@ Covered behavior:
 - `goginx-admin build-deploy-bundle` creates a stable core bundle with binaries, config, environment examples, data/log directories, and `systemd` unit files.
 - The packaged runtime binaries start successfully from the generated bundle layout.
 - A packaged client reconnects after the packaged server process restarts.
-- Deployments may additionally carry dedicated admin frontend assets in the install root and point `admin_frontend_dir` at that directory without changing the `/api/admin/*` API namespace.
+- Deployments carry dedicated admin frontend assets in the install-root `admin-ui/` directory by default and may point `admin_frontend_dir` at another built frontend directory without changing the `/api/admin/*` API namespace.
 
 ## Admin API
 
@@ -81,8 +81,8 @@ Covered behavior:
 - Session bootstrap exposes the current authenticated administrator context through `GET /api/admin/session`.
 - The GraphQL surface exposes dashboard, user, client, proxy, managed-certificate, and recent-audit operations through thin resolvers.
 - Query models combine persisted configuration with runtime session state and cumulative stats.
-- When `admin_frontend_dir` is configured, browser routes and asset files are served same-origin by the admin listener while `/api/admin/*` remains the administrator API namespace.
-- When `admin_frontend_dir` is not configured, non-API browser-facing admin paths still return `404`, and the session-authenticated admin API works through the real `goginx-server` binary.
+- When `admin_frontend_dir` is configured, browser routes and asset files are served from that directory while `/api/admin/*` remains the administrator API namespace.
+- When `admin_frontend_dir` is not configured, browser routes and asset files are served from the deployment-root `admin-ui/` build output derived from the server binary location.
 
 ## External Process Smoke
 

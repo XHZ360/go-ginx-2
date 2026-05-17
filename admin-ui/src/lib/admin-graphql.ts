@@ -57,7 +57,17 @@ type ClientsPayload = { clients: PageResult<Client> };
 type ProxiesPayload = { proxies: PageResult<ProxyRecord> };
 type CertificatesPayload = { certificates: PageResult<ManagedCertificate> };
 type AuditPayload = { audit: PageResult<AuditEvent> };
-type ClientMutationPayload = { clientId: string; credential?: string | null; client: ClientDetail };
+type ClientMutationPayload = { clientId: string; credential?: string | null; token?: string | null; client: ClientDetail };
+export type ClientJoinInput = {
+  userId: string;
+  name: string;
+  enrollmentUrl: string;
+  serverAddress: string;
+  serverTLSAddress?: string;
+  serverName: string;
+  serverCAFile?: string;
+  ttlSeconds?: number;
+};
 
 const PAGE_INFO_FRAGMENT = `pageInfo { page pageSize totalCount totalPages hasNext hasPrev }`;
 
@@ -419,6 +429,55 @@ export function mutateCreateClient(csrfToken: string, input: { userId: string; n
       createClient(input: $input) {
         clientId
         credential
+        client {
+          id
+          userId
+          name
+          status
+          version
+          runtime {
+            online
+            protocol
+            connectedAt
+            lastHeartbeat
+            configVersion
+            activeProxies
+            activeStreams
+            uploadBytes
+            downloadBytes
+            errorSummary
+          }
+          lastOnlineAt
+          lastOfflineAt
+          managedProxies {
+            id
+            name
+            type
+            status
+            runtimeStatus
+            entryHost
+            entryPort
+            targetHost
+            targetPort
+            activeTCPConnections
+          }
+          createdAt
+          updatedAt
+        }
+      }
+    }`,
+    variables: { input: cleanObject(input) },
+    mutation: true,
+    csrfToken,
+  });
+}
+
+export function mutateCreateClientJoin(csrfToken: string, input: ClientJoinInput) {
+  return graphqlClient.request<{ createClientJoin: ClientMutationPayload }>({
+    query: `mutation CreateClientJoin($input: AdminCreateClientJoinInput!) {
+      createClientJoin(input: $input) {
+        clientId
+        token
         client {
           id
           userId

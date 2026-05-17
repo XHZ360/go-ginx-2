@@ -125,7 +125,7 @@ This file records the current implementation state so work can resume after a re
     - Added CSRF protection for session-authenticated admin mutations plus tests for login, bootstrap, logout, GraphQL access, and the no-frontend `404` fallback behavior.
 
 28. Current workspace update: serve dedicated admin frontend from configured runtime assets
-    - Added `admin_frontend_dir` server config support so the admin listener can load a built frontend directory with `index.html`.
+    - Added `admin_frontend_dir` server config support so the admin listener can override the default `admin-ui/` frontend directory with another built frontend directory containing `index.html`.
     - Same-origin browser routes now serve the dedicated admin frontend when configured, while `/api/admin/*` remains reserved for login, session, logout, and GraphQL management APIs.
     - Missing asset-like paths still return `404`, and non-API browser routes still return `404` when no frontend directory is configured.
 
@@ -137,8 +137,8 @@ This file records the current implementation state so work can resume after a re
 - `goginx-client` retries transient control-plane failures with configured reconnect backoff and does not retry permanent authentication rejection.
 - Server shutdown closes active control connections so clients can reconnect after daemon restarts.
 - `goginx-admin` can generate a reproducible deployment bundle for the first supported `systemd`-based deployment model.
-- Deployments can carry dedicated admin frontend assets inside the install root and point `admin_frontend_dir` at that directory without changing the `/api/admin/*` API contract.
-- `goginx-server` can optionally expose an administrator-only management listener backed by configuration-file credentials, browser sessions, session bootstrap, logout, CSRF-protected mutations, a session-authenticated GraphQL endpoint, and same-origin dedicated frontend delivery when `admin_frontend_dir` is configured.
+- Deployments carry dedicated admin frontend assets in the install-root `admin-ui/` directory by default and can point `admin_frontend_dir` at another directory without changing the `/api/admin/*` API contract.
+- `goginx-server` can optionally expose an administrator-only management listener backed by configuration-file credentials, browser sessions, session bootstrap, logout, CSRF-protected mutations, a session-authenticated GraphQL endpoint, and same-origin dedicated frontend delivery from `admin-ui/` or a configured override.
 - TCP, UDP, HTTP, HTTPS SNI passthrough, and HTTPS TLS termination proxy paths work through daemon commands, package E2E tests, and external process smoke tests. TCP fallback proxy traffic is covered through daemon tests.
 - `goginx-admin` can seed SQLite resources.
 - Basic TCP/UDP/HTTP stats are implemented with SQLite-backed restart survival for cumulative totals.

@@ -8,12 +8,17 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 
 	"github.com/simp-frp/go-ginx-2/internal/clientjoin"
 	"github.com/simp-frp/go-ginx-2/internal/config"
 	"github.com/simp-frp/go-ginx-2/internal/daemon"
 )
+
+const defaultBinaryDir = "bin"
+
+var executablePath = os.Executable
 
 func main() {
 	if len(os.Args) > 1 && os.Args[1] == "join" {
@@ -42,20 +47,21 @@ func loadClientConfig(configPath string) (config.Client, error) {
 	if configPath != "" {
 		return config.LoadClient(configPath)
 	}
-	cfg, err := config.LoadManagedClient()
+	statePath := defaultClientStatePath()
+	cfg, err := config.LoadClient(statePath)
 	if err == nil {
 		return cfg, nil
 	}
 	if errors.Is(err, os.ErrNotExist) {
-		return config.Client{}, fmt.Errorf("managed client state %s is missing; run `goginx-client join <token>` from the release root before starting the client service, or pass `-config config/client.json` for explicit config: %w", config.DefaultClientStatePath, err)
+		return config.Client{}, fmt.Errorf("managed client state %s is missing; run `goginx-client join <token>` before starting the client service, or pass `-config config/client.json` for explicit config: %w", statePath, err)
 	}
 	return config.Client{}, err
 }
 
 func runJoin(args []string) error {
 	flags := flag.NewFlagSet("join", flag.ContinueOnError)
-	statePath := flags.String("state", config.DefaultClientStatePath, "managed client state path")
-	caFile := flags.String("ca-file", config.DefaultClientCAFile, "managed server CA path")
+	statePath := flags.String("state", defaultClientStatePath(), "managed client state path")
+	caFile := flags.String("ca-file", defaultClientCAFile(), "managed server CA path")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -71,4 +77,39 @@ func runJoin(args []string) error {
 	}
 	cfg.ServerCAFile = *caFile
 	return config.SaveManagedClient(cfg, *statePath)
+}
+
+func defaultClientStatePath() string {
+	root, err := deploymentRoot()
+	if err != nil {
+		return config.DefaultClientStatePath
+	}
+	return filepath.Join(root, config.DefaultClientStatePath)
+}
+
+func defaultClientCAFile() string {
+	root, err := deploymentRoot()
+	if err != nil {
+		return config.DefaultClientCAFile
+	}
+	return filepath.Join(root, config.DefaultClientCAFile)
+}
+
+func deploymentRoot() (string, error) {
+	executable, err := executablePath()
+	if err != nil {
+		return "", fmt.Errorf("resolve executable path: %w", err)
+	}
+	absExecutable, err := filepath.Abs(executable)
+	if err != nil {
+		return "", fmt.Errorf("resolve absolute executable path: %w", err)
+	}
+	if resolved, err := filepath.EvalSymlinks(absExecutable); err == nil {
+		absExecutable = resolved
+	}
+	root := filepath.Dir(absExecutable)
+	if filepath.Base(root) == defaultBinaryDir {
+		root = filepath.Dir(root)
+	}
+	return root, nil
 }

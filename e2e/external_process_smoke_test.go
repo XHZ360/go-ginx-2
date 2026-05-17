@@ -422,8 +422,13 @@ func TestDeployBundleRuntimeRestartRecovery(t *testing.T) {
 func TestExternalProcessesConfiglessServerAndClientJoin(t *testing.T) {
 	root := repositoryRoot(t)
 	workDir := t.TempDir()
-	binDir := filepath.Join(workDir, "bin")
+	deployDir := filepath.Join(workDir, "deploy")
+	stateDir := filepath.Join(workDir, "state")
+	binDir := filepath.Join(deployDir, "bin")
 	if err := os.MkdirAll(binDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(stateDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
 	serverBin := buildCommand(t, root, binDir, "goginx-server", "./cmd/goginx-server")
@@ -436,30 +441,39 @@ func TestExternalProcessesConfiglessServerAndClientJoin(t *testing.T) {
 	controlQUICAddress := net.JoinHostPort("127.0.0.1", strconv.Itoa(reserveUDPPort(t)))
 	controlTLSAddress := net.JoinHostPort("127.0.0.1", strconv.Itoa(reservePort(t)))
 	httpEntryAddress := net.JoinHostPort("127.0.0.1", strconv.Itoa(reservePort(t)))
-	server := startProcessEnv(t, workDir, map[string]string{
-		"GOGINX_ADMIN_LISTEN":        adminAddress,
-		"GOGINX_CONTROL_QUIC_LISTEN": controlQUICAddress,
-		"GOGINX_CONTROL_TLS_LISTEN":  controlTLSAddress,
-		"GOGINX_HTTP_ENTRY_LISTEN":   httpEntryAddress,
+	writeAdminFrontendFixtureAt(t, filepath.Join(deployDir, "admin-ui"))
+	deployDataDir := filepath.Join(deployDir, "data")
+	deployCertDir := filepath.Join(deployDataDir, "certs")
+	server := startProcessEnv(t, stateDir, map[string]string{
+		"GOGINX_ADMIN_LISTEN":          adminAddress,
+		"GOGINX_CONTROL_QUIC_LISTEN":   controlQUICAddress,
+		"GOGINX_CONTROL_TLS_LISTEN":    controlTLSAddress,
+		"GOGINX_CONTROL_TLS_CA_FILE":   filepath.Join(deployCertDir, "control-ca.crt"),
+		"GOGINX_CONTROL_TLS_CERT_FILE": filepath.Join(deployCertDir, "control.crt"),
+		"GOGINX_CONTROL_TLS_KEY_FILE":  filepath.Join(deployCertDir, "control.key"),
+		"GOGINX_HTTP_ENTRY_LISTEN":     httpEntryAddress,
+		"GOGINX_SQLITE_PATH":           filepath.Join(deployDataDir, "go-ginx.db"),
+		"GOGINX_DATA_DIR":              deployDataDir,
+		"GOGINX_CERTIFICATE_DIR":       deployCertDir,
 	}, serverBin)
 	waitForTCPAccept(t, smokeCtx, adminAddress)
-	waitForFile(t, smokeCtx, filepath.Join(workDir, "data", "certs", "control-ca.crt"))
-	waitForFile(t, smokeCtx, filepath.Join(workDir, "data", "go-ginx.db"))
-	if err := waitForEmbeddedAdminFrontend(smokeCtx, adminAddress); err != nil {
-		t.Fatalf("configless embedded admin frontend failed: %v\nserver output:\n%s", err, server.Output())
+	waitForFile(t, smokeCtx, filepath.Join(deployCertDir, "control-ca.crt"))
+	waitForFile(t, smokeCtx, filepath.Join(deployDataDir, "go-ginx.db"))
+	if err := waitForAdminFrontendRoute(smokeCtx, adminAddress); err != nil {
+		t.Fatalf("configless admin frontend failed: %v\nserver output:\n%s", err, server.Output())
 	}
 
-	runCommand(t, smokeCtx, workDir, adminBin, "init-admin", "-id", "admin-1", "-username", "admin", "-password", "secret")
+	runCommand(t, smokeCtx, stateDir, adminBin, "init-admin", "-id", "admin-1", "-username", "admin", "-password", "secret")
 	if err := waitForAdminDashboard(smokeCtx, adminAddress, "admin", "secret", 0); err != nil {
 		t.Fatalf("configless admin login failed: %v\nserver output:\n%s", err, server.Output())
 	}
-	token := strings.TrimSpace(runCommand(t, smokeCtx, workDir, adminBin, "create-client-join", "-id", "client-1", "-user", "admin-1", "-name", "home", "-server-ca-file", filepath.Join("data", "certs", "control-ca.crt"), "-server-name", "go-ginx-control.local", "-server-address", controlQUICAddress, "-server-tls-address", controlTLSAddress, "-enrollment-url", "http://"+adminAddress+"/api/client/enroll"))
+	token := strings.TrimSpace(runCommand(t, smokeCtx, stateDir, adminBin, "create-client-join", "-id", "client-1", "-user", "admin-1", "-name", "home", "-server-ca-file", filepath.Join(deployCertDir, "control-ca.crt"), "-server-name", "go-ginx-control.local", "-server-address", controlQUICAddress, "-server-tls-address", controlTLSAddress, "-enrollment-url", "http://"+adminAddress+"/api/client/enroll"))
 	if token == "" {
 		t.Fatal("expected join token")
 	}
-	runCommand(t, smokeCtx, workDir, clientBin, "join", token)
-	waitForFile(t, smokeCtx, filepath.Join(workDir, "data", "client-state.json"))
-	client := startProcess(t, workDir, clientBin)
+	runCommand(t, smokeCtx, stateDir, clientBin, "join", token)
+	waitForFile(t, smokeCtx, filepath.Join(deployDir, "data", "client-state.json"))
+	client := startProcess(t, stateDir, clientBin)
 	if err := waitForAdminDashboard(smokeCtx, adminAddress, "admin", "secret", 1); err != nil {
 		t.Fatalf("joined configless client did not come online: %v\nserver output:\n%s\nclient output:\n%s", err, server.Output(), client.Output())
 	}
@@ -784,39 +798,6 @@ func waitForMissingAdminAsset(ctx context.Context, address string) error {
 	return ctx.Err()
 }
 
-func waitForEmbeddedAdminFrontend(ctx context.Context, address string) error {
-	var lastErr error
-	for ctx.Err() == nil {
-		request, err := nethttp.NewRequestWithContext(ctx, nethttp.MethodGet, "http://"+address+"/", nil)
-		if err != nil {
-			return err
-		}
-		response, err := (&nethttp.Client{Timeout: 500 * time.Millisecond}).Do(request)
-		if err == nil && response.StatusCode == nethttp.StatusOK {
-			body, readErr := io.ReadAll(response.Body)
-			_ = response.Body.Close()
-			if readErr == nil && strings.Contains(string(body), "GoGinx Admin") {
-				return nil
-			}
-			if readErr != nil {
-				lastErr = readErr
-			} else {
-				lastErr = fmt.Errorf("embedded admin frontend marker missing")
-			}
-		} else if response != nil {
-			_ = response.Body.Close()
-			lastErr = fmt.Errorf("unexpected status %d", response.StatusCode)
-		} else {
-			lastErr = err
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	if lastErr != nil {
-		return lastErr
-	}
-	return ctx.Err()
-}
-
 func waitForAdminSession(ctx context.Context, address string, username string, password string) error {
 	var lastErr error
 	for ctx.Err() == nil {
@@ -1122,7 +1103,11 @@ func writeAdminCredentialsFile(t *testing.T, dir string, username string, passwo
 
 func writeAdminFrontendFixture(t *testing.T) string {
 	t.Helper()
-	dir := t.TempDir()
+	return writeAdminFrontendFixtureAt(t, t.TempDir())
+}
+
+func writeAdminFrontendFixtureAt(t *testing.T, dir string) string {
+	t.Helper()
 	assetsDir := filepath.Join(dir, "assets")
 	if err := os.MkdirAll(assetsDir, 0o755); err != nil {
 		t.Fatal(err)

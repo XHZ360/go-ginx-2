@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -96,6 +97,52 @@ func TestRunInitializesAdminUser(t *testing.T) {
 		t.Fatalf("lookup admin: %v", err)
 	}
 	if user.Role != "admin" || user.Status != "enabled" || !domain.CheckPasswordHash("updated-secret", user.PasswordHash) {
+		t.Fatalf("unexpected admin user: %+v", user)
+	}
+}
+
+func TestRunInitializesAdminUserDefaultDBFromDeploymentRoot(t *testing.T) {
+	deploymentRoot := t.TempDir()
+	stateDir := t.TempDir()
+	previousExecutablePath := executablePath
+	executablePath = func() (string, error) {
+		return filepath.Join(deploymentRoot, "bin", "goginx-admin"), nil
+	}
+	t.Cleanup(func() {
+		executablePath = previousExecutablePath
+	})
+	workingDir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(stateDir); err != nil {
+		t.Fatalf("chdir state dir: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chdir(workingDir)
+	})
+
+	if err := run([]string{"init-admin", "-id", "admin-1", "-username", "admin", "-password", "secret"}); err != nil {
+		t.Fatalf("init admin with default db: %v", err)
+	}
+
+	dbPath := filepath.Join(deploymentRoot, "data", "go-ginx.db")
+	if _, err := os.Stat(dbPath); err != nil {
+		t.Fatalf("expected default deployment db %s: %v", dbPath, err)
+	}
+	if _, err := os.Stat(filepath.Join(stateDir, "data", "go-ginx.db")); !os.IsNotExist(err) {
+		t.Fatalf("expected no cwd-relative db, got err=%v", err)
+	}
+	db, err := sqlite.Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	user, err := db.Users().ByID(context.Background(), "admin-1")
+	if err != nil {
+		t.Fatalf("lookup admin: %v", err)
+	}
+	if user.Username != "admin" || user.Role != domain.RoleAdmin {
 		t.Fatalf("unexpected admin user: %+v", user)
 	}
 }
@@ -188,7 +235,7 @@ func TestRunManagesCertificates(t *testing.T) {
 }
 
 func TestRunBuildsDeployBundle(t *testing.T) {
-	repoRoot := adminMainTestBundleRepoRoot(t, false)
+	repoRoot := adminMainTestBundleRepoRoot(t, true)
 	workingDir, err := os.Getwd()
 	if err != nil {
 		t.Fatal(err)
@@ -216,6 +263,7 @@ func TestRunBuildsDeployBundle(t *testing.T) {
 		filepath.Join(outputDir, "systemd", "goginx-client.service"),
 		filepath.Join(outputDir, "data", "certs", "managed"),
 		filepath.Join(outputDir, "logs"),
+		filepath.Join(outputDir, "admin-ui", "index.html"),
 	} {
 		if _, err := os.Stat(path); err != nil {
 			t.Fatalf("expected %s: %v", path, err)
@@ -229,14 +277,33 @@ func TestRunBuildsDeployBundle(t *testing.T) {
 		t.Fatalf("unexpected server control TLS paths: %+v", serverConfig)
 	}
 	if serverConfig.AdminFrontendDir != "" {
-		t.Fatalf("expected empty admin_frontend_dir when frontend dist is missing, got %q", serverConfig.AdminFrontendDir)
+		t.Fatalf("expected empty admin_frontend_dir for default admin-ui directory, got %q", serverConfig.AdminFrontendDir)
 	}
 	clientConfig := readBundleClientConfig(t, filepath.Join(outputDir, "config", "client.json"))
 	if clientConfig.ServerName != "go-ginx-control.local" || clientConfig.ServerCAFile != "data/certs/server-ca.crt" {
 		t.Fatalf("unexpected client trust config: %+v", clientConfig)
 	}
-	if _, err := os.Stat(filepath.Join(outputDir, "admin-ui")); !os.IsNotExist(err) {
-		t.Fatalf("expected bundled admin frontend directory to be absent when dist is missing, got err=%v", err)
+}
+
+func TestRunBuildDeployBundleRequiresAdminFrontendAssets(t *testing.T) {
+	repoRoot := adminMainTestBundleRepoRoot(t, false)
+	workingDir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(repoRoot); err != nil {
+		t.Fatalf("chdir repo root: %v", err)
+	}
+	defer func() {
+		_ = os.Chdir(workingDir)
+	}()
+	outputDir := filepath.Join(t.TempDir(), "bundle")
+	err = run([]string{"build-deploy-bundle", "-output", outputDir, "-goos", runtime.GOOS, "-goarch", runtime.GOARCH, "-install-root", "/opt/go-ginx"})
+	if err == nil {
+		t.Fatal("expected build deploy bundle to require admin frontend assets")
+	}
+	if !strings.Contains(err.Error(), "admin frontend build output is required") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
