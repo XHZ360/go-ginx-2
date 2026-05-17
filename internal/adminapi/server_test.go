@@ -7,8 +7,10 @@ import (
 	"io"
 	"net/http"
 	"net/http/cookiejar"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -74,6 +76,74 @@ func TestServerRemovedRoutesAndSessionBootstrap(t *testing.T) {
 	}
 	if bootstrap.PollIntervalSecond != defaultPollSeconds {
 		t.Fatalf("unexpected poll interval: %+v", bootstrap)
+	}
+}
+
+func TestServerFrontendRoutesAndAssetsWhenConfigured(t *testing.T) {
+	frontendDir := writeAdminFrontendFixture(t)
+	server := startAdminTestServer(t, func(entry *Entry) {
+		entry.AdminFrontendDir = frontendDir
+	})
+
+	assertFrontendResponse(t, "http://"+server.Addr().String()+"/", "<title>Admin UI</title>", "text/html; charset=utf-8")
+	assertFrontendResponse(t, "http://"+server.Addr().String()+"/login", "<title>Admin UI</title>", "text/html; charset=utf-8")
+	assertFrontendResponse(t, "http://"+server.Addr().String()+"/users/user-1", "<title>Admin UI</title>", "text/html; charset=utf-8")
+	assertFrontendResponse(t, "http://"+server.Addr().String()+"/assets/app.js", "window.__adminFrontend = true;", "text/javascript; charset=utf-8")
+
+	response, err := http.Get("http://" + server.Addr().String() + "/assets/missing.js")
+	if err != nil {
+		t.Fatalf("get missing asset: %v", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404 for missing asset, got %d", response.StatusCode)
+	}
+
+	response, err = postJSON(http.DefaultClient, "http://"+server.Addr().String()+"/api/admin/unknown", map[string]any{}, nil)
+	if err != nil {
+		t.Fatalf("post unknown admin api route: %v", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected 404 for unknown admin api route, got %d", response.StatusCode)
+	}
+
+	client := newAdminHTTPClient(t)
+	bootstrap := readBootstrap(t, client, server.Addr().String())
+	if bootstrap.Authenticated {
+		t.Fatal("expected unauthenticated bootstrap without login")
+	}
+	login := loginAdmin(t, client, server.Addr().String(), "admin", "secret")
+	if !login.Authenticated {
+		t.Fatalf("expected authenticated login bootstrap, got %+v", login)
+	}
+	result := postAdminGraphQL(t, client, server.Addr().String(), `query { dashboard { onlineClientCount } }`, "", http.StatusOK)
+	if result["data"].(map[string]any)["dashboard"].(map[string]any)["onlineClientCount"].(float64) != 1 {
+		t.Fatalf("unexpected dashboard result with frontend configured: %+v", result)
+	}
+}
+
+func TestServerFrontendRoutesStillRequireProtectedTransport(t *testing.T) {
+	frontendDir := writeAdminFrontendFixture(t)
+	server := startAdminTestServer(t, func(entry *Entry) {
+		entry.AdminFrontendDir = frontendDir
+	})
+
+	request := httptest.NewRequest(http.MethodGet, "http://admin.example.test/users", nil)
+	request.RemoteAddr = "203.0.113.9:1234"
+	response := httptest.NewRecorder()
+
+	server.routeHandler(http.NewServeMux()).ServeHTTP(response, request)
+
+	if response.Code != http.StatusUpgradeRequired {
+		t.Fatalf("expected protected transport rejection, got %d body=%s", response.Code, response.Body.String())
+	}
+	var decoded apiErrorResponse
+	if err := json.NewDecoder(response.Body).Decode(&decoded); err != nil {
+		t.Fatalf("decode protected transport response: %v", err)
+	}
+	if decoded.Error.Code != "PROTECTED_TRANSPORT_REQUIRED" {
+		t.Fatalf("unexpected protected transport error: %+v", decoded)
 	}
 }
 
@@ -352,6 +422,22 @@ func startAdminTestServer(t *testing.T, mutateEntry func(*Entry)) *Server {
 	return server
 }
 
+func writeAdminFrontendFixture(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	assetsDir := filepath.Join(dir, "assets")
+	if err := os.MkdirAll(assetsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "index.html"), []byte("<!doctype html><html><head><title>Admin UI</title></head><body><div id=app>admin frontend shell</div></body></html>"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(assetsDir, "app.js"), []byte("window.__adminFrontend = true;"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
 func adminAPITestRuntime(t *testing.T) (*sqlite.Store, *session.Manager, *stats.Memory) {
 	t.Helper()
 	db, err := sqlite.Open(filepath.Join(t.TempDir(), "adminapi.db"))
@@ -565,4 +651,27 @@ func decodeBootstrapResponse(t *testing.T, reader io.Reader) sessionBootstrapRes
 		t.Fatal(err)
 	}
 	return response
+}
+
+func assertFrontendResponse(t *testing.T, url string, wantBodyFragment string, wantContentTypePrefix string) {
+	t.Helper()
+	response, err := http.Get(url)
+	if err != nil {
+		t.Fatalf("get frontend route %s: %v", url, err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(response.Body)
+		t.Fatalf("unexpected frontend status %d body=%s", response.StatusCode, string(body))
+	}
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatalf("read frontend body: %v", err)
+	}
+	if !strings.Contains(string(body), wantBodyFragment) {
+		t.Fatalf("expected body fragment %q in %q", wantBodyFragment, string(body))
+	}
+	if contentType := response.Header.Get("Content-Type"); !strings.HasPrefix(contentType, wantContentTypePrefix) {
+		t.Fatalf("unexpected content type %q, want prefix %q", contentType, wantContentTypePrefix)
+	}
 }

@@ -57,13 +57,14 @@ go test ./e2e -run TestDeployBundleRuntimeRestartRecovery -count=1
 
 Covered behavior:
 
-- `goginx-admin build-deploy-bundle` creates a stable bundle with binaries, config, environment examples, data/log directories, and `systemd` unit files.
+- `goginx-admin build-deploy-bundle` creates a stable core bundle with binaries, config, environment examples, data/log directories, and `systemd` unit files.
 - The packaged runtime binaries start successfully from the generated bundle layout.
 - A packaged client reconnects after the packaged server process restarts.
+- Deployments may additionally carry dedicated admin frontend assets in the install root and point `admin_frontend_dir` at that directory without changing the `/api/admin/*` API namespace.
 
 ## Admin API
 
-The admin management tests cover administrator authentication, session bootstrap, GraphQL queries and mutations, query-model aggregation, and external process smoke for the API-only management listener:
+The admin management tests cover administrator authentication, session bootstrap, GraphQL queries and mutations, query-model aggregation, and external process smoke for the management listener with optional same-origin frontend serving:
 
 ```powershell
 $env:CGO_ENABLED="0"
@@ -77,10 +78,11 @@ Covered behavior:
 
 - Administrator credentials are loaded from protected configuration independent of SQLite product users.
 - Session login rejects invalid administrator credentials and creates cookie-backed administrator sessions for valid credentials.
-- Session bootstrap exposes the current authenticated administrator context without serving HTML.
+- Session bootstrap exposes the current authenticated administrator context through `GET /api/admin/session`.
 - The GraphQL surface exposes dashboard, user, client, proxy, managed-certificate, and recent-audit operations through thin resolvers.
 - Query models combine persisted configuration with runtime session state and cumulative stats.
-- Removed browser-facing admin paths return `404`, and the session-authenticated admin API works through the real `goginx-server` binary.
+- When `admin_frontend_dir` is configured, browser routes and asset files are served same-origin by the admin listener while `/api/admin/*` remains the administrator API namespace.
+- When `admin_frontend_dir` is not configured, non-API browser-facing admin paths still return `404`, and the session-authenticated admin API works through the real `goginx-server` binary.
 
 ## External Process Smoke
 

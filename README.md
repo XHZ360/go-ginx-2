@@ -23,7 +23,7 @@ The repository currently contains a milestone-one runtime plus a first deploymen
 - `goginx-server` starts SQLite, QUIC control, optional TCP+TLS fallback, TCP entries, HTTP entry, and optional HTTPS entry for SNI passthrough or file-backed TLS termination from config.
 - `goginx-client` authenticates, reads proxy snapshots, sends heartbeats, serves proxy streams, and retries transient control-plane failures with reconnect backoff.
 - `goginx-admin build-deploy-bundle` creates a reproducible deployment bundle with sample config, environment examples, and `systemd` service templates.
-- An administrator-only management listener is available through session-based same-origin admin API endpoints for login, logout, session bootstrap, and GraphQL management operations.
+- An administrator-only management listener is available through session-based same-origin admin API endpoints for login, logout, session bootstrap, and GraphQL management operations, and it can also serve a dedicated same-origin admin frontend when `admin_frontend_dir` is configured.
 
 ## Commands
 
@@ -132,7 +132,8 @@ Administrator management access is optional and requires an additional server se
 ```json
 {
   "admin_listen": "127.0.0.1:8080",
-  "admin_credentials_file": "config/admin-creds.json"
+  "admin_credentials_file": "config/admin-creds.json",
+  "admin_frontend_dir": "web/admin"
 }
 ```
 
@@ -149,7 +150,7 @@ The credentials file stores administrator usernames and bcrypt password hashes:
 }
 ```
 
-When enabled, the admin listener is API-only and is expected to run behind TLS. Browser-facing administrator access uses login-created server-managed sessions backed by `admin_credentials_file`, plus a session bootstrap endpoint and CSRF-protected mutation flow. The currently exposed management GraphQL scope remains administrator-only and includes a cumulative dashboard summary, user management, client list/detail, full reverse-proxy CRUD plus lifecycle actions, managed-certificate status/issue/renew, and a minimal recent audit list. Legacy server-rendered admin pages and the browser-facing legacy `/graphql` route are not served in this slice.
+When enabled, the admin listener is expected to run behind TLS. Browser-facing administrator access uses login-created server-managed sessions backed by `admin_credentials_file`, plus a session bootstrap endpoint and CSRF-protected mutation flow. `POST /api/admin/login`, `GET /api/admin/session`, `POST /api/admin/logout`, and `POST /api/admin/graphql` remain the browser API surface under the reserved `/api/admin/*` namespace. When `admin_frontend_dir` is configured, the same listener also serves the dedicated admin frontend for same-origin browser routes such as `/`, `/login`, and deep links like `/users/user-1`; asset requests are served from that directory, while missing asset-like paths still return `404 Not Found`. When `admin_frontend_dir` is not configured, non-API browser routes continue to return `404 Not Found`. The currently exposed management GraphQL scope remains administrator-only and includes a cumulative dashboard summary, user management, client list/detail, full reverse-proxy CRUD plus lifecycle actions, managed-certificate status/issue/renew, and a minimal recent audit list. The legacy server-rendered admin pages and the browser-facing legacy `/graphql` route are not served in this slice.
 
 ## Current Limitations
 

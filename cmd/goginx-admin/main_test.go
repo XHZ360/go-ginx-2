@@ -6,6 +6,7 @@ import (
 	"crypto/rsa"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/json"
 	"encoding/pem"
 	"math/big"
 	"os"
@@ -118,6 +119,17 @@ func TestRunManagesCertificates(t *testing.T) {
 }
 
 func TestRunBuildsDeployBundle(t *testing.T) {
+	repoRoot := adminMainTestBundleRepoRoot(t, false)
+	workingDir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(repoRoot); err != nil {
+		t.Fatalf("chdir repo root: %v", err)
+	}
+	defer func() {
+		_ = os.Chdir(workingDir)
+	}()
 	outputDir := filepath.Join(t.TempDir(), "bundle")
 	if err := run([]string{"build-deploy-bundle", "-output", outputDir, "-goos", runtime.GOOS, "-goarch", runtime.GOARCH, "-install-root", "/opt/go-ginx"}); err != nil {
 		t.Fatalf("build deploy bundle: %v", err)
@@ -140,6 +152,49 @@ func TestRunBuildsDeployBundle(t *testing.T) {
 			t.Fatalf("expected %s: %v", path, err)
 		}
 	}
+	serverConfig := readBundleServerConfig(t, filepath.Join(outputDir, "config", "server.json"))
+	if serverConfig.AdminFrontendDir != "" {
+		t.Fatalf("expected empty admin_frontend_dir when frontend dist is missing, got %q", serverConfig.AdminFrontendDir)
+	}
+	if _, err := os.Stat(filepath.Join(outputDir, "admin-ui")); !os.IsNotExist(err) {
+		t.Fatalf("expected bundled admin frontend directory to be absent when dist is missing, got err=%v", err)
+	}
+}
+
+func TestRunBuildsDeployBundleWithAdminFrontendAssets(t *testing.T) {
+	repoRoot := adminMainTestBundleRepoRoot(t, true)
+	workingDir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(repoRoot); err != nil {
+		t.Fatalf("chdir repo root: %v", err)
+	}
+	defer func() {
+		_ = os.Chdir(workingDir)
+	}()
+	outputDir := filepath.Join(t.TempDir(), "bundle")
+	if err := run([]string{"build-deploy-bundle", "-output", outputDir, "-goos", runtime.GOOS, "-goarch", runtime.GOARCH, "-install-root", "/opt/go-ginx"}); err != nil {
+		t.Fatalf("build deploy bundle: %v", err)
+	}
+	content, err := os.ReadFile(filepath.Join(outputDir, "admin-ui", "index.html"))
+	if err != nil {
+		t.Fatalf("read bundled admin frontend index: %v", err)
+	}
+	if string(content) != "<html>admin</html>" {
+		t.Fatalf("unexpected bundled admin frontend content %q", string(content))
+	}
+	assetContent, err := os.ReadFile(filepath.Join(outputDir, "admin-ui", "assets", "app.js"))
+	if err != nil {
+		t.Fatalf("read bundled admin frontend asset: %v", err)
+	}
+	if string(assetContent) != "console.log('admin');" {
+		t.Fatalf("unexpected bundled admin frontend asset %q", string(assetContent))
+	}
+	serverConfig := readBundleServerConfig(t, filepath.Join(outputDir, "config", "server.json"))
+	if serverConfig.AdminFrontendDir != "admin-ui" {
+		t.Fatalf("expected admin_frontend_dir %q, got %q", "admin-ui", serverConfig.AdminFrontendDir)
+	}
 }
 
 func bundleBinaryName(name string) string {
@@ -147,6 +202,85 @@ func bundleBinaryName(name string) string {
 		return name + ".exe"
 	}
 	return name
+}
+
+func adminMainTestBundleRepoRoot(t *testing.T, includeFrontendDist bool) string {
+	t.Helper()
+	root := adminMainRepoRoot(t)
+	tempRoot := t.TempDir()
+	adminMainMustMkdirAll(t, filepath.Join(tempRoot, "cmd", "goginx-server"))
+	adminMainMustMkdirAll(t, filepath.Join(tempRoot, "cmd", "goginx-client"))
+	adminMainMustMkdirAll(t, filepath.Join(tempRoot, "cmd", "goginx-admin"))
+	adminMainMustMkdirAll(t, filepath.Join(tempRoot, "deploy", "systemd"))
+	adminMainCopyFile(t, filepath.Join(root, "go.mod"), filepath.Join(tempRoot, "go.mod"))
+	adminMainCopyFile(t, filepath.Join(root, "go.sum"), filepath.Join(tempRoot, "go.sum"))
+	adminMainCopyFile(t, filepath.Join(root, "cmd", "goginx-server", "main.go"), filepath.Join(tempRoot, "cmd", "goginx-server", "main.go"))
+	adminMainCopyFile(t, filepath.Join(root, "cmd", "goginx-client", "main.go"), filepath.Join(tempRoot, "cmd", "goginx-client", "main.go"))
+	adminMainCopyFile(t, filepath.Join(root, "cmd", "goginx-admin", "main.go"), filepath.Join(tempRoot, "cmd", "goginx-admin", "main.go"))
+	adminMainCopyFile(t, filepath.Join(root, "deploy", "systemd", "goginx-server.service"), filepath.Join(tempRoot, "deploy", "systemd", "goginx-server.service"))
+	adminMainCopyFile(t, filepath.Join(root, "deploy", "systemd", "goginx-client.service"), filepath.Join(tempRoot, "deploy", "systemd", "goginx-client.service"))
+	if err := os.Symlink(filepath.Join(root, "internal"), filepath.Join(tempRoot, "internal")); err != nil {
+		t.Skipf("symlink internal package tree: %v", err)
+	}
+	if includeFrontendDist {
+		adminMainMustMkdirAll(t, filepath.Join(tempRoot, "admin-ui", "dist", "assets"))
+		adminMainMustWriteFile(t, filepath.Join(tempRoot, "admin-ui", "dist", "index.html"), []byte("<html>admin</html>"), 0o644)
+		adminMainMustWriteFile(t, filepath.Join(tempRoot, "admin-ui", "dist", "assets", "app.js"), []byte("console.log('admin');"), 0o644)
+	}
+	return tempRoot
+}
+
+func adminMainRepoRoot(t *testing.T) string {
+	t.Helper()
+	workingDir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return filepath.Clean(filepath.Join(workingDir, "..", ".."))
+}
+
+func readBundleServerConfig(t *testing.T, path string) bundleServerConfig {
+	t.Helper()
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read server config: %v", err)
+	}
+	var cfg bundleServerConfig
+	if err := json.Unmarshal(content, &cfg); err != nil {
+		t.Fatalf("decode server config: %v", err)
+	}
+	return cfg
+}
+
+type bundleServerConfig struct {
+	AdminFrontendDir string `json:"admin_frontend_dir"`
+}
+
+func adminMainCopyFile(t *testing.T, sourcePath string, destPath string) {
+	t.Helper()
+	content, err := os.ReadFile(sourcePath)
+	if err != nil {
+		t.Fatalf("read %s: %v", sourcePath, err)
+	}
+	info, err := os.Stat(sourcePath)
+	if err != nil {
+		t.Fatalf("stat %s: %v", sourcePath, err)
+	}
+	adminMainMustWriteFile(t, destPath, content, info.Mode().Perm())
+}
+
+func adminMainMustMkdirAll(t *testing.T, path string) {
+	t.Helper()
+	if err := os.MkdirAll(path, 0o755); err != nil {
+		t.Fatalf("mkdir %s: %v", path, err)
+	}
+}
+
+func adminMainMustWriteFile(t *testing.T, path string, content []byte, perm os.FileMode) {
+	t.Helper()
+	if err := os.WriteFile(path, content, perm); err != nil {
+		t.Fatalf("write %s: %v", path, err)
+	}
 }
 
 type adminMainFakeDNSProvider struct{}

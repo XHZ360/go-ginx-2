@@ -108,7 +108,7 @@ func startServerWithStore(parent context.Context, cfg config.Server, db store.St
 			}
 			adminService.Certificates = certificateService
 		}
-		adminServer, err := adminapi.Listen(adminapi.Entry{ListenAddress: cfg.AdminListen, AdminCredentialsFile: cfg.AdminCredentialsFile, Query: adminquery.Service{Store: db, Sessions: sessions, Stats: memoryStats}, Commands: adminService})
+		adminServer, err := adminapi.Listen(adminapi.Entry{ListenAddress: cfg.AdminListen, AdminCredentialsFile: cfg.AdminCredentialsFile, AdminFrontendDir: cfg.AdminFrontendDir, Query: adminquery.Service{Store: db, Sessions: sessions, Stats: memoryStats}, Commands: adminService})
 		if err != nil {
 			_ = runtime.Close()
 			return nil, fmt.Errorf("listen admin api: %w", err)

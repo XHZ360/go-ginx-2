@@ -287,6 +287,7 @@ func TestExternalProcessesAdminAPIUI(t *testing.T) {
 	root := repositoryRoot(t)
 	workDir := t.TempDir()
 	binDir := filepath.Join(workDir, "bin")
+	frontendDir := writeAdminFrontendFixture(t)
 	if err := os.MkdirAll(binDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -305,6 +306,7 @@ func TestExternalProcessesAdminAPIUI(t *testing.T) {
 	serverConfig := writeJSON(t, filepath.Join(workDir, "server.json"), map[string]any{
 		"admin_listen":           net.JoinHostPort("127.0.0.1", strconv.Itoa(adminPort)),
 		"admin_credentials_file": adminCredsFile,
+		"admin_frontend_dir":     frontendDir,
 		"control_quic_listen":    net.JoinHostPort("127.0.0.1", strconv.Itoa(controlPort)),
 		"control_tls_cert_file":  certFile,
 		"control_tls_key_file":   keyFile,
@@ -332,8 +334,11 @@ func TestExternalProcessesAdminAPIUI(t *testing.T) {
 	server := startProcess(t, root, serverBin, "-config", serverConfig)
 	waitForTCPAccept(t, smokeCtx, net.JoinHostPort("127.0.0.1", strconv.Itoa(adminPort)))
 	client := startProcess(t, root, clientBin, "-config", clientConfig)
-	if err := waitForRemovedAdminRoute(smokeCtx, net.JoinHostPort("127.0.0.1", strconv.Itoa(adminPort))); err != nil {
-		t.Fatalf("admin removed-route smoke failed: %v\nserver output:\n%s\nclient output:\n%s", err, server.Output(), client.Output())
+	if err := waitForAdminFrontendRoute(smokeCtx, net.JoinHostPort("127.0.0.1", strconv.Itoa(adminPort))); err != nil {
+		t.Fatalf("admin frontend route smoke failed: %v\nserver output:\n%s\nclient output:\n%s", err, server.Output(), client.Output())
+	}
+	if err := waitForMissingAdminAsset(smokeCtx, net.JoinHostPort("127.0.0.1", strconv.Itoa(adminPort))); err != nil {
+		t.Fatalf("admin missing asset smoke failed: %v\nserver output:\n%s\nclient output:\n%s", err, server.Output(), client.Output())
 	}
 	if err := waitForAdminSession(smokeCtx, net.JoinHostPort("127.0.0.1", strconv.Itoa(adminPort)), "admin", "secret"); err != nil {
 		t.Fatalf("admin session smoke failed: %v\nserver output:\n%s\nclient output:\n%s", err, server.Output(), client.Output())
@@ -647,17 +652,46 @@ func waitForTLSEcho(ctx context.Context, address string, serverName string, root
 	return ctx.Err()
 }
 
-func waitForRemovedAdminRoute(ctx context.Context, address string) error {
+func waitForAdminFrontendRoute(ctx context.Context, address string) error {
 	var lastErr error
 	for ctx.Err() == nil {
-		request, err := nethttp.NewRequestWithContext(ctx, nethttp.MethodGet, "http://"+address+"/", nil)
+		request, err := nethttp.NewRequestWithContext(ctx, nethttp.MethodGet, "http://"+address+"/dashboard", nil)
+		if err != nil {
+			return err
+		}
+		response, err := (&nethttp.Client{Timeout: 500 * time.Millisecond}).Do(request)
+		if err == nil && response.StatusCode == nethttp.StatusOK {
+			body, readErr := io.ReadAll(response.Body)
+			_ = response.Body.Close()
+			if readErr == nil && strings.Contains(string(body), "admin frontend shell") {
+				return nil
+			}
+			lastErr = readErr
+		} else if response != nil {
+			_ = response.Body.Close()
+			lastErr = fmt.Errorf("unexpected status %d", response.StatusCode)
+		} else {
+			lastErr = err
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if lastErr != nil {
+		return lastErr
+	}
+	return ctx.Err()
+}
+
+func waitForMissingAdminAsset(ctx context.Context, address string) error {
+	var lastErr error
+	for ctx.Err() == nil {
+		request, err := nethttp.NewRequestWithContext(ctx, nethttp.MethodGet, "http://"+address+"/assets/missing.js", nil)
 		if err != nil {
 			return err
 		}
 		response, err := (&nethttp.Client{Timeout: 500 * time.Millisecond}).Do(request)
 		if err == nil && response.StatusCode == nethttp.StatusNotFound {
 			_ = response.Body.Close()
-				return nil
+			return nil
 		} else if response != nil {
 			_ = response.Body.Close()
 			lastErr = fmt.Errorf("unexpected status %d", response.StatusCode)
@@ -916,6 +950,18 @@ func writeAdminCredentialsFile(t *testing.T, dir string, username string, passwo
 	path := filepath.Join(dir, "admin-creds.json")
 	writeFile(t, path, []byte(`{"administrators":[{"username":"`+username+`","password_hash":"`+hash+`"}]}`))
 	return path
+}
+
+func writeAdminFrontendFixture(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	assetsDir := filepath.Join(dir, "assets")
+	if err := os.MkdirAll(assetsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(dir, "index.html"), []byte("<!doctype html><html><head><title>Admin UI</title></head><body><div id=app>admin frontend shell</div></body></html>"))
+	writeFile(t, filepath.Join(assetsDir, "app.js"), []byte("window.__adminFrontend = true;"))
+	return dir
 }
 
 func writeFile(t *testing.T, path string, content []byte) {

@@ -6,14 +6,17 @@ import (
 	"crypto/rsa"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/json"
 	"encoding/pem"
 	"io"
 	"math/big"
 	"net"
 	nethttp "net/http"
+	"net/http/cookiejar"
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -73,6 +76,66 @@ func TestStartServerWiresRuntimeListeners(t *testing.T) {
 	}
 	if len(loaded) != 1 || loaded[0].ProxyID != "tcp-1" || loaded[0].TCPConnections != 1 || loaded[0].TCPDownloadBytes != 34 {
 		t.Fatalf("expected persisted tcp stats, got %+v", loaded)
+	}
+}
+
+func TestStartServerServesConfiguredAdminFrontend(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	serverCert, serverKey, _ := writeTestTLSFiles(t)
+	dbPath := filepath.Join(t.TempDir(), "admin-frontend.db")
+	seedDatabase(t, dbPath, []domain.Proxy{{ID: "http-1", UserID: "user-1", ClientID: "client-1", Name: "web", Type: domain.ProxyHTTP, Status: domain.ProxyEnabled, EntryHost: "app.example.com", TargetHost: "127.0.0.1", TargetPort: 8080}})
+	frontendDir := writeDaemonAdminFrontendFixture(t)
+	adminCredentialsFile := writeDaemonAdminCredentials(t)
+	adminPort := reservePort(t)
+	controlQUICPort := reserveUDPPort(t)
+	httpEntryPort := reservePort(t)
+
+	runtime, err := StartServer(ctx, config.Server{AdminListen: net.JoinHostPort("127.0.0.1", strconv.Itoa(adminPort)), AdminCredentialsFile: adminCredentialsFile, AdminFrontendDir: frontendDir, ControlQUICListen: net.JoinHostPort("127.0.0.1", strconv.Itoa(controlQUICPort)), ControlTLSCertFile: serverCert, ControlTLSKeyFile: serverKey, TCPEntryHost: "127.0.0.1", HTTPEntryListen: net.JoinHostPort("127.0.0.1", strconv.Itoa(httpEntryPort)), SQLitePath: dbPath, DataDir: t.TempDir(), CertificateDir: t.TempDir(), HeartbeatTimeout: time.Second, LogRetentionDays: 1})
+	if err != nil {
+		t.Fatalf("start server with admin frontend: %v", err)
+	}
+	t.Cleanup(func() { _ = runtime.Close() })
+	if runtime.AdminServer == nil {
+		t.Fatal("expected admin server to start")
+	}
+
+	response, err := nethttp.Get("http://" + runtime.AdminServer.Addr().String() + "/dashboard")
+	if err != nil {
+		t.Fatalf("get admin frontend route: %v", err)
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatalf("read admin frontend route body: %v", err)
+	}
+	if response.StatusCode != nethttp.StatusOK || !strings.Contains(string(body), "daemon admin frontend") {
+		t.Fatalf("unexpected admin frontend response status=%d body=%q", response.StatusCode, string(body))
+	}
+
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		t.Fatalf("create cookie jar: %v", err)
+	}
+	client := &nethttp.Client{Jar: jar}
+	loginResponse, err := postDaemonJSON(client, "http://"+runtime.AdminServer.Addr().String()+"/api/admin/login", map[string]string{"username": "admin", "password": "secret"})
+	if err != nil {
+		t.Fatalf("login admin api: %v", err)
+	}
+	defer loginResponse.Body.Close()
+	if loginResponse.StatusCode != nethttp.StatusOK {
+		body, _ := io.ReadAll(loginResponse.Body)
+		t.Fatalf("unexpected login status %d body=%s", loginResponse.StatusCode, string(body))
+	}
+
+	graphqlResponse, err := postDaemonJSON(client, "http://"+runtime.AdminServer.Addr().String()+"/api/admin/graphql", map[string]any{"query": `query { dashboard { enabledProxyCount } }`})
+	if err != nil {
+		t.Fatalf("query admin graphql: %v", err)
+	}
+	defer graphqlResponse.Body.Close()
+	if graphqlResponse.StatusCode != nethttp.StatusOK {
+		body, _ := io.ReadAll(graphqlResponse.Body)
+		t.Fatalf("unexpected graphql status %d body=%s", graphqlResponse.StatusCode, string(body))
 	}
 }
 
@@ -627,4 +690,40 @@ func generateTestCertificate(t *testing.T) ([]byte, []byte, []byte) {
 		t.Fatal(err)
 	}
 	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: serverDER}), pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(serverKey)}), pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: caDER})
+}
+
+func writeDaemonAdminFrontendFixture(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "index.html"), []byte("<!doctype html><html><body>daemon admin frontend</body></html>"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+func writeDaemonAdminCredentials(t *testing.T) string {
+	t.Helper()
+	hash, err := domain.HashPassword("secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "admins.json")
+	content := []byte(`{"administrators":[{"username":"admin","password_hash":"` + hash + `"}]}`)
+	if err := os.WriteFile(path, content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func postDaemonJSON(client *nethttp.Client, url string, payload any) (*nethttp.Response, error) {
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+	request, err := nethttp.NewRequest(nethttp.MethodPost, url, strings.NewReader(string(body)))
+	if err != nil {
+		return nil, err
+	}
+	request.Header.Set("Content-Type", "application/json")
+	return client.Do(request)
 }

@@ -18,7 +18,7 @@ This guide covers the implemented milestone-one daemon runtime plus the first su
 12. SQLite-backed cumulative stats persistence for TCP, UDP, and HTTP traffic.
 13. Reproducible deployment bundle generation for server, client, and admin binaries.
 14. Checked-in `systemd` service templates for supervised server and client execution.
-15. Optional administrator-only API-only management listener with session login, session bootstrap, logout, and GraphQL operations.
+15. Optional administrator-only management listener with session login, session bootstrap, logout, GraphQL operations, and same-origin dedicated frontend delivery when `admin_frontend_dir` is configured.
 
 ## Seed SQLite
 
@@ -33,6 +33,7 @@ Create `server.json` with fields from `internal/config/config.go`:
 ```json
 {
   "admin_listen": "127.0.0.1:8080",
+  "admin_frontend_dir": "web/admin",
   "control_quic_listen": "127.0.0.1:8443",
   "control_tls_listen": "127.0.0.1:9443",
   "control_tls_cert_file": "data/certs/control.crt",
@@ -55,6 +56,8 @@ Create `server.json` with fields from `internal/config/config.go`:
 ```
 
 `control_quic_listen` is the primary control listener. `control_tls_listen` enables TCP+TLS fallback for authentication, proxy snapshots, heartbeats, and framed proxy substreams. TCP+TLS fallback is reliable but uses one TCP connection, so slow streams can cause normal TCP head-of-line effects.
+
+`admin_frontend_dir` is optional. When set, it must point to a directory containing the dedicated admin frontend build output, including `index.html`. The admin listener serves those browser routes and assets on the same origin as the administrator API while keeping `/api/admin/*` reserved for backend endpoints.
 
 The control certificate must be valid for the client `server_name`, and the client must trust the CA that signed it.
 
@@ -99,7 +102,7 @@ $env:CGO_ENABLED="0"
 go run ./cmd/goginx-admin build-deploy-bundle -output ./.tmp/linux-systemd-bundle -goos linux -goarch amd64 -install-root /opt/go-ginx
 ```
 
-The bundle layout is stable and contains:
+The core bundle layout is stable and contains:
 
 1. `bin/` with `goginx-server`, `goginx-client`, and `goginx-admin`.
 2. `config/` with sample `server.json`, `client.json`, and environment examples.
@@ -107,6 +110,8 @@ The bundle layout is stable and contains:
 4. `logs/` for operator-managed log files.
 5. `systemd/` with rendered `goginx-server.service` and `goginx-client.service` units.
 6. `config/admin-credentials.json.example` for the optional administrator management surface.
+
+Deployments that carry a dedicated admin frontend should also include its built assets in a directory inside the install root, such as `web/admin/`, and set `admin_frontend_dir` in `config/server.json` to that relative path.
 
 Run the server from the directory that contains `server.json`:
 
@@ -131,14 +136,16 @@ For the supported `systemd` deployment model:
 
 The server starts SQLite, the QUIC control listener, the optional TCP+TLS fallback listener, the HTTP entry listener, the optional HTTPS entry listener, TCP entry listeners, and UDP entry listeners for enabled proxies found in SQLite. The HTTPS entry uses SNI to choose the proxy. If that proxy has `cert_file` and `key_file`, the server terminates TLS and forwards the decrypted HTTP request to the configured local HTTP target; otherwise it checks for an active managed certificate for that HTTPS host and uses it if available. If neither static nor managed certificate material is active, it preserves passthrough behavior and forwards encrypted bytes to the client target. The client authenticates, receives the proxy snapshot, sends heartbeats, serves proxy streams to configured local targets over QUIC or framed TCP+TLS fallback, and retries transient control-plane failures using the configured reconnect backoff.
 
-When `admin_credentials_file` is configured, the server also starts an administrator-only management listener on `admin_listen`. That listener exposes:
+When `admin_credentials_file` is configured, the server also starts an administrator-only management listener on `admin_listen`. The `/api/admin/*` namespace remains reserved for management API behavior and exposes:
 
 1. `POST /api/admin/login` for administrator session creation.
 2. `GET /api/admin/session` for browser session bootstrap.
 3. `POST /api/admin/logout` for session invalidation.
 4. `POST /api/admin/graphql` for administrator GraphQL queries and mutations.
 
-The first session-authenticated management slice is intentionally narrow: it excludes ordinary-user self-service, quota editing, log search, domain lifecycle management, advanced alerts, and realtime subscriptions. The legacy server-rendered admin UI and browser-facing `/graphql` route are not served in this slice; removed browser paths such as `/`, `/users`, `/clients`, `/proxies`, `/certificates`, and `/audit` return `404 Not Found` until the dedicated frontend shell exists.
+When `admin_frontend_dir` is configured, the same listener serves the dedicated admin frontend on non-API `GET` and `HEAD` routes. Browser routes such as `/`, `/login`, `/users`, `/clients`, `/proxies`, `/certificates`, and `/audit` resolve through the frontend shell, deep links serve `index.html`, and real asset files are served directly from the configured directory. Missing asset-like paths such as `/assets/missing.js` still return `404 Not Found`. When `admin_frontend_dir` is not configured, those non-API browser routes continue to return `404 Not Found`.
+
+The first session-authenticated management slice is intentionally narrow: it excludes ordinary-user self-service, quota editing, log search, domain lifecycle management, advanced alerts, and realtime subscriptions. The legacy server-rendered admin UI and browser-facing `/graphql` route are not served in this slice.
 
 When `acme_enabled` is true, the server reads the Cloudflare token from `acme_cloudflare_token_env`, stores managed certificates under `certificate_dir/managed/<host>/`, renews expiring managed certificates inside `acme_renewal_window`, hot reloads future TLS handshakes, and keeps the previous active certificate pair for rollback. SQLite stores only lifecycle metadata and file paths.
 
@@ -175,7 +182,6 @@ $env:CF_DNS_API_TOKEN="<cloudflare-token>"
 
 1. Forward proxying.
 2. Quotas and rate limits.
-3. Dedicated separated frontend admin UI.
-4. Wildcard/platform-domain ownership verification.
-5. Native installers and non-`systemd` service managers.
-6. Ordinary-user self-service, quota/settings UI, log search, advanced alerts, backup/restore, and broader production hardening.
+3. Wildcard/platform-domain ownership verification.
+4. Native installers and non-`systemd` service managers.
+5. Ordinary-user self-service, quota/settings UI, log search, advanced alerts, backup/restore, and broader production hardening.

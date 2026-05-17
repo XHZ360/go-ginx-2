@@ -1,12 +1,17 @@
 package adminapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
+	"path"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -38,16 +43,24 @@ type Server struct {
 	schema     graphql.Schema
 	creds      credentialSet
 	sessions   *sessionManager
+	frontend   *adminFrontend
 }
 
 type Entry struct {
 	ListenAddress           string
 	AdminCredentialsFile    string
+	AdminFrontendDir        string
 	Query                   adminquery.Service
 	Commands                admin.Service
 	SessionIdleTimeout      time.Duration
 	SessionAbsoluteLifetime time.Duration
 	Now                     func() time.Time
+}
+
+type adminFrontend struct {
+	indexBytes []byte
+	indexModAt time.Time
+	fileSystem http.FileSystem
 }
 
 type credentialsFile struct {
@@ -106,8 +119,8 @@ type clientPayload struct {
 }
 
 type proxyPayload struct {
-	Proxy adminquery.ProxyDetail
-	ID    string
+	Proxy  adminquery.ProxyDetail
+	ID     string
 	Status string
 }
 
@@ -127,6 +140,10 @@ func Listen(entry Entry) (*Server, error) {
 	if strings.TrimSpace(entry.AdminCredentialsFile) == "" {
 		return nil, errors.New("admin credentials file is required")
 	}
+	frontend, err := loadAdminFrontend(entry.AdminFrontendDir)
+	if err != nil {
+		return nil, err
+	}
 	listener, err := net.Listen("tcp", entry.ListenAddress)
 	if err != nil {
 		return nil, err
@@ -142,6 +159,7 @@ func Listen(entry Entry) (*Server, error) {
 		listener: listener,
 		creds:    creds,
 		sessions: newSessionManager(entry.SessionIdleTimeout, entry.SessionAbsoluteLifetime, entry.Now),
+		frontend: frontend,
 	}
 	schema, err := server.buildSchema()
 	if err != nil {
@@ -201,16 +219,115 @@ func loadCredentials(path string) (credentialSet, error) {
 
 func (server *Server) routeHandler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !strings.HasPrefix(r.URL.Path, adminAPIPrefix) {
-			http.NotFound(w, r)
-			return
-		}
 		if !requestUsesProtectedTransport(r) {
 			writeErrorJSON(w, http.StatusUpgradeRequired, "PROTECTED_TRANSPORT_REQUIRED", "management endpoint requires protected transport", nil)
 			return
 		}
+		if !strings.HasPrefix(r.URL.Path, adminAPIPrefix) {
+			if server.serveFrontend(w, r) {
+				return
+			}
+			http.NotFound(w, r)
+			return
+		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+func loadAdminFrontend(dir string) (*adminFrontend, error) {
+	trimmed := strings.TrimSpace(dir)
+	if trimmed == "" {
+		return nil, nil
+	}
+	absRoot, err := filepath.Abs(trimmed)
+	if err != nil {
+		return nil, fmt.Errorf("resolve admin frontend dir: %w", err)
+	}
+	info, err := os.Stat(absRoot)
+	if err != nil {
+		return nil, fmt.Errorf("stat admin frontend dir: %w", err)
+	}
+	if !info.IsDir() {
+		return nil, errors.New("admin frontend dir must be a directory")
+	}
+	indexPath := filepath.Join(absRoot, "index.html")
+	indexBytes, err := os.ReadFile(indexPath)
+	if err != nil {
+		return nil, fmt.Errorf("read admin frontend index: %w", err)
+	}
+	indexInfo, err := os.Stat(indexPath)
+	if err != nil {
+		return nil, fmt.Errorf("stat admin frontend index: %w", err)
+	}
+	return &adminFrontend{indexBytes: indexBytes, indexModAt: indexInfo.ModTime(), fileSystem: http.Dir(absRoot)}, nil
+}
+
+func (server *Server) serveFrontend(w http.ResponseWriter, r *http.Request) bool {
+	if server.frontend == nil {
+		return false
+	}
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		return false
+	}
+	cleanPath, ok := normalizeFrontendPath(r.URL.Path)
+	if !ok {
+		http.NotFound(w, r)
+		return true
+	}
+	if cleanPath != "" {
+		if server.serveFrontendFile(w, r, cleanPath) {
+			return true
+		}
+		if frontendPathLooksLikeAsset(cleanPath) {
+			http.NotFound(w, r)
+			return true
+		}
+	}
+	server.serveFrontendIndex(w, r)
+	return true
+}
+
+func normalizeFrontendPath(requestPath string) (string, bool) {
+	if requestPath == "" {
+		return "", true
+	}
+	cleaned := path.Clean("/" + requestPath)
+	if cleaned == "/" {
+		return "", true
+	}
+	trimmed := strings.TrimPrefix(cleaned, "/")
+	if trimmed == "" || trimmed == "." || strings.HasPrefix(trimmed, "../") || trimmed == ".." {
+		return "", false
+	}
+	return trimmed, true
+}
+
+func (server *Server) serveFrontendFile(w http.ResponseWriter, r *http.Request, relativePath string) bool {
+	file, err := server.frontend.fileSystem.Open(relativePath)
+	if err != nil {
+		return false
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil || info.IsDir() {
+		return false
+	}
+	seeker, ok := file.(io.ReadSeeker)
+	if !ok {
+		return false
+	}
+	http.ServeContent(w, r, info.Name(), info.ModTime(), seeker)
+	return true
+}
+
+func (server *Server) serveFrontendIndex(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	http.ServeContent(w, r, "index.html", server.frontend.indexModAt, bytes.NewReader(server.frontend.indexBytes))
+}
+
+func frontendPathLooksLikeAsset(relativePath string) bool {
+	base := path.Base(relativePath)
+	return strings.Contains(base, ".")
 }
 
 func requestUsesProtectedTransport(r *http.Request) bool {
@@ -721,24 +838,46 @@ func (server *Server) buildSchema() (graphql.Schema, error) {
 		"pageInfo":   &graphql.Field{Type: pageInfoType},
 	}})
 	userPayloadType := graphql.NewObject(graphql.ObjectConfig{Name: "AdminUserPayload", Fields: graphql.Fields{
-		"user":   &graphql.Field{Type: userType},
-		"userId": &graphql.Field{Type: graphql.String, Resolve: func(params graphql.ResolveParams) (interface{}, error) { return extractUserPayload(params.Source).ID, nil }},
-		"status": &graphql.Field{Type: graphql.String, Resolve: func(params graphql.ResolveParams) (interface{}, error) { return extractUserPayload(params.Source).Status, nil }},
+		"user": &graphql.Field{Type: userType},
+		"userId": &graphql.Field{Type: graphql.String, Resolve: func(params graphql.ResolveParams) (interface{}, error) {
+			return extractUserPayload(params.Source).ID, nil
+		}},
+		"status": &graphql.Field{Type: graphql.String, Resolve: func(params graphql.ResolveParams) (interface{}, error) {
+			return extractUserPayload(params.Source).Status, nil
+		}},
 	}})
 	clientPayloadType := graphql.NewObject(graphql.ObjectConfig{Name: "AdminClientPayload", Fields: graphql.Fields{
-		"client":     &graphql.Field{Type: clientDetailType, Resolve: func(params graphql.ResolveParams) (interface{}, error) { return extractClientPayload(params.Source).Client, nil }},
-		"clientId":   &graphql.Field{Type: graphql.String, Resolve: func(params graphql.ResolveParams) (interface{}, error) { return extractClientPayload(params.Source).Client.ID, nil }},
-		"credential": &graphql.Field{Type: graphql.String, Resolve: func(params graphql.ResolveParams) (interface{}, error) { return extractClientPayload(params.Source).Credential, nil }},
+		"client": &graphql.Field{Type: clientDetailType, Resolve: func(params graphql.ResolveParams) (interface{}, error) {
+			return extractClientPayload(params.Source).Client, nil
+		}},
+		"clientId": &graphql.Field{Type: graphql.String, Resolve: func(params graphql.ResolveParams) (interface{}, error) {
+			return extractClientPayload(params.Source).Client.ID, nil
+		}},
+		"credential": &graphql.Field{Type: graphql.String, Resolve: func(params graphql.ResolveParams) (interface{}, error) {
+			return extractClientPayload(params.Source).Credential, nil
+		}},
 	}})
 	proxyPayloadType := graphql.NewObject(graphql.ObjectConfig{Name: "AdminProxyPayload", Fields: graphql.Fields{
-		"proxy":   &graphql.Field{Type: proxyType, Resolve: func(params graphql.ResolveParams) (interface{}, error) { return extractProxyPayload(params.Source).Proxy, nil }},
-		"proxyId": &graphql.Field{Type: graphql.String, Resolve: func(params graphql.ResolveParams) (interface{}, error) { return extractProxyPayload(params.Source).ID, nil }},
-		"status":  &graphql.Field{Type: graphql.String, Resolve: func(params graphql.ResolveParams) (interface{}, error) { return extractProxyPayload(params.Source).Status, nil }},
+		"proxy": &graphql.Field{Type: proxyType, Resolve: func(params graphql.ResolveParams) (interface{}, error) {
+			return extractProxyPayload(params.Source).Proxy, nil
+		}},
+		"proxyId": &graphql.Field{Type: graphql.String, Resolve: func(params graphql.ResolveParams) (interface{}, error) {
+			return extractProxyPayload(params.Source).ID, nil
+		}},
+		"status": &graphql.Field{Type: graphql.String, Resolve: func(params graphql.ResolveParams) (interface{}, error) {
+			return extractProxyPayload(params.Source).Status, nil
+		}},
 	}})
 	certificatePayloadType := graphql.NewObject(graphql.ObjectConfig{Name: "AdminCertificatePayload", Fields: graphql.Fields{
-		"certificate": &graphql.Field{Type: managedCertificateType, Resolve: func(params graphql.ResolveParams) (interface{}, error) { return extractCertificatePayload(params.Source).Certificate, nil }},
-		"proxyId":     &graphql.Field{Type: graphql.String, Resolve: func(params graphql.ResolveParams) (interface{}, error) { return extractCertificatePayload(params.Source).ProxyID, nil }},
-		"status":      &graphql.Field{Type: graphql.String, Resolve: func(params graphql.ResolveParams) (interface{}, error) { return extractCertificatePayload(params.Source).Status, nil }},
+		"certificate": &graphql.Field{Type: managedCertificateType, Resolve: func(params graphql.ResolveParams) (interface{}, error) {
+			return extractCertificatePayload(params.Source).Certificate, nil
+		}},
+		"proxyId": &graphql.Field{Type: graphql.String, Resolve: func(params graphql.ResolveParams) (interface{}, error) {
+			return extractCertificatePayload(params.Source).ProxyID, nil
+		}},
+		"status": &graphql.Field{Type: graphql.String, Resolve: func(params graphql.ResolveParams) (interface{}, error) {
+			return extractCertificatePayload(params.Source).Status, nil
+		}},
 	}})
 
 	query := graphql.NewObject(graphql.ObjectConfig{Name: "Query", Fields: graphql.Fields{

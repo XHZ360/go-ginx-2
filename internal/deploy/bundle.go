@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -21,6 +22,8 @@ type BundleOptions struct {
 	GoArch      string
 	InstallRoot string
 }
+
+const bundledAdminFrontendDir = "admin-ui"
 
 func BuildBundle(ctx context.Context, options BundleOptions) error {
 	if err := options.validate(); err != nil {
@@ -55,7 +58,11 @@ func BuildBundle(ctx context.Context, options BundleOptions) error {
 			return err
 		}
 	}
-	if err := writeJSONFile(filepath.Join(options.OutputDir, "config", "server.json"), defaultServerBundleConfig()); err != nil {
+	adminFrontendIncluded, err := copyAdminFrontendAssets(options)
+	if err != nil {
+		return err
+	}
+	if err := writeJSONFile(filepath.Join(options.OutputDir, "config", "server.json"), defaultServerBundleConfig(adminFrontendIncluded)); err != nil {
 		return err
 	}
 	if err := writeJSONFile(filepath.Join(options.OutputDir, "config", "client.json"), defaultClientBundleConfig()); err != nil {
@@ -123,15 +130,81 @@ func writeJSONFile(path string, value any) error {
 	return os.WriteFile(path, append(content, '\n'), 0o644)
 }
 
-func defaultServerBundleConfig() config.Server {
+func defaultServerBundleConfig(includeAdminFrontend bool) config.Server {
 	server := config.DefaultServer()
 	server.AdminCredentialsFile = ""
+	if includeAdminFrontend {
+		server.AdminFrontendDir = bundledAdminFrontendDir
+	}
 	server.ControlTLSCertFile = "data/certs/control.crt"
 	server.ControlTLSKeyFile = "data/certs/control.key"
 	server.SQLitePath = "data/go-ginx.db"
 	server.DataDir = "data"
 	server.CertificateDir = "data/certs"
 	return server
+}
+
+func copyAdminFrontendAssets(options BundleOptions) (bool, error) {
+	sourceDir := filepath.Join(options.RepoRoot, "admin-ui", "dist")
+	info, err := os.Stat(sourceDir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
+		}
+		return false, err
+	}
+	if !info.IsDir() {
+		return false, fmt.Errorf("admin frontend dist path is not a directory: %s", sourceDir)
+	}
+	if err := copyDir(sourceDir, filepath.Join(options.OutputDir, bundledAdminFrontendDir)); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func copyDir(sourceDir string, destDir string) error {
+	if err := os.MkdirAll(destDir, 0o755); err != nil {
+		return err
+	}
+	entries, err := os.ReadDir(sourceDir)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		sourcePath := filepath.Join(sourceDir, entry.Name())
+		destPath := filepath.Join(destDir, entry.Name())
+		if entry.IsDir() {
+			if err := copyDir(sourcePath, destPath); err != nil {
+				return err
+			}
+			continue
+		}
+		if err := copyFile(sourcePath, destPath); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func copyFile(sourcePath string, destPath string) error {
+	file, err := os.Open(sourcePath)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return err
+	}
+	out, err := os.OpenFile(destPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, info.Mode().Perm())
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+	if _, err := io.Copy(out, file); err != nil {
+		return err
+	}
+	return nil
 }
 
 func adminCredentialsExample() string {
