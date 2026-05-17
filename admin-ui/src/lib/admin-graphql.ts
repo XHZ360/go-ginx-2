@@ -57,6 +57,7 @@ type ClientsPayload = { clients: PageResult<Client> };
 type ProxiesPayload = { proxies: PageResult<ProxyRecord> };
 type CertificatesPayload = { certificates: PageResult<ManagedCertificate> };
 type AuditPayload = { audit: PageResult<AuditEvent> };
+type ClientMutationPayload = { clientId: string; credential?: string | null; client: ClientDetail };
 
 const PAGE_INFO_FRAGMENT = `pageInfo { page pageSize totalCount totalPages hasNext hasPrev }`;
 
@@ -407,6 +408,104 @@ export function mutateSetUserPassword(csrfToken: string, input: { id: string; pa
       }
     }`,
     variables: { input },
+    mutation: true,
+    csrfToken,
+  });
+}
+
+export function mutateCreateClient(csrfToken: string, input: { userId: string; name: string; credential?: string }) {
+  return graphqlClient.request<{ createClient: ClientMutationPayload }>({
+    query: `mutation CreateClient($input: AdminCreateClientInput!) {
+      createClient(input: $input) {
+        clientId
+        credential
+        client {
+          id
+          userId
+          name
+          status
+          version
+          runtime {
+            online
+            protocol
+            connectedAt
+            lastHeartbeat
+            configVersion
+            activeProxies
+            activeStreams
+            uploadBytes
+            downloadBytes
+            errorSummary
+          }
+          lastOnlineAt
+          lastOfflineAt
+          managedProxies {
+            id
+            name
+            type
+            status
+            runtimeStatus
+            entryHost
+            entryPort
+            targetHost
+            targetPort
+            activeTCPConnections
+          }
+          createdAt
+          updatedAt
+        }
+      }
+    }`,
+    variables: { input: cleanObject(input) },
+    mutation: true,
+    csrfToken,
+  });
+}
+
+export function mutateRotateClientCredential(csrfToken: string, id: string) {
+  return graphqlClient.request<{ rotateClientCredential: ClientMutationPayload }>({
+    query: `mutation RotateClientCredential($input: AdminUserIDInput!) {
+      rotateClientCredential(input: $input) {
+        clientId
+        credential
+        client {
+          id
+          userId
+          name
+          status
+          version
+          runtime {
+            online
+            protocol
+            connectedAt
+            lastHeartbeat
+            configVersion
+            activeProxies
+            activeStreams
+            uploadBytes
+            downloadBytes
+            errorSummary
+          }
+          lastOnlineAt
+          lastOfflineAt
+          managedProxies {
+            id
+            name
+            type
+            status
+            runtimeStatus
+            entryHost
+            entryPort
+            targetHost
+            targetPort
+            activeTCPConnections
+          }
+          createdAt
+          updatedAt
+        }
+      }
+    }`,
+    variables: { input: { id } },
     mutation: true,
     csrfToken,
   });

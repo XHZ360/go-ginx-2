@@ -1,6 +1,10 @@
+import { useState } from 'react';
 import { useParams } from 'react-router-dom';
+import { useQueryClient } from '@tanstack/react-query';
+import { ConfirmButton } from '../components/ConfirmButton';
 import { useAuthedQuery } from '../hooks/useAuthedQuery';
-import { queryClient } from '../lib/admin-graphql';
+import { useMutationWithAuth } from '../hooks/useMutationWithAuth';
+import { mutateRotateClientCredential, queryClient } from '../lib/admin-graphql';
 import { formatBytes } from '../lib/format';
 import { ErrorState, NotFoundState, PageLoading } from '../components/PageStates';
 import { isNotFoundError } from '../lib/contracts';
@@ -10,10 +14,26 @@ import { DetailBackLink, PageHeader, StatusBadge, Timestamp } from './shared';
 export function ClientDetailPage() {
   const { id = '' } = useParams();
   const session = useSession();
+  const queryClientInstance = useQueryClient();
+  const [rotatedCredential, setRotatedCredential] = useState<string>();
+  const [rotationError, setRotationError] = useState<string>();
   const query = useAuthedQuery({
     queryKey: ['client', id],
     queryFn: () => queryClient(id),
     refetchInterval: session.pollIntervalSeconds * 1000,
+  });
+  const rotateMutation = useMutationWithAuth({
+    mutationFn: () => mutateRotateClientCredential(session.csrfToken ?? '', id),
+    onSuccess: async (data) => {
+      setRotationError(undefined);
+      setRotatedCredential(data.rotateClientCredential.credential ?? undefined);
+      await queryClientInstance.invalidateQueries({ queryKey: ['client', id] });
+      await queryClientInstance.invalidateQueries({ queryKey: ['clients'] });
+    },
+    onError: (error) => {
+      setRotatedCredential(undefined);
+      setRotationError(error.message);
+    },
   });
 
   if (query.isLoading) {
@@ -34,7 +54,30 @@ export function ClientDetailPage() {
   return (
     <section className="page-section">
       <DetailBackLink to="/clients" label="Back to clients" />
-      <PageHeader title={client.name} description={`Client ID: ${client.id}`} actions={<StatusBadge value={client.status} />} />
+      <PageHeader
+        title={client.name}
+        description={`Client ID: ${client.id}`}
+        actions={
+          <>
+            <StatusBadge value={client.status} />
+            <ConfirmButton
+              label="Rotate credential"
+              confirmLabel="Rotate this client credential?"
+              onConfirm={() => rotateMutation.mutate(undefined)}
+              disabled={rotateMutation.isPending}
+              tone="secondary"
+            />
+          </>
+        }
+      />
+      {rotationError ? <div className="banner banner--danger">{rotationError}</div> : null}
+      {rotatedCredential ? (
+        <div className="banner banner--success" role="status">
+          <strong>New client credential</strong>
+          <p>This value is shown once. Store it before leaving this page.</p>
+          <code className="secret-value">{rotatedCredential}</code>
+        </div>
+      ) : null}
       <div className="detail-grid">
         <article className="panel">
           <h2>Runtime</h2>

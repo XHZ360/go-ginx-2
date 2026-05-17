@@ -1,24 +1,154 @@
-import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useEffect, useState } from 'react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
+import { useQueryClient } from '@tanstack/react-query';
+import { Dialog } from '../components/Dialog';
+import { SelectField, TextField } from '../components/FormField';
 import { useAuthedQuery } from '../hooks/useAuthedQuery';
-import { queryClients, type ClientFilter } from '../lib/admin-graphql';
-import { EmptyState, ErrorState, FilteredEmptyState, PageLoading } from '../components/PageStates';
+import { useMutationWithAuth } from '../hooks/useMutationWithAuth';
+import { mutateCreateClient, queryClients, queryUsers, type ClientFilter } from '../lib/admin-graphql';
+import { isApiError, type User } from '../lib/contracts';
+import { EmptyState, ErrorState, FilteredEmptyState, PageLoading, ValidationBanner } from '../components/PageStates';
 import { useSession } from '../session';
 import { PageHeader, Pagination, StatusBadge, Timestamp } from './shared';
 
 const defaultFilter: ClientFilter = { query: '', userId: '', status: '' };
 
+type ClientForm = {
+  userId: string;
+  name: string;
+  credential: string;
+};
+
+function defaultForm(userId: string): ClientForm {
+  return { userId, name: '', credential: '' };
+}
+
+function userOptionLabel(user: User) {
+  return `${user.username} (${user.id})`;
+}
+
+function UserSelectField({
+  label,
+  value,
+  users,
+  onChange,
+  error,
+  allLabel,
+}: {
+  label: string;
+  value: string;
+  users: User[];
+  onChange: (value: string) => void;
+  error?: string;
+  allLabel: string;
+}) {
+  const hasSelectedUser = !value || users.some((user) => user.id === value);
+
+  return (
+    <SelectField label={label} value={value} error={error} onChange={(event) => onChange(event.target.value)}>
+      <option value="">{allLabel}</option>
+      {!hasSelectedUser ? <option value={value}>User ID {value}</option> : null}
+      {users.map((user) => (
+        <option key={user.id} value={user.id}>
+          {userOptionLabel(user)}
+        </option>
+      ))}
+    </SelectField>
+  );
+}
+
 export function ClientsPage() {
   const session = useSession();
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const scopedUserId = searchParams.get('userId') ?? '';
   const [page, setPage] = useState(1);
-  const [filter, setFilter] = useState<ClientFilter>(defaultFilter);
+  const [filter, setFilter] = useState<ClientFilter>({ ...defaultFilter, userId: scopedUserId });
+  const [showDialog, setShowDialog] = useState(false);
+  const [form, setForm] = useState<ClientForm>(defaultForm(scopedUserId));
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>();
+  const [formError, setFormError] = useState<string>();
+  const [createdCredential, setCreatedCredential] = useState<string>();
+
+  useEffect(() => {
+    setFilter((current) => (current.userId === scopedUserId ? current : { ...current, userId: scopedUserId }));
+    setPage(1);
+  }, [scopedUserId]);
 
   const query = useAuthedQuery({
     queryKey: ['clients', page, filter],
     queryFn: () => queryClients({ page: { page, pageSize: 10 }, sort: { field: 'name', direction: 'asc' }, filter }),
     refetchInterval: session.pollIntervalSeconds * 1000,
   });
+  const usersQuery = useAuthedQuery({
+    queryKey: ['client-user-options'],
+    queryFn: () => queryUsers({ page: { page: 1, pageSize: 100 }, sort: { field: 'username', direction: 'asc' }, filter: {} }),
+  });
+
+  const createMutation = useMutationWithAuth({
+    mutationFn: () =>
+      mutateCreateClient(session.csrfToken ?? '', {
+        userId: form.userId,
+        name: form.name,
+        credential: form.credential || undefined,
+      }),
+    onSuccess: async (data) => {
+      setFieldErrors(undefined);
+      setFormError(undefined);
+      setCreatedCredential(data.createClient.credential ?? undefined);
+      await queryClient.invalidateQueries({ queryKey: ['clients'] });
+    },
+    onError: (error) => {
+      setCreatedCredential(undefined);
+      if (isApiError(error)) {
+        setFieldErrors(error.fields);
+        setFormError(error.message);
+      }
+    },
+  });
+
+  const users = usersQuery.data?.items ?? [];
+
+  const updateUserFilter = (userId: string) => {
+    setPage(1);
+    setFilter((current) => ({ ...current, userId }));
+    setSearchParams((current) => {
+      const next = new URLSearchParams(current);
+      if (userId) {
+        next.set('userId', userId);
+      } else {
+        next.delete('userId');
+      }
+      return next;
+    }, { replace: true });
+  };
+
+  const openCreateDialog = () => {
+    setForm(defaultForm(filter.userId ?? ''));
+    setFieldErrors(undefined);
+    setFormError(undefined);
+    setCreatedCredential(undefined);
+    setShowDialog(true);
+  };
+
+  const closeCreateDialog = () => {
+    setShowDialog(false);
+    setForm(defaultForm(filter.userId ?? ''));
+    setFieldErrors(undefined);
+    setFormError(undefined);
+    setCreatedCredential(undefined);
+  };
+
+  const clearFilters = () => {
+    setPage(1);
+    setFilter(defaultFilter);
+    setSearchParams((current) => {
+      const next = new URLSearchParams(current);
+      next.delete('userId');
+      return next;
+    }, { replace: true });
+  };
 
   if (query.isLoading) {
     return <PageLoading label="Loading clients..." />;
@@ -40,21 +170,26 @@ export function ClientsPage() {
         title="Clients"
         description="Live runtime view for managed clients."
         actions={
-          <button type="button" className="button button--secondary" onClick={() => query.refetch()}>
-            Refresh
-          </button>
+          <>
+            <button type="button" className="button button--secondary" onClick={() => query.refetch()}>
+              Refresh
+            </button>
+            <button type="button" className="button" onClick={openCreateDialog}>
+              Create client
+            </button>
+          </>
         }
       />
 
       <div className="toolbar-grid">
-        <label className="field">
-          <span className="field__label">Search</span>
-          <input className="input" value={filter.query ?? ''} onChange={(event) => setFilter((current) => ({ ...current, query: event.target.value }))} />
-        </label>
-        <label className="field">
-          <span className="field__label">User ID</span>
-          <input className="input" value={filter.userId ?? ''} onChange={(event) => setFilter((current) => ({ ...current, userId: event.target.value }))} />
-        </label>
+        <TextField label="Search" value={filter.query ?? ''} onChange={(event) => setFilter((current) => ({ ...current, query: event.target.value }))} />
+        <UserSelectField
+          label="User"
+          value={filter.userId ?? ''}
+          users={users}
+          onChange={updateUserFilter}
+          allLabel="All users"
+        />
         <label className="field">
           <span className="field__label">Status</span>
           <select className="input" value={filter.status ?? ''} onChange={(event) => setFilter((current) => ({ ...current, status: event.target.value }))}>
@@ -68,7 +203,7 @@ export function ClientsPage() {
 
       {data.items.length === 0 ? (
         hasFilter ? (
-          <FilteredEmptyState onClear={() => setFilter(defaultFilter)} />
+          <FilteredEmptyState onClear={clearFilters} />
         ) : (
           <EmptyState title="No clients" message="No managed clients are registered yet." />
         )
@@ -109,6 +244,51 @@ export function ClientsPage() {
           <Pagination page={data.pageInfo.page} totalPages={data.pageInfo.totalPages} onPageChange={setPage} />
         </>
       )}
+
+      <Dialog
+        open={showDialog}
+        title="Create client"
+        onClose={closeCreateDialog}
+        footer={
+          <>
+            <button type="button" className="button button--secondary" onClick={closeCreateDialog}>
+              Close
+            </button>
+            <button type="button" className="button" onClick={() => createMutation.mutate(undefined)} disabled={createMutation.isPending}>
+              {createMutation.isPending ? 'Creating...' : 'Create client'}
+            </button>
+          </>
+        }
+      >
+        {formError ? <div className="banner banner--danger">{formError}</div> : null}
+        {createdCredential ? (
+          <div className="banner banner--success" role="status">
+            <strong>Client credential</strong>
+            <p>This value is shown once. Store it before closing this dialog.</p>
+            <code className="secret-value">{createdCredential}</code>
+          </div>
+        ) : null}
+        {usersQuery.error ? <div className="banner banner--danger">User options failed to load: {usersQuery.error.message}</div> : null}
+        <ValidationBanner fields={fieldErrors} />
+        <div className="stack">
+          <UserSelectField
+            label="Owner user"
+            value={form.userId}
+            users={users}
+            onChange={(userId) => setForm((current) => ({ ...current, userId }))}
+            error={fieldErrors?.userId}
+            allLabel="Select user"
+          />
+          <TextField label="Name" value={form.name} error={fieldErrors?.name} onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))} />
+          <TextField
+            label="Initial credential"
+            value={form.credential}
+            error={fieldErrors?.credential}
+            hint="Leave blank to generate one."
+            onChange={(event) => setForm((current) => ({ ...current, credential: event.target.value }))}
+          />
+        </div>
+      </Dialog>
     </section>
   );
 }

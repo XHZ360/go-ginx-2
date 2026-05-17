@@ -72,4 +72,36 @@ describe('session bootstrap and navigation', () => {
 
     await waitFor(() => expect(screen.getByText('User detail route')).toBeInTheDocument());
   });
+
+  it('restores scoped clients destination after login', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith('/api/admin/session')) {
+        return new Response(JSON.stringify({ authenticated: false }), { status: 200 });
+      }
+      if (url.endsWith('/api/admin/login')) {
+        return new Response(JSON.stringify({ authenticated: true, username: 'admin', csrfToken: 'csrf', pollIntervalSeconds: 5 }), { status: 200 });
+      }
+      return new Response('{}', { status: 200 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderWithProviders(
+      ['/clients?userId=user-1'],
+      <Routes>
+        <Route path="/login" element={<LoginPage />} />
+        <Route path="/" element={<ProtectedLayout />}>
+          <Route path="clients" element={<div>Scoped clients route</div>} />
+          <Route path="dashboard" element={<DashboardPage />} />
+        </Route>
+      </Routes>,
+    );
+
+    await screen.findByRole('button', { name: 'Sign in' });
+    await userEvent.type(screen.getByLabelText('Username'), 'admin');
+    await userEvent.type(screen.getByLabelText('Password'), 'secret');
+    await userEvent.click(screen.getByRole('button', { name: 'Sign in' }));
+
+    await waitFor(() => expect(screen.getByText('Scoped clients route')).toBeInTheDocument());
+  });
 });

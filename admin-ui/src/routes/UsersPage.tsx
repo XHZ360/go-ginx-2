@@ -114,6 +114,7 @@ export function UsersPage() {
                   <th>Download</th>
                   <th>Last activity</th>
                   <th>Updated</th>
+                  <th>Actions</th>
                 </tr>
               </thead>
               <tbody>
@@ -129,6 +130,18 @@ export function UsersPage() {
                     <td>{formatBytes(user.downloadBytes)}</td>
                     <td><Timestamp value={user.lastActivityAt} /></td>
                     <td><Timestamp value={user.updatedAt} /></td>
+                    <td>
+                      <button
+                        type="button"
+                        className="link-button"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          navigate(`/clients?userId=${encodeURIComponent(user.id)}`);
+                        }}
+                      >
+                        Clients
+                      </button>
+                    </td>
                   </tr>
                 ))}
               </tbody>

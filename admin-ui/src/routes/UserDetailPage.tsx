@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useParams } from 'react-router-dom';
+import { useNavigate, useParams } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { ConfirmButton } from '../components/ConfirmButton';
 import { Dialog } from '../components/Dialog';
@@ -17,6 +17,7 @@ export function UserDetailPage() {
   const { id = '' } = useParams();
   const session = useSession();
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
   const [passwordDialog, setPasswordDialog] = useState(false);
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
@@ -75,6 +76,9 @@ export function UserDetailPage() {
         description={`User ID: ${user.id}`}
         actions={
           <>
+            <button type="button" className="button button--secondary" onClick={() => navigate(`/clients?userId=${encodeURIComponent(user.id)}`)}>
+              View clients
+            </button>
             <button type="button" className="button button--secondary" onClick={() => setPasswordDialog(true)}>
               Set password
             </button>

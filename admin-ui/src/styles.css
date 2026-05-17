@@ -57,6 +57,8 @@ button, input, select, textarea { font: inherit; }
 .state-card, .banner { border-radius: 16px; }
 .banner { padding: 12px 14px; border: 1px solid #fecaca; background: #fef2f2; color: #991b1b; }
 .banner--danger { border-color: #fecaca; background: #fef2f2; color: #991b1b; }
+.banner--success { border-color: #bbf7d0; background: #f0fdf4; color: #166534; }
+.secret-value { display: block; margin-top: 8px; overflow-wrap: anywhere; color: inherit; }
 .field-errors-list { margin: 8px 0 0; padding-left: 18px; }
 .field-errors-list li { display: flex; gap: 8px; }
 
