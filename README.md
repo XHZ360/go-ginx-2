@@ -1,107 +1,256 @@
 # go-ginx-2
 
-This is the new implementation target for the Simp-Frp/go-ginx design in `../docs`.
+`go-ginx-2` 是 Simp-Frp/go-ginx 设计的新实现目标。当前仓库已经完成里程碑一运行时和首个部署基线，重点覆盖控制面、反向代理、管理 API/UI、证书管理、SQLite 持久化和可复现部署包。
 
-The repository currently contains a milestone-one runtime plus a first deployment baseline. It is not yet a complete production platform, but the core control plane, TCP/UDP/HTTP/HTTPS proxy paths, daemon startup helpers, reconnect/restart recovery, and a reproducible bundle plus `systemd` service template workflow are implemented and covered by local tests.
+> 状态说明：这还不是完整生产平台。核心 TCP/UDP/HTTP/HTTPS 反向代理路径、QUIC 与 TCP+TLS 控制通道、无配置启动、客户端加入流程、管理后台和 `systemd` 部署模板已经实现并有本地测试覆盖；配额、限速、普通用户自助、备份恢复和更完整的运维能力仍在后续范围内。
 
-## Current Capabilities
+## 核心能力
 
-- Go module pinned to `github.com/quic-go/quic-go v0.59.1`.
-- cgo-free SQLite persistence through repository interfaces.
-- Strict optional server/client JSON config loading and validation, plus configless managed-state startup.
-- Core domain models for users, clients, proxies, credentials, and audit events.
-- QUIC and TCP+TLS control handshakes with client authentication and certificate verification.
-- Proxy snapshot sync after successful authentication.
-- Heartbeat and session tracking with latest-session replacement.
-- TCP proxy MVP over QUIC streams or framed TCP+TLS substreams.
-- UDP proxy MVP over QUIC streams or framed TCP+TLS substreams with per-source sessions.
-- HTTP proxy MVP over QUIC streams or framed TCP+TLS substreams, routed by `Host`.
-- HTTPS proxy MVP using SNI passthrough, file-backed TLS termination, or managed ACME DNS-01 TLS termination with SNI certificate selection over QUIC streams or framed TCP+TLS substreams.
-- Non-interactive admin setup CLI for milestone-one resource seeding.
-- Admin CLI commands for issuing, renewing, and inspecting managed HTTPS certificates.
-- Restart-surviving proxy stats for TCP, UDP, and HTTP traffic, backed by SQLite flushes.
-- `goginx-server` can start without `-config`, creates managed `data/` state, bootstraps control TLS material, starts SQLite, QUIC control, optional TCP+TLS fallback, TCP entries, HTTP entry, and optional HTTPS entry.
-- `goginx-client` can join with a one-time enrollment token, persist managed client state, authenticate, read proxy snapshots, send heartbeats, serve proxy streams, and retry transient control-plane failures with reconnect backoff.
-- `goginx-admin build-deploy-bundle` creates a reproducible deployment bundle with optional sample config, environment examples, and `systemd` service templates.
-- An administrator-only management listener is available through session-based same-origin admin API endpoints for login, logout, session bootstrap, GraphQL management operations, client enrollment, and same-origin admin frontend delivery.
+- Go 模块：`github.com/simp-frp/go-ginx-2`，当前 `go.mod` 使用 Go `1.25.0`。
+- 控制面：支持 QUIC 控制通道，以及 TCP+TLS 兜底控制通道；客户端认证、TLS/CA 校验、代理快照同步、心跳和最新会话替换已实现。
+- 数据层：通过仓储接口使用 cgo-free SQLite，运行时状态默认保存在 `data/go-ginx.db`。
+- 代理类型：
+  - TCP 反向代理，代理流可走 QUIC stream 或 TCP+TLS framed substream。
+  - UDP 反向代理，按外部源地址维护会话。
+  - HTTP 反向代理，按 `Host` 路由。
+  - HTTPS 反向代理，支持 SNI passthrough、静态证书终止和 ACME DNS-01 托管证书终止。
+- 证书：控制通道 TLS 材料可自动生成；HTTPS 托管证书支持 Cloudflare DNS-01、签发、续期、状态查询和热加载。
+- 管理能力：
+  - `goginx-admin` 可创建管理员、用户、客户端、一次性 join token、代理记录和部署包。
+  - 管理监听器提供登录、会话引导、登出、GraphQL 管理操作、客户端注册和同源管理前端。
+  - 管理前端默认使用嵌入式静态资源，`admin_frontend_dir` 可覆盖为自定义构建目录。
+- 部署：`build-deploy-bundle` 可生成包含服务端、客户端、管理 CLI、示例配置、目录结构和 `systemd` service 的部署包。
 
-## Commands
+## 仓库结构
 
-Run the full validation suite:
+```text
+cmd/
+  goginx-server/   服务端守护进程入口
+  goginx-client/   客户端守护进程入口与 join 命令
+  goginx-admin/    管理 CLI
+internal/
+  admin*/          管理服务、查询模型、HTTP API 与会话
+  config/          配置加载、无配置托管状态和 TLS 材料生成
+  control/         QUIC 与 TCP+TLS 控制通道
+  proxy/           TCP、UDP、HTTP、HTTPS 代理实现
+  store/sqlite/    SQLite 仓储实现
+admin-ui/          React/Vite 管理前端源码
+deploy/systemd/    systemd 服务模板
+docs/              运行、E2E、后台 UI 和示例文档
+openspec/          OpenSpec 规格和历史变更
+```
+
+## 环境要求
+
+- Go `1.25` 或与 `go.mod` 匹配的版本。
+- Node.js 与 npm，仅在开发或构建 `admin-ui/` 时需要。
+- 本地测试和构建建议禁用 cgo：
 
 ```powershell
 $env:CGO_ENABLED="0"
-go test ./...
-go build ./cmd/goginx-server ./cmd/goginx-client ./cmd/goginx-admin
 ```
 
-Run focused runtime and E2E tests:
+## 快速开始：无配置运行
+
+默认路径不需要手写 `server.json` 或 `client.json`。服务端首次启动会创建 `data/` 状态目录，并生成控制通道 TLS 材料。
+
+1. 启动服务端：
 
 ```powershell
 $env:CGO_ENABLED="0"
-go test ./internal/control
-go test ./internal/daemon
-go test ./internal/proxy/tcp
-go test ./internal/proxy/udp
-go test ./internal/proxy/http
+go run ./cmd/goginx-server
 ```
 
-Seed a local SQLite database with the admin CLI:
+默认监听：
+
+- 管理后台：`127.0.0.1:8080`
+- 控制通道 QUIC：`:8443`
+- 控制通道 TCP+TLS：`:9443`
+- HTTP 入口：`:8081`
+- HTTPS 入口：默认关闭，需通过环境变量或配置启用
+
+2. 在另一个终端初始化第一个管理员：
 
 ```powershell
-$env:CGO_ENABLED="0"
-go run ./cmd/goginx-admin create-user -db ./.tmp/go-ginx.db -id user-1 -username alice
-go run ./cmd/goginx-admin create-client -db ./.tmp/go-ginx.db -id client-1 -user user-1 -name home -credential secret
-go run ./cmd/goginx-admin create-tcp-proxy -db ./.tmp/go-ginx.db -id tcp-1 -user user-1 -client client-1 -name ssh -port 10022 -target-host 127.0.0.1 -target-port 22
-go run ./cmd/goginx-admin create-udp-proxy -db ./.tmp/go-ginx.db -id udp-1 -user user-1 -client client-1 -name dns -port 10053 -target-host 127.0.0.1 -target-port 53
-go run ./cmd/goginx-admin create-http-proxy -db ./.tmp/go-ginx.db -id web-1 -user user-1 -client client-1 -name web -host app.example.com -target-host 127.0.0.1 -target-port 8080
-go run ./cmd/goginx-admin create-https-proxy -db ./.tmp/go-ginx.db -id secure-1 -user user-1 -client client-1 -name secure -host secure.example.com -target-host 127.0.0.1 -target-port 8443
-go run ./cmd/goginx-admin create-https-proxy -db ./.tmp/go-ginx.db -id secure-term-1 -user user-1 -client client-1 -name secure-term -host term.example.com -target-host 127.0.0.1 -target-port 8080 -cert-file data/certs/term.crt -key-file data/certs/term.key
+go run ./cmd/goginx-admin init-admin -id admin-1 -username admin -password "<password>"
 ```
 
-Build the first supported deployment bundle:
+3. 生成客户端一次性加入 token：
 
 ```powershell
-$env:CGO_ENABLED="0"
-go run ./cmd/goginx-admin build-deploy-bundle -output ./.tmp/linux-systemd-bundle -goos linux -goarch amd64 -install-root /opt/go-ginx
+$token = go run ./cmd/goginx-admin create-client-join -id client-1 -user admin-1 -name home
 ```
 
-More detailed flows are documented in `docs/milestone-one-e2e.md`, `docs/daemon-runtime.md`, and `docs/examples/admin-seed-sqlite.md`.
-
-## Configless Runtime
-
-The default deployment path does not require operator-authored JSON config files:
+如果客户端不在本机，需要显式指定外部可访问地址，例如：
 
 ```powershell
-goginx-server
-goginx-admin init-admin -id admin-1 -username admin -password "<password>"
-goginx-admin create-client-join -id client-1 -user admin-1 -name home
-goginx-client join "<join-token>"
-goginx-client
+$token = go run ./cmd/goginx-admin create-client-join `
+  -id client-1 `
+  -user admin-1 `
+  -name home `
+  -enrollment-url "https://admin.example.com/api/client/enroll" `
+  -server-address "control.example.com:8443" `
+  -server-tls-address "control.example.com:9443" `
+  -server-name "go-ginx-control.local"
 ```
 
-The server writes managed state under `data/` by default, including `data/go-ginx.db`, `data/certs/control-ca.crt`, `data/certs/control.crt`, and `data/certs/control.key`. The client join flow writes `data/client-state.json` and `data/certs/server-ca.crt`. These are runtime state files generated by the application, not required hand-authored config.
+4. 在客户端主机加入并启动客户端：
 
-For file-free deployments that still need non-default ports or paths, the managed startup path accepts environment overrides such as `GOGINX_ADMIN_LISTEN`, `GOGINX_CONTROL_QUIC_LISTEN`, `GOGINX_CONTROL_TLS_LISTEN`, `GOGINX_HTTP_ENTRY_LISTEN`, `GOGINX_SQLITE_PATH`, `GOGINX_DATA_DIR`, and `GOGINX_CERTIFICATE_DIR`.
+```powershell
+go run ./cmd/goginx-client join $token
+go run ./cmd/goginx-client
+```
 
-## Optional Runtime Config Fields
+`join` 会写入：
 
-Explicit JSON config remains supported for advanced or scripted deployments. Server config can override runtime TLS and proxy listener fields in addition to the existing SQLite path:
+- `data/client-state.json`
+- `data/certs/server-ca.crt`
+
+后续客户端直接运行 `goginx-client` 即可读取托管状态。
+
+5. 打开管理后台：
+
+```text
+http://127.0.0.1:8080
+```
+
+管理端点要求受保护传输：本机 loopback 可用于开发；跨机器部署时应放在 TLS 反向代理之后，或通过 `X-Forwarded-Proto: https` 进入服务。
+
+## 管理 CLI 示例
+
+CLI 默认使用 `data/go-ginx.db`，也可用 `-db` 指定数据库路径。
+
+创建普通用户和客户端凭据：
+
+```powershell
+go run ./cmd/goginx-admin create-user -id user-1 -username alice
+go run ./cmd/goginx-admin create-client -id client-1 -user user-1 -name home -credential secret
+```
+
+创建 TCP/UDP/HTTP/HTTPS 代理：
+
+```powershell
+go run ./cmd/goginx-admin create-tcp-proxy -id tcp-1 -user user-1 -client client-1 -name ssh -port 10022 -target-host 127.0.0.1 -target-port 22
+go run ./cmd/goginx-admin create-udp-proxy -id udp-1 -user user-1 -client client-1 -name dns -port 10053 -target-host 127.0.0.1 -target-port 53
+go run ./cmd/goginx-admin create-http-proxy -id web-1 -user user-1 -client client-1 -name web -host app.example.com -target-host 127.0.0.1 -target-port 8080
+go run ./cmd/goginx-admin create-https-proxy -id secure-1 -user user-1 -client client-1 -name secure -host secure.example.com -target-host 127.0.0.1 -target-port 8443
+```
+
+HTTPS 静态证书终止示例：
+
+```powershell
+go run ./cmd/goginx-admin create-https-proxy `
+  -id secure-term-1 `
+  -user user-1 `
+  -client client-1 `
+  -name secure-term `
+  -host term.example.com `
+  -target-host 127.0.0.1 `
+  -target-port 8080 `
+  -cert-file data/certs/term.crt `
+  -key-file data/certs/term.key
+```
+
+## 运行时配置
+
+### 托管状态文件
+
+服务端默认写入：
+
+- `data/go-ginx.db`
+- `data/certs/control-ca.crt`
+- `data/certs/control.crt`
+- `data/certs/control.key`
+- `data/certs/managed/<host>/`
+
+客户端默认写入：
+
+- `data/client-state.json`
+- `data/certs/server-ca.crt`
+
+这些是应用生成的运行时状态，不需要手写。
+
+### 环境变量覆盖
+
+无配置启动仍可通过环境变量调整端口和路径：
+
+- `GOGINX_ADMIN_LISTEN`
+- `GOGINX_CONTROL_QUIC_LISTEN`
+- `GOGINX_CONTROL_TLS_LISTEN`
+- `GOGINX_CONTROL_TLS_SERVER_NAME`
+- `GOGINX_CONTROL_TLS_CA_FILE`
+- `GOGINX_CONTROL_TLS_CERT_FILE`
+- `GOGINX_CONTROL_TLS_KEY_FILE`
+- `GOGINX_TCP_ENTRY_HOST`
+- `GOGINX_HTTP_ENTRY_LISTEN`
+- `GOGINX_HTTPS_ENTRY_LISTEN`
+- `GOGINX_SQLITE_PATH`
+- `GOGINX_DATA_DIR`
+- `GOGINX_CERTIFICATE_DIR`
+
+### 显式服务端配置
+
+高级或脚本化部署仍可使用 JSON 配置：
 
 ```json
 {
+  "admin_enabled": true,
+  "admin_listen": "127.0.0.1:8080",
+  "admin_frontend_dir": "",
   "control_quic_listen": "127.0.0.1:8443",
   "control_tls_listen": "127.0.0.1:9443",
+  "control_tls_server_name": "go-ginx-control.local",
+  "control_tls_ca_file": "data/certs/control-ca.crt",
   "control_tls_cert_file": "data/certs/control.crt",
   "control_tls_key_file": "data/certs/control.key",
   "tcp_entry_host": "0.0.0.0",
   "http_entry_listen": "0.0.0.0:8081",
   "https_entry_listen": "0.0.0.0:8444",
-  "sqlite_path": "data/go-ginx.db"
+  "sqlite_path": "data/go-ginx.db",
+  "data_dir": "data",
+  "certificate_dir": "data/certs",
+  "heartbeat_timeout": 45000000000,
+  "log_retention_days": 7
 }
 ```
 
-Managed certificate automation is optional and requires additional server config:
+启动：
+
+```powershell
+go run ./cmd/goginx-server -config server.json
+```
+
+### 显式客户端配置
+
+推荐使用 `goginx-client join <token>`。需要手写配置时可使用：
+
+```json
+{
+  "server_address": "127.0.0.1:8443",
+  "server_tls_address": "127.0.0.1:9443",
+  "server_name": "go-ginx-control.local",
+  "server_ca_file": "data/certs/server-ca.crt",
+  "client_id": "client-1",
+  "credential": "secret",
+  "allowed_protocols": ["quic", "tcp_tls"],
+  "reconnect": {
+    "initial_delay": 1000000000,
+    "max_delay": 30000000000
+  }
+}
+```
+
+启动：
+
+```powershell
+go run ./cmd/goginx-client -config client.json
+```
+
+`time.Duration` 字段在 JSON 中使用纳秒数。认证失败会立即退出；临时拨号失败或运行时故障会按 `reconnect` 退避重试。
+
+## 托管 HTTPS 证书
+
+启用 ACME DNS-01 时，服务端需要 Cloudflare API token 环境变量和额外配置：
 
 ```json
 {
@@ -114,66 +263,118 @@ Managed certificate automation is optional and requires additional server config
 }
 ```
 
-When `acme_enabled` is true, the server loads the Cloudflare API token from the configured environment variable, stores managed certificate files under `certificate_dir/managed/<host>/`, renews certificates inside the renewal window, hot reloads new certificates for future TLS handshakes, and retains the previous certificate pair for rollback. SQLite stores lifecycle metadata and file paths only.
-
-Managed certificate CLI examples:
+证书管理命令：
 
 ```powershell
 $env:CF_DNS_API_TOKEN="<cloudflare-token>"
-go run ./cmd/goginx-admin issue-managed-certificate -db ./.tmp/go-ginx.db -proxy secure-1 -certificate-dir data/certs -acme-account-email ops@example.com -acme-terms-accepted
-go run ./cmd/goginx-admin renew-managed-certificate -db ./.tmp/go-ginx.db -proxy secure-1 -certificate-dir data/certs -acme-account-email ops@example.com -acme-terms-accepted
-go run ./cmd/goginx-admin managed-certificate-status -db ./.tmp/go-ginx.db -proxy secure-1 -certificate-dir data/certs -acme-account-email ops@example.com -acme-terms-accepted
+go run ./cmd/goginx-admin issue-managed-certificate -proxy secure-1 -certificate-dir data/certs -acme-account-email ops@example.com -acme-terms-accepted
+go run ./cmd/goginx-admin renew-managed-certificate -proxy secure-1 -certificate-dir data/certs -acme-account-email ops@example.com -acme-terms-accepted
+go run ./cmd/goginx-admin managed-certificate-status -proxy secure-1 -certificate-dir data/certs -acme-account-email ops@example.com -acme-terms-accepted
 ```
 
-Client config remains available as an explicit override. The default path is `goginx-client join <token>`, which writes managed state. When using JSON directly, client config requires the server CA used to verify the control certificate. `server_tls_address` is optional; when set and both protocols are allowed, the client falls back from QUIC to TCP+TLS for the control channel and framed proxy substreams. TCP+TLS fallback uses one TCP connection, so multiplexed streams can experience normal TCP head-of-line effects. `reconnect` controls client retry backoff after transient dial or runtime failures.
+托管证书文件保存在 `certificate_dir/managed/<host>/`。SQLite 只保存证书生命周期元数据和文件路径。
 
-```json
-{
-  "server_address": "127.0.0.1:8443",
-  "server_tls_address": "127.0.0.1:9443",
-  "server_name": "localhost",
-  "server_ca_file": "data/certs/ca.crt",
-  "client_id": "client-1",
-  "credential": "secret",
-  "allowed_protocols": ["quic", "tcp_tls"],
-  "reconnect": {
-    "initial_delay": 1000000000,
-    "max_delay": 30000000000
-  }
-}
+## 管理 API 与前端
+
+管理 API 保留在 `/api/admin/*` 命名空间：
+
+- `POST /api/admin/login`
+- `GET /api/admin/session`
+- `POST /api/admin/logout`
+- `POST /api/admin/graphql`
+
+客户端加入接口：
+
+- `POST /api/client/enroll`
+
+当前 GraphQL 管理范围包括仪表盘汇总、用户管理、客户端列表和详情、反向代理 CRUD 与生命周期操作、托管证书状态/签发/续期、最近审计列表。浏览器侧 legacy `/graphql` 路由和旧的服务端渲染管理页不再作为本阶段入口。
+
+管理前端源码位于 `admin-ui/`：
+
+```powershell
+Set-Location admin-ui
+npm ci
+npm run test
+npm run build
 ```
 
-Administrator management access uses SQLite administrator users by default. Initialize the first administrator with `goginx-admin init-admin`. A protected credential file remains available only as a compatibility override:
+服务端默认使用 `internal/adminapi/embedded_admin/` 中的嵌入式前端资源。开发或自定义部署时，可将构建产物目录配置到 `admin_frontend_dir`。
 
-```json
-{
-  "admin_listen": "127.0.0.1:8080",
-  "admin_credentials_file": "config/admin-creds.json",
-  "admin_frontend_dir": "web/admin"
-}
+## 构建与测试
+
+完整验证：
+
+```powershell
+$env:CGO_ENABLED="0"
+go test ./...
+go build ./cmd/goginx-server ./cmd/goginx-client ./cmd/goginx-admin
 ```
 
-The credentials file stores administrator usernames and bcrypt password hashes:
+重点包测试：
 
-```json
-{
-  "administrators": [
-    {
-      "username": "admin",
-      "password_hash": "$2a$10$replace.with.bcrypt.hash"
-    }
-  ]
-}
+```powershell
+$env:CGO_ENABLED="0"
+go test ./internal/control
+go test ./internal/daemon
+go test ./internal/proxy/tcp
+go test ./internal/proxy/udp
+go test ./internal/proxy/http
+go test ./internal/proxy/https
+go test ./internal/admin
+go test ./internal/adminapi
+go test ./internal/certmanager
 ```
 
-When enabled, the admin listener is expected to run behind TLS. Browser-facing administrator access uses login-created server-managed sessions backed by SQLite administrator users or the explicit compatibility credential file, plus a session bootstrap endpoint and CSRF-protected mutation flow. `POST /api/admin/login`, `GET /api/admin/session`, `POST /api/admin/logout`, and `POST /api/admin/graphql` remain the browser API surface under the reserved `/api/admin/*` namespace. `POST /api/client/enroll` redeems time-bounded, single-use client join tokens. The same listener serves the dedicated admin frontend from embedded assets by default, while `admin_frontend_dir` can override those assets for development or custom deployments. Missing asset-like paths still return `404 Not Found`. The currently exposed management GraphQL scope remains administrator-only and includes a cumulative dashboard summary, user management, client list/detail, full reverse-proxy CRUD plus lifecycle actions, managed-certificate status/issue/renew, and a minimal recent audit list. The legacy server-rendered admin pages and the browser-facing legacy `/graphql` route are not served in this slice.
+外部进程 smoke 测试：
 
-## Current Limitations
+```powershell
+$env:CGO_ENABLED="0"
+go test ./e2e -run "TestExternalProcessesProxy(TCP|UDP|HTTP|HTTPS)$" -count=1
+```
 
-- The first supported deployment model is a reproducible bundle plus `systemd` service templates; native installers and non-`systemd` supervisors are not implemented yet.
-- TCP, UDP, HTTP, and HTTPS proxy behavior is covered through package tests and external process smoke tests.
-- Forward proxy, quotas, rate limiting, ordinary-user self-service, alerts, backup/restore tooling, capacity validation, wildcard/platform-domain ownership verification, and broader production operations docs are not implemented yet.
+## 部署包
 
-## Next Steps
+生成 Linux `systemd` 部署包：
 
-1. Continue closing product gaps: limits, admin API/UI, backup/restore, capacity validation, and broader production operations.
+```powershell
+$env:CGO_ENABLED="0"
+go run ./cmd/goginx-admin build-deploy-bundle `
+  -output ./.tmp/linux-systemd-bundle `
+  -goos linux `
+  -goarch amd64 `
+  -install-root /opt/go-ginx
+```
+
+部署包核心内容：
+
+- `bin/`：`goginx-server`、`goginx-client`、`goginx-admin`
+- `config/`：示例配置和环境文件
+- `data/`：SQLite 与证书目录
+- `logs/`：日志目录
+- `systemd/`：渲染后的 `goginx-server.service` 和 `goginx-client.service`
+
+典型部署流程：
+
+1. 将部署包复制到 `-install-root` 对应目录，例如 `/opt/go-ginx`。
+2. 启动服务端并运行 `goginx-admin init-admin` 初始化管理员。
+3. 使用 `goginx-admin create-client-join` 生成客户端 join token。
+4. 在客户端执行 `goginx-client join <token>`。
+5. 安装 `systemd/` 下的 service 到 `/etc/systemd/system/`。
+6. 执行 `systemctl daemon-reload`。
+7. 执行 `systemctl enable --now goginx-server goginx-client`。
+
+## 当前限制
+
+- 尚未实现 forward proxy。
+- 尚未实现配额、限速、普通用户自助、备份恢复、容量校验和高级告警。
+- 原生安装器和非 `systemd` 进程管理模板尚未实现。
+- 通配域名/平台域名所有权校验尚未实现。
+- 管理后台当前以管理员能力为主，普通用户自助和更完整的运维页面仍在后续范围内。
+
+## 参考文档
+
+- `docs/daemon-runtime.md`：守护进程运行和部署说明。
+- `docs/milestone-one-e2e.md`：当前可执行验证路径。
+- `docs/examples/admin-seed-sqlite.md`：SQLite 种子数据示例。
+- `docs/admin-ui/README.md`：管理后台页面设计文档索引。
+- `openspec/specs/`：当前规格说明。
