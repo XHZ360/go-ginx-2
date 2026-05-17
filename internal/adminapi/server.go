@@ -24,11 +24,13 @@ import (
 	"github.com/simp-frp/go-ginx-2/internal/adminquery"
 	"github.com/simp-frp/go-ginx-2/internal/contracterr"
 	"github.com/simp-frp/go-ginx-2/internal/domain"
+	"github.com/simp-frp/go-ginx-2/internal/enrollment"
 	"github.com/simp-frp/go-ginx-2/internal/store"
 )
 
 const (
 	adminAPIPrefix         = "/api/admin"
+	clientEnrollmentPrefix = "/api/client"
 	adminSessionCookieName = "goginx_admin_session"
 	adminSessionCookiePath = "/api/admin"
 	adminCSRFHeader        = "X-GoGinx-CSRF-Token"
@@ -41,15 +43,18 @@ type Server struct {
 	listener   net.Listener
 	httpServer *http.Server
 	schema     graphql.Schema
-	creds      credentialSet
+	creds      credentialVerifier
 	sessions   *sessionManager
 	frontend   *adminFrontend
+	enrollment enrollment.Service
 }
 
 type Entry struct {
 	ListenAddress           string
 	AdminCredentialsFile    string
 	AdminFrontendDir        string
+	Credentials             credentialVerifier
+	Enrollment              enrollment.Service
 	Query                   adminquery.Service
 	Commands                admin.Service
 	SessionIdleTimeout      time.Duration
@@ -73,6 +78,14 @@ type administratorCredential struct {
 }
 
 type credentialSet map[string]string
+
+type credentialVerifier interface {
+	Verify(ctx context.Context, username string, password string) bool
+}
+
+type sqliteCredentialVerifier struct {
+	Store store.Store
+}
 
 type contextKey string
 
@@ -137,9 +150,6 @@ type certificatePayload struct {
 }
 
 func Listen(entry Entry) (*Server, error) {
-	if strings.TrimSpace(entry.AdminCredentialsFile) == "" {
-		return nil, errors.New("admin credentials file is required")
-	}
 	frontend, err := loadAdminFrontend(entry.AdminFrontendDir)
 	if err != nil {
 		return nil, err
@@ -148,18 +158,19 @@ func Listen(entry Entry) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	creds, err := loadCredentials(entry.AdminCredentialsFile)
+	creds, err := credentialsForEntry(entry)
 	if err != nil {
 		_ = listener.Close()
 		return nil, err
 	}
 	server := &Server{
-		query:    entry.Query,
-		commands: entry.Commands,
-		listener: listener,
-		creds:    creds,
-		sessions: newSessionManager(entry.SessionIdleTimeout, entry.SessionAbsoluteLifetime, entry.Now),
-		frontend: frontend,
+		query:      entry.Query,
+		commands:   entry.Commands,
+		listener:   listener,
+		creds:      creds,
+		sessions:   newSessionManager(entry.SessionIdleTimeout, entry.SessionAbsoluteLifetime, entry.Now),
+		frontend:   frontend,
+		enrollment: entry.Enrollment,
 	}
 	schema, err := server.buildSchema()
 	if err != nil {
@@ -172,6 +183,7 @@ func Listen(entry Entry) (*Server, error) {
 	mux.HandleFunc(adminAPIPrefix+"/session", server.sessionHandler)
 	mux.HandleFunc(adminAPIPrefix+"/logout", server.logoutHandler)
 	mux.HandleFunc(adminAPIPrefix+"/graphql", server.graphqlHandler)
+	mux.HandleFunc(clientEnrollmentPrefix+"/enroll", server.enrollHandler)
 	server.httpServer = &http.Server{Handler: server.routeHandler(mux)}
 	return server, nil
 }
@@ -217,13 +229,44 @@ func loadCredentials(path string) (credentialSet, error) {
 	return creds, nil
 }
 
+func credentialsForEntry(entry Entry) (credentialVerifier, error) {
+	if entry.Credentials != nil {
+		return entry.Credentials, nil
+	}
+	if strings.TrimSpace(entry.AdminCredentialsFile) != "" {
+		return loadCredentials(entry.AdminCredentialsFile)
+	}
+	if entry.Query.Store != nil {
+		return sqliteCredentialVerifier{Store: entry.Query.Store}, nil
+	}
+	return nil, errors.New("admin credentials source is required")
+}
+
+func (creds credentialSet) Verify(_ context.Context, username string, password string) bool {
+	return domain.CheckPasswordHash(password, creds[username])
+}
+
+func (verifier sqliteCredentialVerifier) Verify(ctx context.Context, username string, password string) bool {
+	if verifier.Store == nil {
+		return false
+	}
+	user, err := verifier.Store.Users().ByUsername(ctx, username)
+	if err != nil {
+		return false
+	}
+	if user.Role != domain.RoleAdmin || user.Status != domain.UserEnabled {
+		return false
+	}
+	return domain.CheckPasswordHash(password, user.PasswordHash)
+}
+
 func (server *Server) routeHandler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !requestUsesProtectedTransport(r) {
 			writeErrorJSON(w, http.StatusUpgradeRequired, "PROTECTED_TRANSPORT_REQUIRED", "management endpoint requires protected transport", nil)
 			return
 		}
-		if !strings.HasPrefix(r.URL.Path, adminAPIPrefix) {
+		if !strings.HasPrefix(r.URL.Path, adminAPIPrefix) && !strings.HasPrefix(r.URL.Path, clientEnrollmentPrefix) {
 			if server.serveFrontend(w, r) {
 				return
 			}
@@ -237,7 +280,7 @@ func (server *Server) routeHandler(next http.Handler) http.Handler {
 func loadAdminFrontend(dir string) (*adminFrontend, error) {
 	trimmed := strings.TrimSpace(dir)
 	if trimmed == "" {
-		return nil, nil
+		return embeddedAdminFrontend()
 	}
 	absRoot, err := filepath.Abs(trimmed)
 	if err != nil {
@@ -375,7 +418,7 @@ func (server *Server) loginHandler(w http.ResponseWriter, r *http.Request) {
 		writeErrorJSON(w, http.StatusBadRequest, contracterr.CodeValidationFailed, "validation failed", fields)
 		return
 	}
-	if !domain.CheckPasswordHash(request.Password, server.creds[request.Username]) {
+	if !server.creds.Verify(r.Context(), request.Username, request.Password) {
 		writeErrorJSON(w, http.StatusUnauthorized, contracterr.CodeUnauthenticated, "invalid administrator credentials", nil)
 		return
 	}
@@ -389,6 +432,24 @@ func (server *Server) loginHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	server.writeSessionCookie(w, r, session)
 	writeBootstrapJSON(w, http.StatusOK, &session)
+}
+
+func (server *Server) enrollHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeErrorJSON(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "method not allowed", nil)
+		return
+	}
+	var request enrollment.RedeemRequest
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		writeErrorJSON(w, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil)
+		return
+	}
+	response, err := server.enrollment.Redeem(r.Context(), request.Token)
+	if err != nil {
+		writeErrorJSON(w, enrollment.HTTPStatusForError(err), contracterr.CodeUnauthenticated, "invalid or expired enrollment token", nil)
+		return
+	}
+	writeJSON(w, http.StatusOK, response)
 }
 
 func (server *Server) sessionHandler(w http.ResponseWriter, r *http.Request) {

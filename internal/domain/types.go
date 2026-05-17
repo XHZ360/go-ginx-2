@@ -137,6 +137,17 @@ type Client struct {
 	UpdatedAt      time.Time
 }
 
+type ClientEnrollment struct {
+	ID         string
+	ClientID   string
+	SecretHash string
+	TokenHash  string
+	ExpiresAt  time.Time
+	UsedAt     *time.Time
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
+}
+
 type Proxy struct {
 	ID          string
 	UserID      string
@@ -233,6 +244,25 @@ func (client Client) Validate() error {
 	}
 	if strings.TrimSpace(client.CredentialHash) == "" {
 		return errors.New("client credential hash is required")
+	}
+	return nil
+}
+
+func (enrollment ClientEnrollment) Validate() error {
+	if strings.TrimSpace(enrollment.ID) == "" {
+		return errors.New("client enrollment id is required")
+	}
+	if strings.TrimSpace(enrollment.ClientID) == "" {
+		return errors.New("client enrollment client id is required")
+	}
+	if strings.TrimSpace(enrollment.SecretHash) == "" {
+		return errors.New("client enrollment secret hash is required")
+	}
+	if strings.TrimSpace(enrollment.TokenHash) == "" {
+		return errors.New("client enrollment token hash is required")
+	}
+	if enrollment.ExpiresAt.IsZero() {
+		return errors.New("client enrollment expiry is required")
 	}
 	return nil
 }

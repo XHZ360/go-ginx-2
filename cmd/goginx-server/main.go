@@ -12,10 +12,16 @@ import (
 )
 
 func main() {
-	configPath := flag.String("config", "server.json", "server config path")
+	configPath := flag.String("config", "", "server config path; when omitted, managed defaults are used")
 	flag.Parse()
 
-	cfg, err := config.LoadServer(*configPath)
+	var cfg config.Server
+	var err error
+	if *configPath == "" {
+		cfg, err = config.LoadManagedServer()
+	} else {
+		cfg, err = config.LoadServer(*configPath)
+	}
 	if err != nil {
 		log.Fatalf("load server config: %v", err)
 	}

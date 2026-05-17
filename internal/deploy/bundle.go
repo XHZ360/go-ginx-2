@@ -133,9 +133,7 @@ func writeJSONFile(path string, value any) error {
 func defaultServerBundleConfig(includeAdminFrontend bool) config.Server {
 	server := config.DefaultServer()
 	server.AdminCredentialsFile = ""
-	if includeAdminFrontend {
-		server.AdminFrontendDir = bundledAdminFrontendDir
-	}
+	server.AdminFrontendDir = ""
 	server.ControlTLSCertFile = "data/certs/control.crt"
 	server.ControlTLSKeyFile = "data/certs/control.key"
 	server.SQLitePath = "data/go-ginx.db"

@@ -419,6 +419,49 @@ func TestDeployBundleRuntimeRestartRecovery(t *testing.T) {
 	}
 }
 
+func TestExternalProcessesConfiglessServerAndClientJoin(t *testing.T) {
+	root := repositoryRoot(t)
+	workDir := t.TempDir()
+	binDir := filepath.Join(workDir, "bin")
+	if err := os.MkdirAll(binDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	serverBin := buildCommand(t, root, binDir, "goginx-server", "./cmd/goginx-server")
+	clientBin := buildCommand(t, root, binDir, "goginx-client", "./cmd/goginx-client")
+	adminBin := buildCommand(t, root, binDir, "goginx-admin", "./cmd/goginx-admin")
+
+	smokeCtx, cancelSmoke := context.WithTimeout(context.Background(), 25*time.Second)
+	t.Cleanup(cancelSmoke)
+	adminAddress := net.JoinHostPort("127.0.0.1", strconv.Itoa(reservePort(t)))
+	controlQUICAddress := net.JoinHostPort("127.0.0.1", strconv.Itoa(reserveUDPPort(t)))
+	controlTLSAddress := net.JoinHostPort("127.0.0.1", strconv.Itoa(reservePort(t)))
+	httpEntryAddress := net.JoinHostPort("127.0.0.1", strconv.Itoa(reservePort(t)))
+	server := startProcessEnv(t, workDir, map[string]string{
+		"GOGINX_ADMIN_LISTEN":        adminAddress,
+		"GOGINX_CONTROL_QUIC_LISTEN": controlQUICAddress,
+		"GOGINX_CONTROL_TLS_LISTEN":  controlTLSAddress,
+		"GOGINX_HTTP_ENTRY_LISTEN":   httpEntryAddress,
+	}, serverBin)
+	waitForTCPAccept(t, smokeCtx, adminAddress)
+	waitForFile(t, smokeCtx, filepath.Join(workDir, "data", "certs", "control-ca.crt"))
+	waitForFile(t, smokeCtx, filepath.Join(workDir, "data", "go-ginx.db"))
+
+	runCommand(t, smokeCtx, workDir, adminBin, "init-admin", "-id", "admin-1", "-username", "admin", "-password", "secret")
+	if err := waitForAdminDashboard(smokeCtx, adminAddress, "admin", "secret", 0); err != nil {
+		t.Fatalf("configless admin login failed: %v\nserver output:\n%s", err, server.Output())
+	}
+	token := strings.TrimSpace(runCommand(t, smokeCtx, workDir, adminBin, "create-client-join", "-id", "client-1", "-user", "admin-1", "-name", "home", "-server-ca-file", filepath.Join("data", "certs", "control-ca.crt"), "-server-name", "go-ginx-control.local", "-server-address", controlQUICAddress, "-server-tls-address", controlTLSAddress, "-enrollment-url", "http://"+adminAddress+"/api/client/enroll"))
+	if token == "" {
+		t.Fatal("expected join token")
+	}
+	runCommand(t, smokeCtx, workDir, clientBin, "join", token)
+	waitForFile(t, smokeCtx, filepath.Join(workDir, "data", "client-state.json"))
+	client := startProcess(t, workDir, clientBin)
+	if err := waitForAdminDashboard(smokeCtx, adminAddress, "admin", "secret", 1); err != nil {
+		t.Fatalf("joined configless client did not come online: %v\nserver output:\n%s\nclient output:\n%s", err, server.Output(), client.Output())
+	}
+}
+
 func buildCommand(t *testing.T, root string, binDir string, name string, packagePath string) string {
 	t.Helper()
 	if runtime.GOOS == "windows" {
@@ -437,6 +480,17 @@ func buildCommand(t *testing.T, root string, binDir string, name string, package
 	return output
 }
 
+func runCommand(t *testing.T, ctx context.Context, dir string, binary string, args ...string) string {
+	t.Helper()
+	cmd := exec.CommandContext(ctx, binary, args...)
+	cmd.Dir = dir
+	combined, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("run %s %s: %v\n%s", binary, strings.Join(args, " "), err, string(combined))
+	}
+	return string(combined)
+}
+
 type runningProcess struct {
 	cancel context.CancelFunc
 	done   chan error
@@ -445,10 +499,20 @@ type runningProcess struct {
 }
 
 func startProcess(t *testing.T, root string, binary string, args ...string) *runningProcess {
+	return startProcessEnv(t, root, nil, binary, args...)
+}
+
+func startProcessEnv(t *testing.T, root string, env map[string]string, binary string, args ...string) *runningProcess {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	cmd := exec.CommandContext(ctx, binary, args...)
 	cmd.Dir = root
+	if len(env) > 0 {
+		cmd.Env = os.Environ()
+		for key, value := range env {
+			cmd.Env = append(cmd.Env, key+"="+value)
+		}
+	}
 	process := &runningProcess{cancel: cancel, done: make(chan error, 1)}
 	cmd.Stdout = &process.stdout
 	cmd.Stderr = &process.stderr
@@ -518,6 +582,17 @@ func waitForTCPAccept(t *testing.T, ctx context.Context, address string) {
 		}
 	}
 	t.Fatalf("TCP listener %s did not accept connections", address)
+}
+
+func waitForFile(t *testing.T, ctx context.Context, path string) {
+	t.Helper()
+	for ctx.Err() == nil {
+		if info, err := os.Stat(path); err == nil && !info.IsDir() {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("file %s was not created: %v", path, ctx.Err())
 }
 
 func waitForEcho(ctx context.Context, address string, payload string) error {
@@ -777,6 +852,63 @@ func waitForAdminGraphQL(ctx context.Context, address string, username string, p
 	return ctx.Err()
 }
 
+func waitForAdminDashboard(ctx context.Context, address string, username string, password string, onlineClients int) error {
+	var lastErr error
+	for ctx.Err() == nil {
+		client, err := loginAdminAPI(address, username, password)
+		if err != nil {
+			lastErr = err
+			time.Sleep(50 * time.Millisecond)
+			continue
+		}
+		payload := bytes.NewBufferString(`{"query":"query { dashboard { onlineClientCount enabledProxyCount } }"}`)
+		request, err := nethttp.NewRequestWithContext(ctx, nethttp.MethodPost, "http://"+address+"/api/admin/graphql", payload)
+		if err != nil {
+			return err
+		}
+		request.Header.Set("Content-Type", "application/json")
+		response, err := client.Do(request)
+		if err != nil {
+			lastErr = err
+			time.Sleep(50 * time.Millisecond)
+			continue
+		}
+		body, readErr := io.ReadAll(response.Body)
+		_ = response.Body.Close()
+		if response.StatusCode != nethttp.StatusOK {
+			lastErr = fmt.Errorf("unexpected status %d body=%s", response.StatusCode, string(body))
+			time.Sleep(50 * time.Millisecond)
+			continue
+		}
+		if readErr != nil {
+			lastErr = readErr
+			time.Sleep(50 * time.Millisecond)
+			continue
+		}
+		var decoded struct {
+			Data struct {
+				Dashboard struct {
+					OnlineClientCount int `json:"onlineClientCount"`
+				} `json:"dashboard"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal(body, &decoded); err != nil {
+			lastErr = err
+			time.Sleep(50 * time.Millisecond)
+			continue
+		}
+		if decoded.Data.Dashboard.OnlineClientCount == onlineClients {
+			return nil
+		}
+		lastErr = fmt.Errorf("online clients = %d, want %d", decoded.Data.Dashboard.OnlineClientCount, onlineClients)
+		time.Sleep(50 * time.Millisecond)
+	}
+	if lastErr != nil {
+		return lastErr
+	}
+	return ctx.Err()
+}
+
 func loginAdminAPI(address string, username string, password string) (*nethttp.Client, error) {
 	jar, err := cookiejar.New(nil)
 	if err != nil {
@@ -1014,6 +1146,22 @@ func reservePort(t *testing.T) int {
 		t.Fatal(err)
 	}
 	return port
+}
+
+func requireDefaultConfiglessPorts(t *testing.T) {
+	t.Helper()
+	for _, address := range []string{"127.0.0.1:8080", "127.0.0.1:8081", "127.0.0.1:9443"} {
+		listener, err := net.Listen("tcp", address)
+		if err != nil {
+			t.Skipf("default configless TCP port unavailable %s: %v", address, err)
+		}
+		_ = listener.Close()
+	}
+	packet, err := net.ListenPacket("udp", "127.0.0.1:8443")
+	if err != nil {
+		t.Skipf("default configless UDP port unavailable 127.0.0.1:8443: %v", err)
+	}
+	_ = packet.Close()
 }
 
 func reserveUDPPort(t *testing.T) int {

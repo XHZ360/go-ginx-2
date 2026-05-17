@@ -6,11 +6,15 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
+	"time"
 
 	"github.com/simp-frp/go-ginx-2/internal/certmanager"
+	"github.com/simp-frp/go-ginx-2/internal/config"
 	"github.com/simp-frp/go-ginx-2/internal/contracterr"
 	"github.com/simp-frp/go-ginx-2/internal/domain"
+	"github.com/simp-frp/go-ginx-2/internal/enrollment"
 	"github.com/simp-frp/go-ginx-2/internal/store"
 )
 
@@ -39,6 +43,26 @@ type CreateClientInput struct {
 type CreateClientResult struct {
 	Client     domain.Client
 	Credential string
+}
+
+type CreateClientJoinInput struct {
+	ID               string
+	UserID           string
+	Name             string
+	ActorID          string
+	EnrollmentURL    string
+	ServerAddress    string
+	ServerTLSAddress string
+	ServerName       string
+	ServerCAFile     string
+	AllowedProtocols []domain.Protocol
+	Reconnect        config.Reconnect
+	TTL              time.Duration
+}
+
+type CreateClientJoinResult struct {
+	Client domain.Client
+	Token  string
 }
 
 type CreateProxyInput struct {
@@ -124,6 +148,16 @@ func (service Service) DisableUser(ctx context.Context, userID string, actorID s
 	return service.audit(ctx, actorID, "user", userID, "disable_user")
 }
 
+func (service Service) EnableUser(ctx context.Context, userID string, actorID string) error {
+	if service.Store == nil {
+		return errors.New("store is required")
+	}
+	if err := service.Store.Users().SetStatus(ctx, userID, domain.UserEnabled); err != nil {
+		return err
+	}
+	return service.audit(ctx, actorID, "user", userID, "enable_user")
+}
+
 func (service Service) SetUserPassword(ctx context.Context, userID string, password string, actorID string) error {
 	if service.Store == nil {
 		return errors.New("store is required")
@@ -177,6 +211,71 @@ func (service Service) CreateClientWithCredential(ctx context.Context, input Cre
 	}
 	client.CredentialHash = ""
 	return CreateClientResult{Client: client, Credential: input.Credential}, nil
+}
+
+func (service Service) CreateClientJoin(ctx context.Context, input CreateClientJoinInput) (CreateClientJoinResult, error) {
+	if service.Store == nil {
+		return CreateClientJoinResult{}, errors.New("store is required")
+	}
+	if input.TTL <= 0 {
+		input.TTL = time.Hour
+	}
+	if len(input.AllowedProtocols) == 0 {
+		input.AllowedProtocols = config.DefaultClient().AllowedProtocols
+	}
+	if input.Reconnect.InitialDelay <= 0 || input.Reconnect.MaxDelay <= 0 {
+		input.Reconnect = config.DefaultClient().Reconnect
+	}
+	if strings.TrimSpace(input.EnrollmentURL) == "" {
+		return CreateClientJoinResult{}, contracterr.Validation("validation failed", map[string]string{"enrollmentUrl": "enrollment url is required"})
+	}
+	if strings.TrimSpace(input.ServerAddress) == "" {
+		return CreateClientJoinResult{}, contracterr.Validation("validation failed", map[string]string{"serverAddress": "server address is required"})
+	}
+	if strings.TrimSpace(input.ServerName) == "" {
+		return CreateClientJoinResult{}, contracterr.Validation("validation failed", map[string]string{"serverName": "server name is required"})
+	}
+	if strings.TrimSpace(input.ServerCAFile) == "" {
+		input.ServerCAFile = config.DefaultServer().ControlTLSCAFile
+	}
+	caPEM, err := os.ReadFile(input.ServerCAFile)
+	if err != nil {
+		return CreateClientJoinResult{}, err
+	}
+	clientResult, err := service.CreateClientWithCredential(ctx, CreateClientInput{ID: input.ID, UserID: input.UserID, Name: input.Name, ActorID: input.ActorID})
+	if err != nil {
+		return CreateClientJoinResult{}, err
+	}
+	enrollmentID := newID("join")
+	secret := newCredential()
+	expiresAt := time.Now().UTC().Add(input.TTL)
+	payload := enrollment.TokenPayload{
+		EnrollmentID:     enrollmentID,
+		Secret:           secret,
+		EnrollmentURL:    input.EnrollmentURL,
+		ServerAddress:    input.ServerAddress,
+		ServerTLSAddress: input.ServerTLSAddress,
+		ServerName:       input.ServerName,
+		CAPEM:            string(caPEM),
+		ClientID:         clientResult.Client.ID,
+		Credential:       clientResult.Credential,
+		AllowedProtocols: append([]domain.Protocol(nil), input.AllowedProtocols...),
+		Reconnect:        input.Reconnect,
+		ExpiresAt:        expiresAt,
+	}
+	token, err := enrollment.EncodeToken(payload)
+	if err != nil {
+		return CreateClientJoinResult{}, err
+	}
+	record := domain.ClientEnrollment{ID: enrollmentID, ClientID: clientResult.Client.ID, SecretHash: enrollment.HashSecret(secret), TokenHash: enrollment.HashToken(token), ExpiresAt: expiresAt}
+	if err := service.Store.ClientEnrollments().Create(ctx, record); err != nil {
+		return CreateClientJoinResult{}, err
+	}
+	if err := service.audit(ctx, input.ActorID, "client", clientResult.Client.ID, "create_client_join"); err != nil {
+		return CreateClientJoinResult{}, err
+	}
+	clientResult.Client.CredentialHash = ""
+	return CreateClientJoinResult{Client: clientResult.Client, Token: token}, nil
 }
 
 func (service Service) CreateProxy(ctx context.Context, input CreateProxyInput) (domain.Proxy, error) {

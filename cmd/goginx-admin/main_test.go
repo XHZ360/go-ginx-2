@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/simp-frp/go-ginx-2/internal/certmanager"
+	"github.com/simp-frp/go-ginx-2/internal/domain"
 	"github.com/simp-frp/go-ginx-2/internal/store/sqlite"
 )
 
@@ -63,6 +64,74 @@ func TestRunCreatesResources(t *testing.T) {
 	}
 	if foundHTTPS.ID != "https-1" {
 		t.Fatalf("unexpected https proxy: %+v", foundHTTPS)
+	}
+}
+
+func TestRunInitializesAdminUser(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "admin.db")
+	if err := run([]string{"init-admin", "-db", dbPath, "-id", "admin-1", "-username", "admin", "-password", "secret"}); err != nil {
+		t.Fatalf("init admin: %v", err)
+	}
+	db, err := sqlite.Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Users().SetStatus(context.Background(), "admin-1", domain.UserDisabled); err != nil {
+		t.Fatalf("disable admin before reinit: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close db before reinit: %v", err)
+	}
+
+	if err := run([]string{"init-admin", "-db", dbPath, "-username", "admin", "-password", "updated-secret"}); err != nil {
+		t.Fatalf("reinit admin: %v", err)
+	}
+	db, err = sqlite.Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	user, err := db.Users().ByID(context.Background(), "admin-1")
+	if err != nil {
+		t.Fatalf("lookup admin: %v", err)
+	}
+	if user.Role != "admin" || user.Status != "enabled" || !domain.CheckPasswordHash("updated-secret", user.PasswordHash) {
+		t.Fatalf("unexpected admin user: %+v", user)
+	}
+}
+
+func TestRunCreatesClientJoinToken(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "admin.db")
+	caFile := filepath.Join(t.TempDir(), "ca.crt")
+	if err := os.WriteFile(caFile, []byte("ca-pem"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := run([]string{"create-user", "-db", dbPath, "-id", "user-1", "-username", "alice"}); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	if err := run([]string{"create-client-join", "-db", dbPath, "-id", "client-1", "-user", "user-1", "-name", "home", "-server-ca-file", caFile, "-server-name", "go-ginx-control.test", "-server-address", "127.0.0.1:8443", "-enrollment-url", "http://127.0.0.1:8080/api/client/enroll"}); err != nil {
+		t.Fatalf("create client join: %v", err)
+	}
+	db, err := sqlite.Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if _, err := db.Clients().ByID(context.Background(), "client-1"); err != nil {
+		t.Fatalf("lookup client: %v", err)
+	}
+	events, err := db.AuditEvents().ListRecent(context.Background(), 10)
+	if err != nil {
+		t.Fatalf("list audit events: %v", err)
+	}
+	found := false
+	for _, event := range events {
+		if event.Action == "create_client_join" && event.ResourceID == "client-1" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected create_client_join audit event, got %+v", events)
 	}
 }
 
@@ -192,8 +261,8 @@ func TestRunBuildsDeployBundleWithAdminFrontendAssets(t *testing.T) {
 		t.Fatalf("unexpected bundled admin frontend asset %q", string(assetContent))
 	}
 	serverConfig := readBundleServerConfig(t, filepath.Join(outputDir, "config", "server.json"))
-	if serverConfig.AdminFrontendDir != "admin-ui" {
-		t.Fatalf("expected admin_frontend_dir %q, got %q", "admin-ui", serverConfig.AdminFrontendDir)
+	if serverConfig.AdminFrontendDir != "" {
+		t.Fatalf("expected admin_frontend_dir to remain optional, got %q", serverConfig.AdminFrontendDir)
 	}
 }
 

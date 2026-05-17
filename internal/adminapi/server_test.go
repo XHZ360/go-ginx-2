@@ -16,7 +16,9 @@ import (
 
 	"github.com/simp-frp/go-ginx-2/internal/admin"
 	"github.com/simp-frp/go-ginx-2/internal/adminquery"
+	"github.com/simp-frp/go-ginx-2/internal/config"
 	"github.com/simp-frp/go-ginx-2/internal/domain"
+	"github.com/simp-frp/go-ginx-2/internal/enrollment"
 	"github.com/simp-frp/go-ginx-2/internal/session"
 	"github.com/simp-frp/go-ginx-2/internal/stats"
 	"github.com/simp-frp/go-ginx-2/internal/store/sqlite"
@@ -27,20 +29,20 @@ func TestServerRemovedRoutesAndSessionBootstrap(t *testing.T) {
 
 	response, err := http.Get("http://" + server.Addr().String() + "/")
 	if err != nil {
-		t.Fatalf("get removed root route: %v", err)
+		t.Fatalf("get embedded root route: %v", err)
 	}
 	defer response.Body.Close()
-	if response.StatusCode != http.StatusNotFound {
-		t.Fatalf("expected 404 for removed root route, got %d", response.StatusCode)
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("expected embedded frontend for root route, got %d", response.StatusCode)
 	}
 
 	response, err = http.Get("http://" + server.Addr().String() + "/users")
 	if err != nil {
-		t.Fatalf("get removed users route: %v", err)
+		t.Fatalf("get embedded users route: %v", err)
 	}
 	defer response.Body.Close()
-	if response.StatusCode != http.StatusNotFound {
-		t.Fatalf("expected 404 for removed users route, got %d", response.StatusCode)
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("expected embedded frontend for users route, got %d", response.StatusCode)
 	}
 
 	response, err = postJSON(http.DefaultClient, "http://"+server.Addr().String()+"/graphql", map[string]any{"query": `query { dashboard { onlineClientCount } }`}, nil)
@@ -145,6 +147,90 @@ func TestServerFrontendRoutesStillRequireProtectedTransport(t *testing.T) {
 	if decoded.Error.Code != "PROTECTED_TRANSPORT_REQUIRED" {
 		t.Fatalf("unexpected protected transport error: %+v", decoded)
 	}
+}
+
+func TestServerAuthenticatesSQLiteAdministrators(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	db, sessions, memory := adminAPITestRuntime(t)
+	hash, err := domain.HashPassword("secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Users().Create(context.Background(), domain.User{ID: "admin-1", Username: "admin-sqlite", PasswordHash: hash, Role: domain.RoleAdmin, Status: domain.UserEnabled}); err != nil {
+		t.Fatal(err)
+	}
+	ordinaryHash, err := domain.HashPassword("user-secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Users().SetPassword(context.Background(), "user-1", ordinaryHash); err != nil {
+		t.Fatal(err)
+	}
+	server, err := Listen(Entry{ListenAddress: "127.0.0.1:0", Query: adminquery.Service{Store: db, Sessions: sessions, Stats: memory}, Commands: admin.Service{Store: db}})
+	if err != nil {
+		t.Fatalf("listen sqlite admin server: %v", err)
+	}
+	t.Cleanup(func() { _ = server.Close() })
+	go func() { _ = server.Serve(ctx) }()
+	client := newAdminHTTPClient(t)
+
+	ordinaryLogin, err := postJSON(client, "http://"+server.Addr().String()+adminAPIPrefix+"/login", map[string]string{"username": "alice", "password": "user-secret"}, nil)
+	if err != nil {
+		t.Fatalf("ordinary login: %v", err)
+	}
+	defer ordinaryLogin.Body.Close()
+	assertErrorCode(t, ordinaryLogin, http.StatusUnauthorized, "UNAUTHENTICATED")
+
+	login := loginAdmin(t, client, server.Addr().String(), "admin-sqlite", "secret")
+	if !login.Authenticated || login.Username != "admin-sqlite" {
+		t.Fatalf("unexpected sqlite admin login: %+v", login)
+	}
+}
+
+func TestServerRedeemsClientEnrollmentToken(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	db, sessions, memory := adminAPITestRuntime(t)
+	expiresAt := time.Now().UTC().Add(time.Hour)
+	payload := enrollment.TokenPayload{EnrollmentID: "join-1", Secret: "join-secret", EnrollmentURL: "http://127.0.0.1:8080/api/client/enroll", ServerAddress: "127.0.0.1:8443", ServerTLSAddress: "127.0.0.1:9443", ServerName: "go-ginx-control.test", CAPEM: "ca-pem", ClientID: "client-1", Credential: "secret", AllowedProtocols: []domain.Protocol{domain.ProtocolQUIC, domain.ProtocolTCPTLS}, Reconnect: config.DefaultClient().Reconnect, ExpiresAt: expiresAt}
+	token, err := enrollment.EncodeToken(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.ClientEnrollments().Create(context.Background(), domain.ClientEnrollment{ID: payload.EnrollmentID, ClientID: payload.ClientID, SecretHash: enrollment.HashSecret(payload.Secret), TokenHash: enrollment.HashToken(token), ExpiresAt: expiresAt}); err != nil {
+		t.Fatal(err)
+	}
+	server, err := Listen(Entry{ListenAddress: "127.0.0.1:0", Query: adminquery.Service{Store: db, Sessions: sessions, Stats: memory}, Commands: admin.Service{Store: db}, Enrollment: enrollment.Service{Store: db}})
+	if err != nil {
+		t.Fatalf("listen enrollment server: %v", err)
+	}
+	t.Cleanup(func() { _ = server.Close() })
+	go func() { _ = server.Serve(ctx) }()
+
+	response, err := postJSON(http.DefaultClient, "http://"+server.Addr().String()+clientEnrollmentPrefix+"/enroll", enrollment.RedeemRequest{Token: token}, nil)
+	if err != nil {
+		t.Fatalf("post enrollment: %v", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(response.Body)
+		t.Fatalf("unexpected enrollment status %d body=%s", response.StatusCode, string(body))
+	}
+	var decoded enrollment.RedeemResponse
+	if err := json.NewDecoder(response.Body).Decode(&decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.ClientID != "client-1" || decoded.Credential != "secret" {
+		t.Fatalf("unexpected enrollment response: %+v", decoded)
+	}
+
+	duplicate, err := postJSON(http.DefaultClient, "http://"+server.Addr().String()+clientEnrollmentPrefix+"/enroll", enrollment.RedeemRequest{Token: token}, nil)
+	if err != nil {
+		t.Fatalf("post duplicate enrollment: %v", err)
+	}
+	defer duplicate.Body.Close()
+	assertErrorCode(t, duplicate, http.StatusConflict, "UNAUTHENTICATED")
 }
 
 func TestServerSessionGraphQLAndCanonicalQueries(t *testing.T) {

@@ -38,6 +38,10 @@ func (s *Store) Users() store.UserRepository { return userRepository{s.db} }
 
 func (s *Store) Clients() store.ClientRepository { return clientRepository{s.db} }
 
+func (s *Store) ClientEnrollments() store.ClientEnrollmentRepository {
+	return clientEnrollmentRepository{s.db}
+}
+
 func (s *Store) Proxies() store.ProxyRepository { return proxyRepository{s.db} }
 
 func (s *Store) Certificates() store.CertificateRepository { return certificateRepository{s.db} }
@@ -162,6 +166,32 @@ func (r clientRepository) RotateCredential(ctx context.Context, id string, crede
 		return errors.New("credential hash is required")
 	}
 	result, err := r.db.ExecContext(ctx, `update clients set credential_hash = ?, version = version + 1, updated_at = ? where id = ?`, credentialHash, time.Now().UTC(), id)
+	return resultError(result, err)
+}
+
+type clientEnrollmentRepository struct{ db *sql.DB }
+
+func (r clientEnrollmentRepository) Create(ctx context.Context, enrollment domain.ClientEnrollment) error {
+	if err := enrollment.Validate(); err != nil {
+		return err
+	}
+	now := time.Now().UTC()
+	if enrollment.CreatedAt.IsZero() {
+		enrollment.CreatedAt = now
+	}
+	if enrollment.UpdatedAt.IsZero() {
+		enrollment.UpdatedAt = now
+	}
+	_, err := r.db.ExecContext(ctx, `insert into client_enrollments (id, client_id, secret_hash, token_hash, expires_at, used_at, created_at, updated_at) values (?, ?, ?, ?, ?, ?, ?, ?)`, enrollment.ID, enrollment.ClientID, enrollment.SecretHash, enrollment.TokenHash, enrollment.ExpiresAt, enrollment.UsedAt, enrollment.CreatedAt, enrollment.UpdatedAt)
+	return translateError(err)
+}
+
+func (r clientEnrollmentRepository) ByID(ctx context.Context, id string) (domain.ClientEnrollment, error) {
+	return scanClientEnrollment(r.db.QueryRowContext(ctx, `select id, client_id, secret_hash, token_hash, expires_at, used_at, created_at, updated_at from client_enrollments where id = ?`, id))
+}
+
+func (r clientEnrollmentRepository) MarkUsed(ctx context.Context, id string, usedAt time.Time) error {
+	result, err := r.db.ExecContext(ctx, `update client_enrollments set used_at = ?, updated_at = ? where id = ? and used_at is null`, usedAt, usedAt, id)
 	return resultError(result, err)
 }
 
@@ -504,6 +534,16 @@ func scanClientRows(rows *sql.Rows) (domain.Client, error) {
 	return client, err
 }
 
+func scanClientEnrollment(row *sql.Row) (domain.ClientEnrollment, error) {
+	var enrollment domain.ClientEnrollment
+	var usedAt sql.NullTime
+	err := row.Scan(&enrollment.ID, &enrollment.ClientID, &enrollment.SecretHash, &enrollment.TokenHash, &enrollment.ExpiresAt, &usedAt, &enrollment.CreatedAt, &enrollment.UpdatedAt)
+	if usedAt.Valid {
+		enrollment.UsedAt = &usedAt.Time
+	}
+	return enrollment, translateError(err)
+}
+
 func scanProxy(row *sql.Row) (domain.Proxy, error) {
 	var proxy domain.Proxy
 	err := row.Scan(&proxy.ID, &proxy.UserID, &proxy.ClientID, &proxy.Name, &proxy.Type, &proxy.Status, &proxy.EntryHost, &proxy.EntryPort, &proxy.TargetHost, &proxy.TargetPort, &proxy.CertFile, &proxy.KeyFile, &proxy.Description, &proxy.CreatedAt, &proxy.UpdatedAt)
@@ -647,6 +687,19 @@ create table if not exists clients (
     created_at timestamp not null,
     updated_at timestamp not null
 );
+
+create table if not exists client_enrollments (
+    id text primary key,
+    client_id text not null references clients(id) on delete cascade,
+    secret_hash text not null,
+    token_hash text not null,
+    expires_at timestamp not null,
+    used_at timestamp,
+    created_at timestamp not null,
+    updated_at timestamp not null
+);
+
+create unique index if not exists client_enrollments_token_hash_unique on client_enrollments(token_hash);
 
 create table if not exists proxies (
     id text primary key,

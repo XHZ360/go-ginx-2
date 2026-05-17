@@ -9,12 +9,14 @@ import (
 	"encoding/pem"
 	"errors"
 	"math/big"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/simp-frp/go-ginx-2/internal/certmanager"
 	"github.com/simp-frp/go-ginx-2/internal/domain"
+	"github.com/simp-frp/go-ginx-2/internal/enrollment"
 	httpsproxy "github.com/simp-frp/go-ginx-2/internal/proxy/https"
 	"github.com/simp-frp/go-ginx-2/internal/store"
 	"github.com/simp-frp/go-ginx-2/internal/store/sqlite"
@@ -62,6 +64,45 @@ func TestServiceCreatesMilestoneOneResources(t *testing.T) {
 	}
 	if foundUDP.ID != udpProxy.ID || foundUDP.Status != domain.ProxyEnabled {
 		t.Fatalf("unexpected udp proxy: %+v", foundUDP)
+	}
+}
+
+func TestServiceCreatesClientJoinToken(t *testing.T) {
+	ctx := context.Background()
+	db := openTestStore(t)
+	service := Service{Store: db}
+	user, err := service.CreateUser(ctx, CreateUserInput{ID: "user-1", Username: "alice", ActorID: "admin-1"})
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	caFile := filepath.Join(t.TempDir(), "ca.crt")
+	if err := os.WriteFile(caFile, []byte("ca-pem"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := service.CreateClientJoin(ctx, CreateClientJoinInput{ID: "client-join-1", UserID: user.ID, Name: "home", ActorID: "admin-1", EnrollmentURL: "http://127.0.0.1:8080/api/client/enroll", ServerAddress: "127.0.0.1:8443", ServerTLSAddress: "127.0.0.1:9443", ServerName: "go-ginx-control.test", ServerCAFile: caFile, TTL: time.Hour})
+	if err != nil {
+		t.Fatalf("create client join: %v", err)
+	}
+	if result.Client.ID != "client-join-1" || result.Token == "" {
+		t.Fatalf("unexpected client join result: %+v", result)
+	}
+	payload, err := enrollment.DecodeToken(result.Token)
+	if err != nil {
+		t.Fatalf("decode join token: %v", err)
+	}
+	if payload.ClientID != result.Client.ID || payload.Credential == "" || payload.ServerName != "go-ginx-control.test" {
+		t.Fatalf("unexpected join token payload: %+v", payload)
+	}
+	record, err := db.ClientEnrollments().ByID(ctx, payload.EnrollmentID)
+	if err != nil {
+		t.Fatalf("load enrollment record: %v", err)
+	}
+	if record.ClientID != result.Client.ID || record.TokenHash != enrollment.HashToken(result.Token) {
+		t.Fatalf("unexpected enrollment record: %+v", record)
+	}
+	if _, err := db.Clients().ByID(ctx, result.Client.ID); err != nil {
+		t.Fatalf("client was not created: %v", err)
 	}
 }
 

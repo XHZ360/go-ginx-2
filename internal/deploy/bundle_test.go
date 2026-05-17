@@ -1,6 +1,7 @@
 package deploy
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"os"
@@ -37,6 +38,20 @@ func TestBuildBundleCreatesExpectedLayout(t *testing.T) {
 	if serverConfig.AdminFrontendDir != "" {
 		t.Fatalf("expected empty admin_frontend_dir when frontend dist is missing, got %q", serverConfig.AdminFrontendDir)
 	}
+	serverService, err := os.ReadFile(filepath.Join(outputDir, "systemd", "goginx-server.service"))
+	if err != nil {
+		t.Fatalf("read server service: %v", err)
+	}
+	if bytes.Contains(serverService, []byte("-config")) {
+		t.Fatalf("expected configless server service, got %s", string(serverService))
+	}
+	clientService, err := os.ReadFile(filepath.Join(outputDir, "systemd", "goginx-client.service"))
+	if err != nil {
+		t.Fatalf("read client service: %v", err)
+	}
+	if bytes.Contains(clientService, []byte("-config")) {
+		t.Fatalf("expected configless client service, got %s", string(clientService))
+	}
 	if _, err := os.Stat(filepath.Join(outputDir, bundledAdminFrontendDir)); !os.IsNotExist(err) {
 		t.Fatalf("expected bundled admin frontend directory to be absent when dist is missing, got err=%v", err)
 	}
@@ -63,8 +78,8 @@ func TestBuildBundleCopiesAdminFrontendAssetsWhenPresent(t *testing.T) {
 		t.Fatalf("unexpected bundled admin frontend asset %q", string(assetContent))
 	}
 	serverConfig := readBundledServerConfig(t, filepath.Join(outputDir, "config", "server.json"))
-	if serverConfig.AdminFrontendDir != bundledAdminFrontendDir {
-		t.Fatalf("expected admin_frontend_dir %q, got %q", bundledAdminFrontendDir, serverConfig.AdminFrontendDir)
+	if serverConfig.AdminFrontendDir != "" {
+		t.Fatalf("expected admin_frontend_dir to remain optional, got %q", serverConfig.AdminFrontendDir)
 	}
 }
 

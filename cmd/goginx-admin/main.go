@@ -2,18 +2,22 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/simp-frp/go-ginx-2/internal/admin"
 	"github.com/simp-frp/go-ginx-2/internal/certmanager"
+	"github.com/simp-frp/go-ginx-2/internal/config"
 	"github.com/simp-frp/go-ginx-2/internal/deploy"
 	"github.com/simp-frp/go-ginx-2/internal/domain"
 	httpsproxy "github.com/simp-frp/go-ginx-2/internal/proxy/https"
+	"github.com/simp-frp/go-ginx-2/internal/store"
 	"github.com/simp-frp/go-ginx-2/internal/store/sqlite"
 )
 
@@ -37,7 +41,7 @@ func main() {
 
 func run(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: goginx-admin <create-user|create-client|create-tcp-proxy|create-udp-proxy|create-http-proxy|create-https-proxy|issue-managed-certificate|renew-managed-certificate|managed-certificate-status|build-deploy-bundle> [flags]")
+		return fmt.Errorf("usage: goginx-admin <init-admin|create-user|create-client|create-client-join|create-tcp-proxy|create-udp-proxy|create-http-proxy|create-https-proxy|issue-managed-certificate|renew-managed-certificate|managed-certificate-status|build-deploy-bundle> [flags]")
 	}
 	command := args[0]
 	flags := flag.NewFlagSet(command, flag.ContinueOnError)
@@ -46,6 +50,41 @@ func run(args []string) error {
 	actorID := flags.String("actor", "system", "audit actor user ID")
 
 	switch command {
+	case "init-admin":
+		username := flags.String("username", "", "administrator username")
+		password := flags.String("password", "", "administrator password")
+		id := flags.String("id", "", "administrator user ID")
+		if err := flags.Parse(args[1:]); err != nil {
+			return err
+		}
+		if strings.TrimSpace(*password) == "" {
+			return fmt.Errorf("administrator password is required")
+		}
+		service, closeStore, err := openService(*dbPath)
+		if err != nil {
+			return err
+		}
+		defer closeStore()
+		user, err := service.CreateUser(context.Background(), admin.CreateUserInput{ID: *id, Username: *username, Password: *password, Role: domain.RoleAdmin, ActorID: *actorID})
+		if err != nil {
+			if !errors.Is(err, store.ErrAlreadyExists) {
+				return err
+			}
+			adminID, err := existingAdminID(context.Background(), service, *id, *username)
+			if err != nil {
+				return err
+			}
+			if err := service.SetUserPassword(context.Background(), adminID, *password, *actorID); err != nil {
+				return err
+			}
+			if err := service.EnableUser(context.Background(), adminID, *actorID); err != nil {
+				return err
+			}
+			fmt.Println(adminID)
+			return nil
+		}
+		fmt.Println(user.ID)
+		return nil
 	case "create-user":
 		id := flags.String("id", "", "user ID")
 		username := flags.String("username", "", "username")
@@ -83,6 +122,8 @@ func run(args []string) error {
 		}
 		fmt.Println(client.ID)
 		return nil
+	case "create-client-join":
+		return createClientJoin(flags, args[1:])
 	case "create-tcp-proxy":
 		return createProxy(flags, args[1:], domain.ProxyTCP)
 	case "create-udp-proxy":
@@ -164,6 +205,66 @@ func createProxy(flags *flag.FlagSet, args []string, proxyType domain.ProxyType)
 		return err
 	}
 	fmt.Println(proxy.ID)
+	return nil
+}
+
+func existingAdminID(ctx context.Context, service admin.Service, id string, username string) (string, error) {
+	if service.Store == nil {
+		return "", fmt.Errorf("store is required")
+	}
+	var user domain.User
+	var err error
+	if strings.TrimSpace(id) != "" {
+		user, err = service.Store.Users().ByID(ctx, id)
+	}
+	if strings.TrimSpace(id) == "" || errors.Is(err, store.ErrNotFound) {
+		user, err = service.Store.Users().ByUsername(ctx, username)
+	}
+	if err != nil {
+		return "", err
+	}
+	if user.Role != domain.RoleAdmin {
+		return "", fmt.Errorf("existing user %q is not an administrator", user.ID)
+	}
+	return user.ID, nil
+}
+
+func createClientJoin(flags *flag.FlagSet, args []string) error {
+	id := flags.String("id", "", "client ID")
+	userID := flags.String("user", "", "owner user ID")
+	name := flags.String("name", "", "client display name")
+	enrollmentURL := flags.String("enrollment-url", "http://127.0.0.1:8080/api/client/enroll", "client enrollment URL")
+	serverAddress := flags.String("server-address", "127.0.0.1:8443", "control QUIC server address")
+	serverTLSAddress := flags.String("server-tls-address", "127.0.0.1:9443", "control TCP+TLS server address")
+	serverName := flags.String("server-name", config.DefaultServer().ControlTLSServerName, "control TLS server name")
+	serverCAFile := flags.String("server-ca-file", config.DefaultServer().ControlTLSCAFile, "control TLS CA file")
+	ttl := flags.Duration("ttl", time.Hour, "join token lifetime")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	dbPath := flags.Lookup("db").Value.String()
+	actorID := flags.Lookup("actor").Value.String()
+	service, closeStore, err := openService(dbPath)
+	if err != nil {
+		return err
+	}
+	defer closeStore()
+	result, err := service.CreateClientJoin(context.Background(), admin.CreateClientJoinInput{
+		ID:               *id,
+		UserID:           *userID,
+		Name:             *name,
+		ActorID:          actorID,
+		EnrollmentURL:    *enrollmentURL,
+		ServerAddress:    *serverAddress,
+		ServerTLSAddress: *serverTLSAddress,
+		ServerName:       *serverName,
+		ServerCAFile:     *serverCAFile,
+		TTL:              *ttl,
+	})
+	if err != nil {
+		return err
+	}
+	fmt.Println(result.Token)
 	return nil
 }
 

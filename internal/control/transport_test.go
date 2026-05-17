@@ -314,8 +314,17 @@ func TestTCPTLSMuxServesProxyStream(t *testing.T) {
 	serveDone := make(chan error, 1)
 	go func() { serveDone <- client.ServeProxyStreams(ctx) }()
 
-	latest, ok := sessions.Latest("client-1")
-	if !ok || latest.StreamOpener == nil {
+	var latest session.Session
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		var ok bool
+		latest, ok = sessions.Latest("client-1")
+		if ok && latest.StreamOpener != nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if latest.StreamOpener == nil {
 		t.Fatalf("expected stream opener on tcp+tls session")
 	}
 	stream, err := latest.StreamOpener.OpenStream(ctx)

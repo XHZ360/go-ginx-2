@@ -17,6 +17,7 @@ var (
 type Store interface {
 	Users() UserRepository
 	Clients() ClientRepository
+	ClientEnrollments() ClientEnrollmentRepository
 	Proxies() ProxyRepository
 	Certificates() CertificateRepository
 	Stats() StatsRepository
@@ -71,6 +72,12 @@ type ClientRepository interface {
 	List(ctx context.Context) ([]domain.Client, error)
 	SetStatus(ctx context.Context, id string, status domain.ClientStatus) error
 	RotateCredential(ctx context.Context, id string, credentialHash string) error
+}
+
+type ClientEnrollmentRepository interface {
+	Create(ctx context.Context, enrollment domain.ClientEnrollment) error
+	ByID(ctx context.Context, id string) (domain.ClientEnrollment, error)
+	MarkUsed(ctx context.Context, id string, usedAt time.Time) error
 }
 
 type ProxyRepository interface {

@@ -73,6 +73,10 @@ func (s authStore) Users() store.UserRepository { return authUserRepository{s.us
 
 func (s authStore) Clients() store.ClientRepository { return authClientRepository{s.client} }
 
+func (s authStore) ClientEnrollments() store.ClientEnrollmentRepository {
+	return authClientEnrollmentRepository{}
+}
+
 func (s authStore) Proxies() store.ProxyRepository { return authProxyRepository{s.proxies} }
 
 func (s authStore) Certificates() store.CertificateRepository { return authCertificateRepository{} }
@@ -126,6 +130,18 @@ func (r authClientRepository) SetStatus(context.Context, string, domain.ClientSt
 }
 
 func (r authClientRepository) RotateCredential(context.Context, string, string) error { return nil }
+
+type authClientEnrollmentRepository struct{}
+
+func (authClientEnrollmentRepository) Create(context.Context, domain.ClientEnrollment) error {
+	return nil
+}
+
+func (authClientEnrollmentRepository) ByID(context.Context, string) (domain.ClientEnrollment, error) {
+	return domain.ClientEnrollment{}, store.ErrNotFound
+}
+
+func (authClientEnrollmentRepository) MarkUsed(context.Context, string, time.Time) error { return nil }
 
 type authProxyRepository struct{ proxies []domain.Proxy }
 

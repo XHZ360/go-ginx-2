@@ -1,8 +1,4 @@
-## Purpose
-
-定义部署与运维契约，覆盖本地守护进程配置、故障排查、可复现部署包、受监督服务生命周期、部署验证、备份/恢复、容量验证、低资源运行和运维文档；同时区分已实现的本地与首个受支持生产部署指导，以及仍未完成的运维缺口。
-
-## Requirements
+## MODIFIED Requirements
 
 ### Requirement: Local daemon deployment baseline
 系统 MUST 在当前文档证据支持的范围内，提供里程碑一守护进程的本地构建、运行、初始化和可选覆盖指导；基础路径 MUST NOT 要求操作者手写 server 或 client JSON 配置文件。
@@ -30,13 +26,6 @@
 #### Scenario: Run local daemon pair
 - **WHEN** SQLite 资源、控制通道 TLS 材料和客户端受管状态已由系统生成或由显式配置提供
 - **THEN** 操作者可以运行本地 server/client 守护进程对，覆盖已支持的里程碑一行为
-
-### Requirement: Local troubleshooting baseline
-系统 MUST 为当前里程碑一守护进程配置和代理运行提供本地故障排查指导。
-
-#### Scenario: Troubleshoot local daemon setup
-- **WHEN** 操作者遇到已知本地配置问题，例如未知配置字段、缺少 TLS 文件、CA/SNI 不匹配、认证拒绝、缺少监听器、Host 不匹配、目标不可达、UDP 响应问题或统计刷盘时机
-- **THEN** 当前文档提供该问题类别的故障排查指导
 
 ### Requirement: Packaged deployment bundle baseline
 系统 MUST 为首个受支持的单节点部署模型生成可复现部署包，并且基础启动路径 MUST NOT 依赖操作者编辑或携带额外配置文件。
@@ -90,50 +79,6 @@
 #### Scenario: Supervised restart recovery is validated
 - **WHEN** 自动化验证模拟受支持监督模型下的守护进程重启
 - **THEN** 它证明运行时可以干净关闭，并使用文档化重启流程恢复客户端连接
-
-### Requirement: Production packaging gap tracking
-部署运维规格 MUST 把可复现的单节点部署包视为已实现基线，同时继续把更完整的打包和安装行为作为未来工作跟踪。
-
-#### Scenario: Supported packaging baseline exists
-- **WHEN** 操作者遵循首个受支持生产模型的文档化部署打包流程
-- **THEN** 可以生成包含所需二进制、配置布局和服务模板的可复现部署包
-
-#### Scenario: Advanced packaging remains a gap
-- **WHEN** 产品或设计文档提到原生安装器、包管理器分发、签名发布工件或多平台打包行为
-- **THEN** 在存在实现证据前，该行为 MUST 保持为未来缺口
-
-### Requirement: Service supervision gap tracking
-部署运维规格 MUST 把首个受支持部署模型的外部服务管理器监督视为已实现基线，同时继续把更完整的生命周期管理作为未来工作跟踪。
-
-#### Scenario: Supported supervision baseline exists
-- **WHEN** 操作者遵循首个受支持部署模型的文档化服务安装和生命周期步骤
-- **THEN** 可以使用打包工件在受支持服务管理器下启动、停止并重启 server 和 client
-
-#### Scenario: Advanced supervision remains a gap
-- **WHEN** 产品或设计文档提到就绪信号、多服务编排、高级健康管理、watchdog 集成或不受支持的服务管理器
-- **THEN** 在存在实现证据前，该行为 MUST 保持为未来缺口
-
-### Requirement: Backup and restore gap tracking
-部署运维规格 MUST 把备份与恢复行为作为当前基线未实现的需求/设计行为跟踪。
-
-#### Scenario: Backup and restore remain gaps
-- **WHEN** 产品或设计文档提到 SQLite 备份、配置备份、证书元数据备份、受私钥保护的备份、恢复或恢复后重载行为
-- **THEN** 在存在实现证据前，该行为 MUST 作为未来缺口跟踪
-
-#### Scenario: Future backup or restore implementation
-- **WHEN** 未来实现备份或恢复行为
-- **THEN** 在声明该行为已实现前，MUST 用有实现证据的场景更新本规格
-
-### Requirement: Capacity and low-resource operations gap tracking
-部署运维规格 MUST 把 1C1G 和 800+ 并发连接目标作为当前基线尚未验证的需求/设计行为跟踪。
-
-#### Scenario: Capacity target remains a gap
-- **WHEN** 产品或设计文档提到 1C1G 运行、低空闲开销、800+ 并发连接、文件描述符限制、内存限制或容量策略行为
-- **THEN** 在存在证据支持的验证前，该行为 MUST 作为未来缺口跟踪
-
-#### Scenario: Future capacity validation
-- **WHEN** 未来验证容量或低资源行为
-- **THEN** 在声明该行为已实现前，MUST 用有证据支持的场景更新本规格
 
 ### Requirement: Operations documentation gap tracking
 部署运维规格 MUST 把首个受支持部署模型的 configless 打包安装、可选配置覆盖和受监督生命周期指导视为已实现文档基线，同时继续把更完整的生产运维文档作为未来工作跟踪。

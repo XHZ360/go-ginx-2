@@ -14,11 +14,14 @@ import (
 )
 
 type Server struct {
+	AdminEnabled           bool          `json:"admin_enabled"`
 	AdminListen            string        `json:"admin_listen"`
 	AdminCredentialsFile   string        `json:"admin_credentials_file"`
 	AdminFrontendDir       string        `json:"admin_frontend_dir"`
 	ControlQUICListen      string        `json:"control_quic_listen"`
 	ControlTLSListen       string        `json:"control_tls_listen"`
+	ControlTLSServerName   string        `json:"control_tls_server_name"`
+	ControlTLSCAFile       string        `json:"control_tls_ca_file"`
 	ControlTLSCertFile     string        `json:"control_tls_cert_file"`
 	ControlTLSKeyFile      string        `json:"control_tls_key_file"`
 	TCPEntryHost           string        `json:"tcp_entry_host"`
@@ -55,11 +58,14 @@ type Reconnect struct {
 
 func DefaultServer() Server {
 	return Server{
+		AdminEnabled:           false,
 		AdminListen:            "127.0.0.1:8080",
 		AdminCredentialsFile:   "",
 		AdminFrontendDir:       "",
 		ControlQUICListen:      ":8443",
 		ControlTLSListen:       ":9443",
+		ControlTLSServerName:   "go-ginx-control.local",
+		ControlTLSCAFile:       "data/certs/control-ca.crt",
 		ControlTLSCertFile:     "data/certs/control.crt",
 		ControlTLSKeyFile:      "data/certs/control.key",
 		TCPEntryHost:           "0.0.0.0",
@@ -99,6 +105,11 @@ func LoadClient(path string) (Client, error) {
 	if err := loadJSON(path, &cfg); err != nil {
 		return Client{}, err
 	}
+	return cfg, cfg.Validate()
+}
+
+func LoadDefaultServer() (Server, error) {
+	cfg := DefaultServer()
 	return cfg, cfg.Validate()
 }
 

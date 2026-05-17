@@ -15,6 +15,7 @@ import (
 	"github.com/simp-frp/go-ginx-2/internal/config"
 	"github.com/simp-frp/go-ginx-2/internal/control"
 	"github.com/simp-frp/go-ginx-2/internal/domain"
+	"github.com/simp-frp/go-ginx-2/internal/enrollment"
 	httpproxy "github.com/simp-frp/go-ginx-2/internal/proxy/http"
 	httpsproxy "github.com/simp-frp/go-ginx-2/internal/proxy/https"
 	tcpproxy "github.com/simp-frp/go-ginx-2/internal/proxy/tcp"
@@ -93,7 +94,7 @@ func startServerWithStore(parent context.Context, cfg config.Server, db store.St
 	}
 	runtime := &ServerRuntime{Store: db, Sessions: sessions, Stats: memoryStats, persistentStats: persistentStats, ControlListener: controlListener, cancel: cancel}
 	go func() { _ = controlListener.Serve(runtimeCtx) }()
-	if cfg.AdminCredentialsFile != "" {
+	if cfg.AdminEnabled || cfg.AdminCredentialsFile != "" {
 		staticListenerClaims, err := cfg.RuntimeListenerClaims(true)
 		if err != nil {
 			_ = runtime.Close()
@@ -108,7 +109,7 @@ func startServerWithStore(parent context.Context, cfg config.Server, db store.St
 			}
 			adminService.Certificates = certificateService
 		}
-		adminServer, err := adminapi.Listen(adminapi.Entry{ListenAddress: cfg.AdminListen, AdminCredentialsFile: cfg.AdminCredentialsFile, AdminFrontendDir: cfg.AdminFrontendDir, Query: adminquery.Service{Store: db, Sessions: sessions, Stats: memoryStats}, Commands: adminService})
+		adminServer, err := adminapi.Listen(adminapi.Entry{ListenAddress: cfg.AdminListen, AdminCredentialsFile: cfg.AdminCredentialsFile, AdminFrontendDir: cfg.AdminFrontendDir, Query: adminquery.Service{Store: db, Sessions: sessions, Stats: memoryStats}, Commands: adminService, Enrollment: enrollment.Service{Store: db}})
 		if err != nil {
 			_ = runtime.Close()
 			return nil, fmt.Errorf("listen admin api: %w", err)
