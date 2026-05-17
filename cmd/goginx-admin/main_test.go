@@ -222,8 +222,18 @@ func TestRunBuildsDeployBundle(t *testing.T) {
 		}
 	}
 	serverConfig := readBundleServerConfig(t, filepath.Join(outputDir, "config", "server.json"))
+	if !serverConfig.AdminEnabled {
+		t.Fatal("expected bundled server config to enable admin")
+	}
+	if serverConfig.ControlTLSCAFile != "data/certs/control-ca.crt" || serverConfig.ControlTLSCertFile != "data/certs/control.crt" || serverConfig.ControlTLSKeyFile != "data/certs/control.key" {
+		t.Fatalf("unexpected server control TLS paths: %+v", serverConfig)
+	}
 	if serverConfig.AdminFrontendDir != "" {
 		t.Fatalf("expected empty admin_frontend_dir when frontend dist is missing, got %q", serverConfig.AdminFrontendDir)
+	}
+	clientConfig := readBundleClientConfig(t, filepath.Join(outputDir, "config", "client.json"))
+	if clientConfig.ServerName != "go-ginx-control.local" || clientConfig.ServerCAFile != "data/certs/server-ca.crt" {
+		t.Fatalf("unexpected client trust config: %+v", clientConfig)
 	}
 	if _, err := os.Stat(filepath.Join(outputDir, "admin-ui")); !os.IsNotExist(err) {
 		t.Fatalf("expected bundled admin frontend directory to be absent when dist is missing, got err=%v", err)
@@ -261,8 +271,18 @@ func TestRunBuildsDeployBundleWithAdminFrontendAssets(t *testing.T) {
 		t.Fatalf("unexpected bundled admin frontend asset %q", string(assetContent))
 	}
 	serverConfig := readBundleServerConfig(t, filepath.Join(outputDir, "config", "server.json"))
+	if !serverConfig.AdminEnabled {
+		t.Fatal("expected bundled server config to enable admin")
+	}
+	if serverConfig.ControlTLSCAFile != "data/certs/control-ca.crt" || serverConfig.ControlTLSCertFile != "data/certs/control.crt" || serverConfig.ControlTLSKeyFile != "data/certs/control.key" {
+		t.Fatalf("unexpected server control TLS paths: %+v", serverConfig)
+	}
 	if serverConfig.AdminFrontendDir != "" {
 		t.Fatalf("expected admin_frontend_dir to remain optional, got %q", serverConfig.AdminFrontendDir)
+	}
+	clientConfig := readBundleClientConfig(t, filepath.Join(outputDir, "config", "client.json"))
+	if clientConfig.ServerName != "go-ginx-control.local" || clientConfig.ServerCAFile != "data/certs/server-ca.crt" {
+		t.Fatalf("unexpected client trust config: %+v", clientConfig)
 	}
 }
 
@@ -322,7 +342,29 @@ func readBundleServerConfig(t *testing.T, path string) bundleServerConfig {
 }
 
 type bundleServerConfig struct {
-	AdminFrontendDir string `json:"admin_frontend_dir"`
+	AdminEnabled       bool   `json:"admin_enabled"`
+	AdminFrontendDir   string `json:"admin_frontend_dir"`
+	ControlTLSCAFile   string `json:"control_tls_ca_file"`
+	ControlTLSCertFile string `json:"control_tls_cert_file"`
+	ControlTLSKeyFile  string `json:"control_tls_key_file"`
+}
+
+func readBundleClientConfig(t *testing.T, path string) bundleClientConfig {
+	t.Helper()
+	content, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read client config: %v", err)
+	}
+	var cfg bundleClientConfig
+	if err := json.Unmarshal(content, &cfg); err != nil {
+		t.Fatalf("decode client config: %v", err)
+	}
+	return cfg
+}
+
+type bundleClientConfig struct {
+	ServerName   string `json:"server_name"`
+	ServerCAFile string `json:"server_ca_file"`
 }
 
 func adminMainCopyFile(t *testing.T, sourcePath string, destPath string) {

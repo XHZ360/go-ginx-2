@@ -4,3 +4,5 @@ admin-ui/node_modules/
 admin-ui/dist/
 admin-ui/.vite/
 admin-ui/coverage/
+dist/
+data/

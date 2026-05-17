@@ -110,7 +110,7 @@ The default client path is `goginx-client join <token>`. Explicit `client.json` 
   "server_address": "127.0.0.1:8443",
   "server_tls_address": "127.0.0.1:9443",
   "server_name": "localhost",
-  "server_ca_file": "data/certs/ca.crt",
+  "server_ca_file": "data/certs/server-ca.crt",
   "client_id": "client-1",
   "credential": "secret",
   "allowed_protocols": ["quic", "tcp_tls"],
@@ -164,6 +164,8 @@ After `goginx-client join <token>`, run the client from the directory that conta
 ```powershell
 ./.tmp/goginx-client.exe
 ```
+
+If the client exits with a missing `data/client-state.json` error, it was started before the join flow wrote managed state, or it was started from a different working directory. Run `goginx-client join <new-token>` from the intended release root, confirm `data/client-state.json` exists there, then start the client service.
 
 For the supported `systemd` deployment model:
 

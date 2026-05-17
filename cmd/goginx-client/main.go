@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
+	"fmt"
 	"log"
 	"os"
 	"os/signal"
@@ -24,13 +26,7 @@ func main() {
 	configPath := flag.String("config", "", "client config path; when omitted, managed client state is used")
 	flag.Parse()
 
-	var cfg config.Client
-	var err error
-	if *configPath == "" {
-		cfg, err = config.LoadManagedClient()
-	} else {
-		cfg, err = config.LoadClient(*configPath)
-	}
+	cfg, err := loadClientConfig(*configPath)
 	if err != nil {
 		log.Fatalf("load client config: %v", err)
 	}
@@ -40,6 +36,20 @@ func main() {
 	if err := daemon.RunClient(ctx, cfg); err != nil {
 		log.Fatalf("run client: %v", err)
 	}
+}
+
+func loadClientConfig(configPath string) (config.Client, error) {
+	if configPath != "" {
+		return config.LoadClient(configPath)
+	}
+	cfg, err := config.LoadManagedClient()
+	if err == nil {
+		return cfg, nil
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		return config.Client{}, fmt.Errorf("managed client state %s is missing; run `goginx-client join <token>` from the release root before starting the client service, or pass `-config config/client.json` for explicit config: %w", config.DefaultClientStatePath, err)
+	}
+	return config.Client{}, err
 }
 
 func runJoin(args []string) error {

@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -37,5 +38,19 @@ func TestRunJoinWritesManagedState(t *testing.T) {
 	}
 	if cfg.ClientID != "client-1" || cfg.Credential != "secret" || cfg.ServerCAFile != caFile {
 		t.Fatalf("unexpected managed client config: %+v", cfg)
+	}
+}
+
+func TestLoadClientConfigExplainsMissingManagedState(t *testing.T) {
+	t.Chdir(t.TempDir())
+	_, err := loadClientConfig("")
+	if err == nil {
+		t.Fatal("expected missing managed state error")
+	}
+	message := err.Error()
+	for _, want := range []string{"data/client-state.json", "goginx-client join <token>", "-config config/client.json"} {
+		if !strings.Contains(message, want) {
+			t.Fatalf("expected %q in error %q", want, message)
+		}
 	}
 }

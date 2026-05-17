@@ -42,23 +42,25 @@ openspec/          OpenSpec 规格和历史变更
 
 ## 环境要求
 
-- Go `1.25` 或与 `go.mod` 匹配的版本。
-- Node.js 与 npm，仅在开发或构建 `admin-ui/` 时需要。
-- 本地测试和构建建议禁用 cgo：
+- 部署环境不需要安装 Go、Node.js 或 npm，只需要使用 Release 后的部署包或二进制文件。
+- Linux `systemd` 部署建议使用 Release 产物中的完整部署包，包内应包含 `bin/`、`config/`、`data/`、`logs/` 和 `systemd/`。
+- Windows 或手动运行环境使用对应平台的 Release 压缩包即可；下文 Linux 示例使用 `./bin/goginx-*`，Windows 可替换为 `.\bin\goginx-*.exe`。
+- 只有源码开发、测试、发布构建环境需要 Go `1.25` 或与 `go.mod` 匹配的版本。
+- 只有开发或重新构建 `admin-ui/` 时需要 Node.js 与 npm。
+- 源码测试和发布构建建议禁用 cgo：
 
 ```powershell
 $env:CGO_ENABLED="0"
 ```
 
-## 快速开始：无配置运行
+## 快速开始：Release 产物无配置运行
 
-默认路径不需要手写 `server.json` 或 `client.json`。服务端首次启动会创建 `data/` 状态目录，并生成控制通道 TLS 材料。
+以下命令假设已经下载并解压 Release 包，且当前目录是解压后的包根目录。默认路径不需要手写 `server.json` 或 `client.json`。服务端首次启动会创建 `data/` 状态目录，并生成控制通道 TLS 材料。
 
 1. 启动服务端：
 
-```powershell
-$env:CGO_ENABLED="0"
-go run ./cmd/goginx-server
+```bash
+./bin/goginx-server
 ```
 
 默认监听：
@@ -71,34 +73,35 @@ go run ./cmd/goginx-server
 
 2. 在另一个终端初始化第一个管理员：
 
-```powershell
-go run ./cmd/goginx-admin init-admin -id admin-1 -username admin -password "<password>"
+```bash
+./bin/goginx-admin init-admin -id admin-1 -username admin -password "<password>"
 ```
 
 3. 生成客户端一次性加入 token：
 
-```powershell
-$token = go run ./cmd/goginx-admin create-client-join -id client-1 -user admin-1 -name home
+```bash
+token="$(./bin/goginx-admin create-client-join -id client-1 -user admin-1 -name home)"
 ```
 
 如果客户端不在本机，需要显式指定外部可访问地址，例如：
 
-```powershell
-$token = go run ./cmd/goginx-admin create-client-join `
-  -id client-1 `
-  -user admin-1 `
-  -name home `
-  -enrollment-url "https://admin.example.com/api/client/enroll" `
-  -server-address "control.example.com:8443" `
-  -server-tls-address "control.example.com:9443" `
+```bash
+token="$(./bin/goginx-admin create-client-join \
+  -id client-1 \
+  -user admin-1 \
+  -name home \
+  -enrollment-url "https://admin.example.com/api/client/enroll" \
+  -server-address "control.example.com:8443" \
+  -server-tls-address "control.example.com:9443" \
   -server-name "go-ginx-control.local"
+)"
 ```
 
-4. 在客户端主机加入并启动客户端：
+4. 在客户端主机解压对应平台的 Release 包，进入包根目录后加入并启动客户端：
 
-```powershell
-go run ./cmd/goginx-client join $token
-go run ./cmd/goginx-client
+```bash
+./bin/goginx-client join "$token"
+./bin/goginx-client
 ```
 
 `join` 会写入：
@@ -106,7 +109,7 @@ go run ./cmd/goginx-client
 - `data/client-state.json`
 - `data/certs/server-ca.crt`
 
-后续客户端直接运行 `goginx-client` 即可读取托管状态。
+后续客户端直接运行 `./bin/goginx-client` 即可读取托管状态。
 
 5. 打开管理后台：
 
@@ -118,36 +121,36 @@ http://127.0.0.1:8080
 
 ## 管理 CLI 示例
 
-CLI 默认使用 `data/go-ginx.db`，也可用 `-db` 指定数据库路径。
+以下命令同样假设在 Release 包根目录执行。CLI 默认使用 `data/go-ginx.db`，也可用 `-db` 指定数据库路径。
 
 创建普通用户和客户端凭据：
 
-```powershell
-go run ./cmd/goginx-admin create-user -id user-1 -username alice
-go run ./cmd/goginx-admin create-client -id client-1 -user user-1 -name home -credential secret
+```bash
+./bin/goginx-admin create-user -id user-1 -username alice
+./bin/goginx-admin create-client -id client-1 -user user-1 -name home -credential secret
 ```
 
 创建 TCP/UDP/HTTP/HTTPS 代理：
 
-```powershell
-go run ./cmd/goginx-admin create-tcp-proxy -id tcp-1 -user user-1 -client client-1 -name ssh -port 10022 -target-host 127.0.0.1 -target-port 22
-go run ./cmd/goginx-admin create-udp-proxy -id udp-1 -user user-1 -client client-1 -name dns -port 10053 -target-host 127.0.0.1 -target-port 53
-go run ./cmd/goginx-admin create-http-proxy -id web-1 -user user-1 -client client-1 -name web -host app.example.com -target-host 127.0.0.1 -target-port 8080
-go run ./cmd/goginx-admin create-https-proxy -id secure-1 -user user-1 -client client-1 -name secure -host secure.example.com -target-host 127.0.0.1 -target-port 8443
+```bash
+./bin/goginx-admin create-tcp-proxy -id tcp-1 -user user-1 -client client-1 -name ssh -port 10022 -target-host 127.0.0.1 -target-port 22
+./bin/goginx-admin create-udp-proxy -id udp-1 -user user-1 -client client-1 -name dns -port 10053 -target-host 127.0.0.1 -target-port 53
+./bin/goginx-admin create-http-proxy -id web-1 -user user-1 -client client-1 -name web -host app.example.com -target-host 127.0.0.1 -target-port 8080
+./bin/goginx-admin create-https-proxy -id secure-1 -user user-1 -client client-1 -name secure -host secure.example.com -target-host 127.0.0.1 -target-port 8443
 ```
 
 HTTPS 静态证书终止示例：
 
-```powershell
-go run ./cmd/goginx-admin create-https-proxy `
-  -id secure-term-1 `
-  -user user-1 `
-  -client client-1 `
-  -name secure-term `
-  -host term.example.com `
-  -target-host 127.0.0.1 `
-  -target-port 8080 `
-  -cert-file data/certs/term.crt `
+```bash
+./bin/goginx-admin create-https-proxy \
+  -id secure-term-1 \
+  -user user-1 \
+  -client client-1 \
+  -name secure-term \
+  -host term.example.com \
+  -target-host 127.0.0.1 \
+  -target-port 8080 \
+  -cert-file data/certs/term.crt \
   -key-file data/certs/term.key
 ```
 
@@ -216,13 +219,13 @@ go run ./cmd/goginx-admin create-https-proxy `
 
 启动：
 
-```powershell
-go run ./cmd/goginx-server -config server.json
+```bash
+./bin/goginx-server -config server.json
 ```
 
 ### 显式客户端配置
 
-推荐使用 `goginx-client join <token>`。需要手写配置时可使用：
+推荐使用 `./bin/goginx-client join <token>`。需要手写配置时可使用：
 
 ```json
 {
@@ -242,11 +245,13 @@ go run ./cmd/goginx-server -config server.json
 
 启动：
 
-```powershell
-go run ./cmd/goginx-client -config client.json
+```bash
+./bin/goginx-client -config client.json
 ```
 
 `time.Duration` 字段在 JSON 中使用纳秒数。认证失败会立即退出；临时拨号失败或运行时故障会按 `reconnect` 退避重试。
+
+Release 包生成的 `config/client.json` 与 join 流程保持同一套文件名：客户端信任文件为 `data/certs/server-ca.crt`。该文件由 `./bin/goginx-client join <token>` 写入；如果跳过 join 而手写 `client.json`，需要把服务端的 `data/certs/control-ca.crt` 分发到客户端并保存为 `data/certs/server-ca.crt`。
 
 ## 托管 HTTPS 证书
 
@@ -265,11 +270,11 @@ go run ./cmd/goginx-client -config client.json
 
 证书管理命令：
 
-```powershell
-$env:CF_DNS_API_TOKEN="<cloudflare-token>"
-go run ./cmd/goginx-admin issue-managed-certificate -proxy secure-1 -certificate-dir data/certs -acme-account-email ops@example.com -acme-terms-accepted
-go run ./cmd/goginx-admin renew-managed-certificate -proxy secure-1 -certificate-dir data/certs -acme-account-email ops@example.com -acme-terms-accepted
-go run ./cmd/goginx-admin managed-certificate-status -proxy secure-1 -certificate-dir data/certs -acme-account-email ops@example.com -acme-terms-accepted
+```bash
+export CF_DNS_API_TOKEN="<cloudflare-token>"
+./bin/goginx-admin issue-managed-certificate -proxy secure-1 -certificate-dir data/certs -acme-account-email ops@example.com -acme-terms-accepted
+./bin/goginx-admin renew-managed-certificate -proxy secure-1 -certificate-dir data/certs -acme-account-email ops@example.com -acme-terms-accepted
+./bin/goginx-admin managed-certificate-status -proxy secure-1 -certificate-dir data/certs -acme-account-email ops@example.com -acme-terms-accepted
 ```
 
 托管证书文件保存在 `certificate_dir/managed/<host>/`。SQLite 只保存证书生命周期元数据和文件路径。
@@ -300,7 +305,9 @@ npm run build
 
 服务端默认使用 `internal/adminapi/embedded_admin/` 中的嵌入式前端资源。开发或自定义部署时，可将构建产物目录配置到 `admin_frontend_dir`。
 
-## 构建与测试
+## 源码开发与发布构建
+
+本节只面向开发机、CI 或发布机。部署环境不需要执行这些命令，也不需要安装 Go。
 
 完整验证：
 
@@ -332,20 +339,18 @@ $env:CGO_ENABLED="0"
 go test ./e2e -run "TestExternalProcessesProxy(TCP|UDP|HTTP|HTTPS)$" -count=1
 ```
 
-## 部署包
-
-生成 Linux `systemd` 部署包：
+生成 Linux `systemd` 发布包：
 
 ```powershell
 $env:CGO_ENABLED="0"
-go run ./cmd/goginx-admin build-deploy-bundle `
-  -output ./.tmp/linux-systemd-bundle `
-  -goos linux `
-  -goarch amd64 `
-  -install-root /opt/go-ginx
+go run ./cmd/goginx-admin build-deploy-bundle -output ./dist/linux-systemd-bundle -goos linux -goarch amd64 -install-root /opt/go-ginx
 ```
 
-部署包核心内容：
+将 `./dist/linux-systemd-bundle` 作为 Release 产物发布；目标服务器只需要拿到这个目录或其压缩包。
+
+## Release 部署包部署
+
+Linux `systemd` Release 包核心内容：
 
 - `bin/`：`goginx-server`、`goginx-client`、`goginx-admin`
 - `config/`：示例配置和环境文件
@@ -353,15 +358,48 @@ go run ./cmd/goginx-admin build-deploy-bundle `
 - `logs/`：日志目录
 - `systemd/`：渲染后的 `goginx-server.service` 和 `goginx-client.service`
 
-典型部署流程：
+服务器部署流程示例：
 
-1. 将部署包复制到 `-install-root` 对应目录，例如 `/opt/go-ginx`。
-2. 启动服务端并运行 `goginx-admin init-admin` 初始化管理员。
-3. 使用 `goginx-admin create-client-join` 生成客户端 join token。
-4. 在客户端执行 `goginx-client join <token>`。
-5. 安装 `systemd/` 下的 service 到 `/etc/systemd/system/`。
-6. 执行 `systemctl daemon-reload`。
-7. 执行 `systemctl enable --now goginx-server goginx-client`。
+```bash
+sudo mkdir -p /opt/go-ginx
+sudo tar -xzf <release-bundle>.tar.gz -C /opt/go-ginx --strip-components=1
+cd /opt/go-ginx
+sudo cp systemd/goginx-server.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now goginx-server
+sudo ./bin/goginx-admin init-admin -id admin-1 -username admin -password "<password>"
+token="$(sudo ./bin/goginx-admin create-client-join -id client-1 -user admin-1 -name home)"
+```
+
+客户端部署流程示例：
+
+```bash
+sudo mkdir -p /opt/go-ginx
+sudo tar -xzf <release-bundle>.tar.gz -C /opt/go-ginx --strip-components=1
+cd /opt/go-ginx
+sudo ./bin/goginx-client join "$token"
+test -f data/client-state.json
+sudo cp systemd/goginx-client.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now goginx-client
+```
+
+`goginx-client` 服务默认读取 `data/client-state.json`，这个文件只会由 `./bin/goginx-client join <token>` 生成。若先启动服务，会看到 `load client config: ... data/client-state.json ... cannot find the path specified`；处理方式是在客户端机器的 Release 包根目录重新执行 join，然后再启动服务。
+
+如果不是 `systemd` 环境，也可以直接在 Release 包根目录运行 `./bin/goginx-server` 或 `./bin/goginx-client`，并由外部进程管理器负责守护进程生命周期。
+
+### 8080 返回 404 的排查
+
+Release 包的推荐启动方式是直接运行 `./bin/goginx-server`，或使用包内 `systemd/goginx-server.service`。这条路径会启用管理监听器，并从二进制内嵌的前端资源提供 `/`、`/login`、`/dashboard` 等页面。
+
+如果访问 `8080` 返回 `404`，先检查实际访问到的是不是管理监听器：
+
+```bash
+curl -i http://127.0.0.1:8080/
+curl -i http://127.0.0.1:8080/api/admin/session
+```
+
+正常情况下，第一个请求应返回管理前端 HTML，第二个请求应返回 JSON 会话状态。若服务日志显示 `admin=disabled`，说明不是按无配置 Release 路径启动，或显式配置关闭了 `admin_enabled`。若使用 `-config config/server.json`，请确认该配置中的 `admin_enabled` 为 `true`，并且控制通道证书文件已经存在；首次部署更推荐先使用无配置启动，让服务自动生成 `data/` 状态和控制通道 TLS 材料。
 
 ## 当前限制
 

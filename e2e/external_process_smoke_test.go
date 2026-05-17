@@ -445,6 +445,9 @@ func TestExternalProcessesConfiglessServerAndClientJoin(t *testing.T) {
 	waitForTCPAccept(t, smokeCtx, adminAddress)
 	waitForFile(t, smokeCtx, filepath.Join(workDir, "data", "certs", "control-ca.crt"))
 	waitForFile(t, smokeCtx, filepath.Join(workDir, "data", "go-ginx.db"))
+	if err := waitForEmbeddedAdminFrontend(smokeCtx, adminAddress); err != nil {
+		t.Fatalf("configless embedded admin frontend failed: %v\nserver output:\n%s", err, server.Output())
+	}
 
 	runCommand(t, smokeCtx, workDir, adminBin, "init-admin", "-id", "admin-1", "-username", "admin", "-password", "secret")
 	if err := waitForAdminDashboard(smokeCtx, adminAddress, "admin", "secret", 0); err != nil {
@@ -767,6 +770,39 @@ func waitForMissingAdminAsset(ctx context.Context, address string) error {
 		if err == nil && response.StatusCode == nethttp.StatusNotFound {
 			_ = response.Body.Close()
 			return nil
+		} else if response != nil {
+			_ = response.Body.Close()
+			lastErr = fmt.Errorf("unexpected status %d", response.StatusCode)
+		} else {
+			lastErr = err
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if lastErr != nil {
+		return lastErr
+	}
+	return ctx.Err()
+}
+
+func waitForEmbeddedAdminFrontend(ctx context.Context, address string) error {
+	var lastErr error
+	for ctx.Err() == nil {
+		request, err := nethttp.NewRequestWithContext(ctx, nethttp.MethodGet, "http://"+address+"/", nil)
+		if err != nil {
+			return err
+		}
+		response, err := (&nethttp.Client{Timeout: 500 * time.Millisecond}).Do(request)
+		if err == nil && response.StatusCode == nethttp.StatusOK {
+			body, readErr := io.ReadAll(response.Body)
+			_ = response.Body.Close()
+			if readErr == nil && strings.Contains(string(body), "GoGinx Admin") {
+				return nil
+			}
+			if readErr != nil {
+				lastErr = readErr
+			} else {
+				lastErr = fmt.Errorf("embedded admin frontend marker missing")
+			}
 		} else if response != nil {
 			_ = response.Body.Close()
 			lastErr = fmt.Errorf("unexpected status %d", response.StatusCode)

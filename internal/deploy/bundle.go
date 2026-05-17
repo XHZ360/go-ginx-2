@@ -132,6 +132,7 @@ func writeJSONFile(path string, value any) error {
 
 func defaultServerBundleConfig(includeAdminFrontend bool) config.Server {
 	server := config.DefaultServer()
+	server.AdminEnabled = true
 	server.AdminCredentialsFile = ""
 	server.AdminFrontendDir = ""
 	server.ControlTLSCertFile = "data/certs/control.crt"
@@ -223,8 +224,8 @@ func defaultClientBundleConfig() config.Client {
 	client := config.DefaultClient()
 	client.ServerAddress = "server.example.com:8443"
 	client.ServerTLSAddress = "server.example.com:9443"
-	client.ServerName = "server.example.com"
-	client.ServerCAFile = "data/certs/ca.crt"
+	client.ServerName = config.DefaultServer().ControlTLSServerName
+	client.ServerCAFile = config.DefaultClientCAFile
 	client.ClientID = "client-1"
 	client.Credential = "change-me"
 	return client
