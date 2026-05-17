@@ -1,105 +1,105 @@
 ## Purpose
 
-Define the certificate and domain lifecycle contract for platform/custom domains, file-backed HTTPS proxy certificates, ACME DNS-01 automation, private-key protection, renewal, hot reload, rollback, and Origin CA/custom CA boundaries, while distinguishing current control-channel TLS verification from proxy certificate lifecycle gaps.
+定义证书与域名生命周期契约，覆盖平台/自定义域名、文件型 HTTPS 代理证书、ACME DNS-01 自动化、私钥保护、续期、热加载、回滚，以及 Origin CA/自定义 CA 边界；同时区分已实现的控制通道 TLS 校验与仍待实现的代理证书生命周期能力。
 
 ## Requirements
 
 ### Requirement: Control-channel TLS boundary
-The system SHALL distinguish current control-channel TLS certificate verification from proxy certificate lifecycle management.
+系统 MUST 区分当前控制通道 TLS 证书校验和代理证书生命周期管理。
 
 #### Scenario: Control TLS is current evidence
-- **WHEN** current implementation evidence shows server certificate loading and client verification for the QUIC control channel
-- **THEN** that evidence MAY be used for control-channel TLS verification only
+- **WHEN** 当前实现证据显示 QUIC/TCP+TLS 控制通道已加载服务端证书并由客户端完成校验
+- **THEN** 该证据只能用于证明控制通道 TLS 校验能力
 
 #### Scenario: Control TLS does not imply unrelated proxy certificate lifecycle
-- **WHEN** domain ownership, manual certificate lifecycle, or Origin CA/custom CA behavior is referenced from product or design documents
-- **THEN** the behavior MUST remain a gap until evidence-backed implementation exists
+- **WHEN** 产品或设计文档提到域名所有权、手动证书生命周期或 Origin CA/自定义 CA 行为
+- **THEN** 在存在实现证据前，这些行为 MUST 保持为缺口
 
 ### Requirement: Domain ownership and certificate binding contract
-The system SHALL support platform-domain boundaries, user custom-domain ownership verification, and certificate binding rules for proxy domains. Current implementation evidence SHALL treat this behavior as a gap until implementation exists.
+系统 MUST 支持平台域名边界、用户自定义域名所有权校验，以及代理域名的证书绑定规则。当前实现证据 MUST 把这些能力视为缺口，直到对应实现存在。
 
 #### Scenario: Platform certificate scope remains a gap
-- **WHEN** platform proxy-domain certificate scope is referenced from product or design documents
-- **THEN** the behavior MUST be tracked as a future gap until evidence-backed implementation exists
+- **WHEN** 产品或设计文档提到平台代理域名证书范围
+- **THEN** 在存在实现证据前，该行为 MUST 作为未来缺口跟踪
 
 #### Scenario: Custom domain ownership remains a gap
-- **WHEN** custom domain ownership verification or binding behavior is referenced from product or design documents
-- **THEN** the behavior MUST be tracked as a future gap until evidence-backed implementation exists
+- **WHEN** 产品或设计文档提到自定义域名所有权校验或绑定行为
+- **THEN** 在存在实现证据前，该行为 MUST 作为未来缺口跟踪
 
 #### Scenario: Custom domain certificate isolation remains a gap
-- **WHEN** product requirements state custom domains must not reuse the platform wildcard certificate
-- **THEN** that behavior MUST remain a gap until evidence-backed implementation exists
+- **WHEN** 产品需求声明自定义域名 MUST NOT 复用平台通配证书
+- **THEN** 在存在实现证据前，该行为 MUST 保持为缺口
 
 ### Requirement: File-backed HTTPS proxy certificate selection
-The system SHALL support file-backed certificate and private-key paths for HTTPS proxy TLS termination, selected by the proxy host SNI. Private keys SHALL remain outside SQLite.
+系统 MUST 支持为 HTTPS 代理 TLS 终止配置文件型证书和私钥路径，并按代理主机 SNI 选择证书。私钥 MUST 保留在 SQLite 之外。
 
 #### Scenario: HTTPS proxy certificate selected by host
-- **WHEN** an HTTPS proxy has configured certificate and key files and public TLS traffic arrives with matching SNI
-- **THEN** the server uses that certificate and key to terminate TLS for the proxy
+- **WHEN** HTTPS 代理配置了证书和私钥文件，且公网 TLS 流量带有匹配的 SNI
+- **THEN** 服务端使用该证书和私钥为该代理终止 TLS
 
 #### Scenario: Private key path only
-- **WHEN** HTTPS proxy certificate metadata is persisted
-- **THEN** SQLite stores file paths only and MUST NOT store private-key material
+- **WHEN** HTTPS 代理证书元数据被持久化
+- **THEN** SQLite 仅存储文件路径，且 MUST NOT 存储私钥材料
 
 ### Requirement: Manual certificate lifecycle contract
-The system SHALL support certificate upload, validation, replacement, disablement, and status visibility for managed proxy domains. Current implementation evidence SHALL treat upload/UI lifecycle behavior as a gap until implementation exists.
+系统 MUST 支持托管代理域名的证书上传、校验、替换、禁用和状态可见性。当前实现证据 MUST 把上传/UI 生命周期能力视为缺口，直到对应实现存在。
 
 #### Scenario: Manual upload remains a gap
-- **WHEN** certificate upload, replacement, disablement, or status visibility is referenced from product or design documents
-- **THEN** the behavior MUST be tracked as a future gap until evidence-backed implementation exists
+- **WHEN** 产品或设计文档提到证书上传、替换、禁用或状态可见性
+- **THEN** 在存在实现证据前，该行为 MUST 作为未来缺口跟踪
 
 #### Scenario: Future manual certificate implementation
-- **WHEN** future work implements manual certificate lifecycle behavior
-- **THEN** this spec MUST be updated with evidence-backed scenarios before the behavior is claimed as implemented
+- **WHEN** 未来实现手动证书生命周期行为
+- **THEN** 在声明该行为已实现前，MUST 用有实现证据的场景更新本规格
 
 ### Requirement: ACME DNS-01 automation contract
-The system SHALL support ACME DNS-01 certificate issuance and renewal for eligible proxy domains using least-privilege DNS provider credentials supplied outside SQLite.
+系统 MUST 支持对符合条件的代理域名使用 ACME DNS-01 签发和续期证书，DNS 提供商凭据以最小权限方式在 SQLite 之外提供。
 
 #### Scenario: ACME automation issues managed certificate
-- **WHEN** ACME DNS-01 issuance is requested for an eligible HTTPS proxy host and provider validation succeeds
-- **THEN** the system retrieves, validates, stores, and activates a managed certificate for that host
+- **WHEN** 对符合条件的 HTTPS 代理主机请求 ACME DNS-01 签发，且提供商校验成功
+- **THEN** 系统获取、校验、存储并激活该主机的托管证书
 
 #### Scenario: ACME automation preserves private-key boundary
-- **WHEN** ACME DNS-01 issuance or renewal stores certificate metadata
-- **THEN** SQLite stores lifecycle metadata and file paths only and MUST NOT store private-key material or DNS provider token values
+- **WHEN** ACME DNS-01 签发或续期存储证书元数据
+- **THEN** SQLite 仅存储生命周期元数据和文件路径，且 MUST NOT 存储私钥材料或 DNS 提供商令牌值
 
 #### Scenario: ACME challenge cleanup is required
-- **WHEN** ACME DNS-01 validation completes or fails after creating a DNS challenge record
-- **THEN** the system attempts challenge cleanup and records cleanup failures without exposing provider credentials
+- **WHEN** 创建 DNS 挑战记录后，ACME DNS-01 校验完成或失败
+- **THEN** 系统尝试清理挑战记录，并在不暴露提供商凭据的情况下记录清理失败
 
 ### Requirement: Private-key protection contract
-The system SHALL protect certificate private keys from SQLite storage, admin UI plaintext display, and ordinary logs. Current implementation evidence SHALL treat private-key file paths as implemented and private-key upload/display lifecycle behavior as a gap until implementation exists.
+系统 MUST 保护证书私钥，避免写入 SQLite、在管理 UI 中明文展示或进入普通日志。当前实现证据 MUST 把私钥文件路径边界视为已实现，把私钥上传/展示生命周期行为视为缺口，直到对应实现存在。
 
 #### Scenario: Private-key handling remains a gap
-- **WHEN** private-key material storage, upload handling, log redaction, or UI display behavior is referenced from product or design documents
-- **THEN** the behavior MUST be tracked as a future gap until evidence-backed implementation exists
+- **WHEN** 产品或设计文档提到私钥材料存储、上传处理、日志脱敏或 UI 展示行为
+- **THEN** 在存在实现证据前，该行为 MUST 作为未来缺口跟踪
 
 #### Scenario: Future private-key implementation
-- **WHEN** future work implements proxy private-key storage or upload behavior
-- **THEN** this spec MUST be updated with evidence-backed scenarios proving keys are not stored in SQLite, not displayed in plaintext, and not written to ordinary logs
+- **WHEN** 未来实现代理私钥存储或上传行为
+- **THEN** MUST 更新本规格，证明密钥不存入 SQLite、不以明文展示、且不写入普通日志后，才能声明该行为已实现
 
 ### Requirement: Renewal, hot reload, and rollback contract
-The system SHALL support certificate renewal, validated hot reload, old-certificate retention for rollback, and failure handling without weakening certificate validation.
+系统 MUST 支持证书续期、经过校验的热加载、保留旧证书以便回滚，以及不削弱证书校验的失败处理。
 
 #### Scenario: Renewal hot reloads valid replacement
-- **WHEN** a managed certificate is renewed successfully and the replacement certificate/key pair validates for the configured proxy host
-- **THEN** new HTTPS termination handshakes use the replacement certificate without restarting the HTTPS listener
+- **WHEN** 托管证书续期成功，且替换证书/私钥对通过配置代理主机的校验
+- **THEN** 新的 HTTPS 终止握手无需重启 HTTPS 监听器即可使用替换证书
 
 #### Scenario: Renewal failure preserves active certificate
-- **WHEN** renewal, validation, file write, or reload fails
-- **THEN** the system keeps serving the previously active valid certificate and records failure status for inspection
+- **WHEN** 续期、校验、文件写入或热加载失败
+- **THEN** 系统继续提供上一组生效的有效证书，并记录失败状态供检查
 
 #### Scenario: Rollback material is retained
-- **WHEN** a managed certificate replacement becomes active
-- **THEN** the previous valid certificate and key are retained for rollback until replaced by a later successful lifecycle operation
+- **WHEN** 托管证书替换件成为生效证书
+- **THEN** 上一组有效证书和私钥会被保留用于回滚，直到后续成功生命周期操作替换它们
 
 ### Requirement: Origin CA advanced mode contract
-The system SHALL treat Cloudflare Origin CA or custom CA trust as an explicit advanced mode that requires configured trust and MUST NOT introduce insecure certificate skipping.
+系统 MUST 把 Cloudflare Origin CA 或自定义 CA 信任视为显式高级模式；该模式需要配置的信任根，并且 MUST NOT 引入跳过证书校验的非安全路径。
 
 #### Scenario: Origin CA remains a gap
-- **WHEN** Origin CA or custom CA trust behavior is referenced from design documents
-- **THEN** the behavior MUST be tracked as a future gap until evidence-backed implementation exists
+- **WHEN** 设计文档提到 Origin CA 或自定义 CA 信任行为
+- **THEN** 在存在实现证据前，该行为 MUST 作为未来缺口跟踪
 
 #### Scenario: No insecure certificate skip
-- **WHEN** future work implements Origin CA or custom CA trust behavior
-- **THEN** it MUST preserve certificate verification and MUST NOT rely on skipping certificate verification
+- **WHEN** 未来实现 Origin CA 或自定义 CA 信任行为
+- **THEN** MUST 保持证书校验，且 MUST NOT 依赖跳过证书校验

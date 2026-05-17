@@ -1,90 +1,105 @@
 ## Purpose
 
-Define the client/server control-channel contract for secure transport, client authentication, server certificate verification, proxy snapshot delivery, heartbeat/session liveness, latest-session routing, TCP+TLS fallback proxy substreams, and explicit tracking of reconnect/recovery gaps.
+定义客户端/服务端控制通道契约，覆盖安全传输、客户端认证、服务端证书校验、代理快照下发、心跳/会话存活、最新会话路由、TCP+TLS 回退代理子流、客户端重连退避与监听器重启恢复，并显式跟踪事件重放和配置版本协调等剩余恢复缺口。
 
 ## Requirements
 
 ### Requirement: Secure control transport baseline
-The system SHALL provide an authenticated, encrypted client/server control channel over QUIC and TCP+TLS. TCP+TLS SHALL support control authentication, proxy snapshot delivery, heartbeats, and framed proxy substreams over the fallback connection.
+系统 MUST 通过 QUIC 和 TCP+TLS 提供已认证、加密的客户端/服务端控制通道。TCP+TLS MUST 支持控制认证、代理快照下发、心跳，以及在回退连接上的分帧代理子流。
 
 #### Scenario: QUIC control connection succeeds
-- **WHEN** a client connects to the configured QUIC control listener with trusted server TLS identity and valid credentials
-- **THEN** the server accepts the control connection and creates an authenticated session
+- **WHEN** 客户端使用受信任的服务端 TLS 身份和有效凭据连接到配置的 QUIC 控制监听器
+- **THEN** 服务端接受控制连接并创建已认证会话
 
 #### Scenario: TCP+TLS control connection succeeds
-- **WHEN** a client connects to the configured TCP+TLS control listener with trusted server TLS identity and valid credentials
-- **THEN** the server accepts the control connection and creates an authenticated TCP+TLS session
+- **WHEN** 客户端使用受信任的服务端 TLS 身份和有效凭据连接到配置的 TCP+TLS 控制监听器
+- **THEN** 服务端接受控制连接并创建已认证 TCP+TLS 会话
 
 #### Scenario: TCP+TLS proxy stream routing succeeds
-- **WHEN** QUIC is unavailable and a client is authenticated over TCP+TLS
-- **THEN** the server can open framed proxy substreams over the TCP+TLS connection and route proxy traffic to the client
+- **WHEN** QUIC 不可用且客户端已通过 TCP+TLS 完成认证
+- **THEN** 服务端可以在 TCP+TLS 连接上打开分帧代理子流，并把代理流量路由到客户端
 
 #### Scenario: TCP+TLS head-of-line limitation documented
-- **WHEN** documentation describes TCP+TLS fallback proxy streams
-- **THEN** it MUST identify that multiplexed streams share one TCP connection and can experience TCP head-of-line effects
+- **WHEN** 文档描述 TCP+TLS 回退代理流
+- **THEN** 文档 MUST 说明多个复用流共享一条 TCP 连接，可能受到 TCP 队头阻塞影响
 
 ### Requirement: Server certificate verification
-The client SHALL verify the server certificate chain and server name for the control channel, and the control-channel baseline MUST NOT rely on insecure certificate skipping.
+客户端 MUST 校验控制通道服务端证书链和服务端名称，控制通道基线 MUST NOT 依赖跳过证书校验的非安全路径。
 
 #### Scenario: Trusted server certificate
-- **WHEN** the server presents a certificate trusted by the configured client CA file and matching the configured server name
-- **THEN** the client may continue the control-channel handshake
+- **WHEN** 服务端提供的证书受配置的客户端 CA 文件信任，并且匹配配置的服务端名称
+- **THEN** 客户端可以继续控制通道握手
 
 #### Scenario: Untrusted server certificate
-- **WHEN** the server certificate is untrusted, expired, mismatched, or otherwise invalid
-- **THEN** the client MUST reject the control-channel connection
+- **WHEN** 服务端证书不受信任、已过期、名称不匹配或因其他原因无效
+- **THEN** 客户端 MUST 拒绝控制通道连接
 
 ### Requirement: Client authentication
-The server SHALL authenticate client credentials before registering an active control-channel session or serving proxy configuration to the client.
+服务端 MUST 在注册活跃控制通道会话或向客户端提供代理配置前认证客户端凭据。
 
 #### Scenario: Valid client credential
-- **WHEN** a client presents a known client ID and matching credential during the control-channel handshake
-- **THEN** the server registers the authenticated session for that client
+- **WHEN** 客户端在控制通道握手期间提供已知客户端 ID 和匹配凭据
+- **THEN** 服务端为该客户端注册已认证会话
 
 #### Scenario: Invalid client credential
-- **WHEN** a client presents an unknown client ID or wrong credential
-- **THEN** the server MUST reject the connection and MUST NOT register an active session
+- **WHEN** 客户端提供未知客户端 ID 或错误凭据
+- **THEN** 服务端 MUST 拒绝连接，且 MUST NOT 注册活跃会话
 
 ### Requirement: Proxy snapshot delivery
-The server SHALL send the authenticated client its owned proxy snapshot after successful control-channel authentication.
+服务端 MUST 在控制通道认证成功后，向已认证客户端发送其拥有的代理快照。
 
 #### Scenario: Snapshot after authentication
-- **WHEN** client authentication succeeds
-- **THEN** the server sends proxy configuration owned by that client over the control channel
+- **WHEN** 客户端认证成功
+- **THEN** 服务端通过控制通道发送该客户端拥有的代理配置
 
 #### Scenario: No snapshot before authentication
-- **WHEN** client authentication has not succeeded
-- **THEN** the server MUST NOT send client-owned proxy configuration
+- **WHEN** 客户端认证尚未成功
+- **THEN** 服务端 MUST NOT 发送客户端拥有的代理配置
 
 ### Requirement: Heartbeat and session liveness
-The client SHALL send heartbeat or status messages over the control channel, and the server SHALL update session liveness from those messages.
+客户端 MUST 通过控制通道发送心跳或状态消息，服务端 MUST 根据这些消息更新会话存活状态。
 
 #### Scenario: Heartbeat updates liveness
-- **WHEN** an authenticated client sends a heartbeat over the control channel
-- **THEN** the server updates the session liveness record for that client
+- **WHEN** 已认证客户端通过控制通道发送心跳
+- **THEN** 服务端更新该客户端的会话存活记录
 
-#### Scenario: Missing heartbeat recovery remains a gap
-- **WHEN** heartbeat timeout, soft-offline, hard-offline, or recovery behavior is documented beyond current MVP evidence
-- **THEN** that behavior MUST remain a gap until evidence-backed implementation exists
+#### Scenario: Heartbeat timeout remains a gap
+- **WHEN** 文档描述超出当前实现证据的心跳超时、软离线、硬离线或恢复行为
+- **THEN** 在存在实现证据前，该行为 MUST 保持为缺口
 
 ### Requirement: Latest authenticated session routing
-The server SHALL route new proxy subchannels to the latest valid authenticated session for a client.
+服务端 MUST 把新的代理子通道路由到客户端最新的有效已认证会话。
 
 #### Scenario: Latest session selected
-- **WHEN** multiple sessions have existed for the same client
-- **THEN** new proxy subchannels are routed to the latest valid authenticated session
+- **WHEN** 同一客户端曾存在多个会话
+- **THEN** 新的代理子通道路由到最新的有效已认证会话
 
 #### Scenario: Duplicate-session grace remains a gap
-- **WHEN** documentation describes duplicate-session generation numbers, grace periods, or old-session drain behavior
-- **THEN** that behavior MUST remain a gap until evidence-backed implementation exists
+- **WHEN** 文档描述重复会话代际编号、宽限期或旧会话排空行为
+- **THEN** 在存在实现证据前，该行为 MUST 保持为缺口
 
-### Requirement: Reconnect and recovery gap tracking
-The control-channel spec SHALL track reconnect, event replay, configuration-version reconciliation, and proxy restoration semantics as required/design behavior that is not fully implemented in the current baseline.
+### Requirement: Client reconnect recovery baseline
+客户端 MUST 在临时拨号或运行时失败后按照配置的重连退避恢复控制通道，并且服务端关闭时 MUST 使活跃控制连接可被客户端及时感知。
 
-#### Scenario: Recovery behavior planned but not implemented
-- **WHEN** reconnect or session recovery behavior is referenced from product or design documents
-- **THEN** the spec MUST identify whether the behavior is evidence-backed or still a future gap
+#### Scenario: Transient startup or listener failure retries
+- **WHEN** 客户端启动时控制监听器暂不可用，或运行中控制监听器重启
+- **THEN** `goginx-client` 按配置的 `reconnect.initial_delay` 和 `reconnect.max_delay` 重试，并在控制面恢复后重新认证和恢复代理快照
+
+#### Scenario: Authentication rejection is not retried forever
+- **WHEN** 服务端因客户端凭据无效而拒绝认证
+- **THEN** 客户端立即退出该运行流程，而不是把永久认证失败当成临时网络失败持续重试
+
+#### Scenario: Server shutdown closes active control sessions
+- **WHEN** 服务端控制监听器或守护进程关闭
+- **THEN** 活跃 QUIC 和 TCP+TLS 控制连接被关闭，使客户端能够检测故障并进入重连退避流程
+
+### Requirement: Advanced recovery gap tracking
+控制通道规格 MUST 把事件重放、配置版本协调、更细的代理恢复语义和重复会话排空作为尚未完整实现的需求/设计行为继续跟踪。
+
+#### Scenario: Advanced recovery behavior planned but not implemented
+- **WHEN** 产品或设计文档提到事件重放、配置版本协调、代理恢复语义或重复会话排空
+- **THEN** 本规格 MUST 标识该行为是已有证据支持，还是仍为未来缺口
 
 #### Scenario: Future recovery implementation
-- **WHEN** future work implements reconnect, event replay, configuration-version reconciliation, or proxy restoration semantics
-- **THEN** this spec MUST be updated with evidence-backed scenarios before the behavior is claimed as implemented
+- **WHEN** 未来实现事件重放、配置版本协调或更完整的代理恢复语义
+- **THEN** 在声明该行为已实现前，MUST 用有实现证据的场景更新本规格

@@ -1,45 +1,49 @@
+## Purpose
+
+定义文档对齐流程，确保产品意图、设计方案、实现证据和 OpenSpec 需求之间的状态声明可追溯，并防止当前文档声称未实现能力已经可用。
+
 ## Requirements
 
 ### Requirement: Documentation source hierarchy
-The documentation alignment process SHALL use a documented source hierarchy that distinguishes product intent, design approach, implementation evidence, and OpenSpec requirements.
+文档对齐流程 MUST 使用已文档化的来源层级，用于区分产品意图、设计方案、实现证据和 OpenSpec 需求。
 
 #### Scenario: Classifying a documentation claim
-- **WHEN** a roadmap or spec claim describes product scope, technical design, or implementation status
-- **THEN** the claim MUST identify whether it is derived from product requirements, design documentation, implementation evidence, or an OpenSpec requirement
+- **WHEN** 路线图或规格声明描述产品范围、技术设计或实现状态
+- **THEN** 该声明 MUST 标识其来源是产品需求、设计文档、实现证据还是 OpenSpec 需求
 
 #### Scenario: Resolving implementation status
-- **WHEN** product or design documentation describes a capability but current progress documentation does not show implementation evidence
-- **THEN** the capability MUST NOT be marked as implemented
+- **WHEN** 产品或设计文档描述某项能力，但当前进展文档没有实现证据
+- **THEN** 该能力 MUST NOT 被标记为已实现
 
 ### Requirement: Roadmap gap matrix
-The documentation alignment process SHALL maintain a roadmap/gap matrix for major capabilities that records requirement coverage, design coverage, implementation evidence, current status, and next action.
+文档对齐流程 MUST 为主要能力维护路线图/缺口矩阵，记录需求覆盖、设计覆盖、实现证据、当前状态和下一步动作。
 
 #### Scenario: Recording a major capability
-- **WHEN** a major capability from the requirements or design documents is added to the roadmap/gap matrix
-- **THEN** the matrix MUST include source references, status, evidence when implemented, and a next action when the capability is not complete
+- **WHEN** 需求或设计文档中的主要能力被加入路线图/缺口矩阵
+- **THEN** 矩阵 MUST 包含来源引用、状态、已实现时的证据，以及能力未完成时的下一步动作
 
 #### Scenario: Marking implemented capability
-- **WHEN** a capability is marked implemented in the roadmap/gap matrix
-- **THEN** the matrix MUST cite current implementation evidence such as progress notes, validation documentation, tests, build output, or active implementation references
+- **WHEN** 某项能力在路线图/缺口矩阵中被标记为已实现
+- **THEN** 矩阵 MUST 引用当前实现证据，例如进展记录、验证文档、测试、构建输出或活跃实现引用
 
 ### Requirement: Controlled status vocabulary
-The documentation alignment process SHALL classify roadmap entries using only `required`, `designed`, `implemented`, `gap`, or `out-of-scope` status values.
+文档对齐流程 MUST 只使用 `required`、`designed`、`implemented`、`gap` 或 `out-of-scope` 状态值对路线图条目分类。
 
 #### Scenario: Reviewing roadmap status
-- **WHEN** a roadmap entry is reviewed
-- **THEN** its status MUST use one of the controlled values and MUST be consistent with the cited source and evidence
+- **WHEN** 路线图条目被评审
+- **THEN** 其状态 MUST 使用受控值之一，并且 MUST 与引用来源和证据一致
 
 #### Scenario: Identifying missing implementation
-- **WHEN** a capability is required and designed but lacks implementation evidence
-- **THEN** its status MUST be `gap` unless it is explicitly excluded from the current product scope
+- **WHEN** 某项能力已被要求并设计，但缺少实现证据
+- **THEN** 除非该能力被明确排除在当前产品范围之外，否则其状态 MUST 是 `gap`
 
 ### Requirement: No unsupported feature claims
-The documentation alignment process SHALL prevent documentation from claiming unsupported production features as current implementation capabilities.
+文档对齐流程 MUST 防止文档把未支持的生产特性声明为当前实现能力。
 
 #### Scenario: Comparing design scope with current progress
-- **WHEN** design documentation includes capabilities that current progress documents list as missing
-- **THEN** alignment documentation MUST preserve those capabilities as gaps rather than current capabilities
+- **WHEN** 设计文档包含当前进展文档列为缺失的能力
+- **THEN** 对齐文档 MUST 把这些能力保留为缺口，而不是当前能力
 
 #### Scenario: Updating implementation progress
-- **WHEN** future work completes a previously missing capability
-- **THEN** alignment documentation MUST update the status only after citing new implementation evidence
+- **WHEN** 未来工作完成此前缺失的能力
+- **THEN** 对齐文档 MUST 在引用新的实现证据后才更新状态

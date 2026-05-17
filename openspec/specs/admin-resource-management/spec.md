@@ -1,458 +1,371 @@
 ## Purpose
 
-Define the admin resource-management contract for milestone-one non-interactive CLI seeding of users, client credentials, and TCP/UDP/HTTP proxy records; administrator-only management authentication; a same-origin administrator session and API surface with an API-only admin listener for the current browser-facing slice; the API-first backend contracts that a dedicated administrator frontend will consume for dashboard, users, clients, proxies, managed certificates, and recent audit visibility; plus explicit tracking of remaining GraphQL/API/UI, quota, settings, observability, and broader management gaps.
+定义管理员资源管理契约，覆盖里程碑一非交互式 CLI 资源种子写入、管理员专用认证、同源会话与管理 API、面向专用前端的 GraphQL 合同、可选同源前端交付，以及 dashboard、用户、客户端、代理、托管证书和近期审计视图；同时显式跟踪配额、设置、告警、更完整可观测性、RBAC、正向代理和普通用户自助等剩余管理缺口。
 
 ## Requirements
 
 ### Requirement: Admin CLI user seeding baseline
-The system SHALL support non-interactive creation of milestone-one user records through the admin CLI.
+系统 MUST 支持通过 admin CLI 非交互式创建里程碑一用户记录。
 
 #### Scenario: Create user record
-- **WHEN** an operator runs the admin CLI create-user flow with a database path, user ID, and username
-- **THEN** the CLI persists the user resource into SQLite
+- **WHEN** 操作者使用数据库路径、用户 ID 和用户名运行 admin CLI `create-user` 流程
+- **THEN** CLI 把用户资源持久化到 SQLite
 
 ### Requirement: Admin CLI client credential seeding baseline
-The system SHALL support non-interactive creation of milestone-one client credentials through the admin CLI.
+系统 MUST 支持通过 admin CLI 非交互式创建里程碑一客户端凭据。
 
 #### Scenario: Create client credential record
-- **WHEN** an operator runs the admin CLI create-client flow with a user ID, client ID, display name, and credential
-- **THEN** the CLI persists a client credential resource into SQLite for that user
+- **WHEN** 操作者使用用户 ID、客户端 ID、显示名称和凭据运行 admin CLI `create-client` 流程
+- **THEN** CLI 为该用户把客户端凭据资源持久化到 SQLite
 
 ### Requirement: Admin CLI proxy seeding baseline
-The system SHALL support non-interactive creation of milestone-one TCP, UDP, and HTTP proxy records through the admin CLI.
+系统 MUST 支持通过 admin CLI 非交互式创建当前已支持的反向代理记录。
 
 #### Scenario: Create TCP proxy record
-- **WHEN** an operator runs the admin CLI create-tcp-proxy flow with user, client, entry port, and local target settings
-- **THEN** the CLI persists a TCP proxy resource into SQLite
+- **WHEN** 操作者使用用户、客户端、入口端口和本地目标设置运行 admin CLI `create-tcp-proxy` 流程
+- **THEN** CLI 把 TCP 代理资源持久化到 SQLite
 
 #### Scenario: Create UDP proxy record
-- **WHEN** an operator runs the admin CLI create-udp-proxy flow with user, client, entry port, and local target settings
-- **THEN** the CLI persists a UDP proxy resource into SQLite
+- **WHEN** 操作者使用用户、客户端、入口端口和本地目标设置运行 admin CLI `create-udp-proxy` 流程
+- **THEN** CLI 把 UDP 代理资源持久化到 SQLite
 
 #### Scenario: Create HTTP proxy record
-- **WHEN** an operator runs the admin CLI create-http-proxy flow with user, client, Host, and local target settings
-- **THEN** the CLI persists an HTTP proxy resource into SQLite
+- **WHEN** 操作者使用用户、客户端、`Host` 和本地目标设置运行 admin CLI `create-http-proxy` 流程
+- **THEN** CLI 把 HTTP 代理资源持久化到 SQLite
+
+#### Scenario: Create HTTPS proxy record
+- **WHEN** 操作者使用用户、客户端、HTTPS 主机、本地目标设置，以及可选证书/私钥文件运行 admin CLI `create-https-proxy` 流程
+- **THEN** CLI 把 HTTPS 代理资源持久化到 SQLite，并保留透传或 TLS 终止所需配置
 
 ### Requirement: Admin CLI audit baseline
-The system SHALL record successful milestone-one admin create operations as audit events when current implementation evidence supports that behavior.
+系统 MUST 在当前实现路径支持时，把成功的里程碑一 admin 创建操作记录为审计事件。
 
 #### Scenario: Create operation audit event
-- **WHEN** an admin CLI create operation succeeds and the implementation records an audit event for that operation
-- **THEN** the audit event is persisted with the created resource context
+- **WHEN** admin CLI 创建操作成功，并且当前实现为该操作记录审计事件
+- **THEN** 审计事件携带已创建资源上下文并持久化
 
 ### Requirement: Administrator authentication baseline
-The system SHALL protect the separated management frontend and API with administrator-only authentication that is separate from client credentials.
+系统 MUST 使用与客户端凭据分离的管理员专用认证来保护管理前端和 API。
 
 #### Scenario: Administrator credentials loaded from protected configuration
-- **WHEN** the management plane starts for the V1 admin-only batch
-- **THEN** administrator usernames and password verifiers are loaded from protected server-side configuration instead of the existing SQLite `users` table
+- **WHEN** 管理面启动
+- **THEN** 管理员用户名和密码校验材料从受保护的服务端配置文件加载，而不是从现有 SQLite `users` 表加载
 
 #### Scenario: Administrator credentials remain separate from product users and client credentials
-- **WHEN** the management plane authenticates an administrator for the separated console
-- **THEN** administrator identity remains separate from client credentials and does not require coupling browser login semantics to runtime machine identities
+- **WHEN** 管理面认证管理员
+- **THEN** 管理员身份与产品用户和客户端凭据保持分离，不把浏览器登录语义耦合到运行时机器身份
 
-#### Scenario: Browser login establishes a session from file-backed administrator credentials
-- **WHEN** a valid administrator signs in to the separated management console
-- **THEN** the management plane verifies that administrator against the protected administrator credential source and establishes a server-managed browser session over TLS rather than relying on repeated HTTP Basic Auth prompts
-
-#### Scenario: Legacy browser admin flow is not retained as a fallback
-- **WHEN** the administrator session model is introduced for the browser-facing management surface
-- **THEN** the system does not retain the server-rendered administrator UI or repeated browser-facing Basic Auth as a fallback path
-
-#### Scenario: Unauthenticated frontend or API access is rejected
-- **WHEN** a caller accesses protected separated-console routes or API operations without a valid administrator session
-- **THEN** the system rejects the request without exposing administrator-managed resources
-
-#### Scenario: Management access requires TLS transport
-- **WHEN** V1 administrator credentials are used to access the management plane
-- **THEN** the management endpoint is expected to run behind TLS so credentials are not sent over plaintext transport
-
-### Requirement: Separated administrator frontend baseline
-The system SHALL treat the administrator management console as a dedicated browser frontend application target rather than as page-specific server-rendered HTML embedded in the management backend.
-
-#### Scenario: Frontend owns browser routing and presentation
-- **WHEN** an authenticated administrator uses the post-migration separated management console
-- **THEN** browser route rendering, page composition, loading states, empty states, and form interaction behavior are handled by the frontend application rather than backend HTML templates
-
-#### Scenario: Backend page rendering becomes transitional only
-- **WHEN** the session-authenticated administrator API surface is introduced ahead of the dedicated frontend
-- **THEN** the backend does not retain server-rendered administrator pages as the target management-console architecture
-
-### Requirement: API-first management backend baseline
-The system SHALL expose the administrator management surface through API contracts consumable by the separated frontend.
-
-#### Scenario: GraphQL remains the primary resource contract
-- **WHEN** the separated frontend reads or mutates administrator-managed resources
-- **THEN** dashboard, user, client, proxy, certificate, and audit resource operations are exposed through the session-authenticated management GraphQL surface backed by the admin query and mutation services
-
-#### Scenario: Auxiliary HTTP endpoints remain narrow
-- **WHEN** the separated frontend or bootstrap flow needs login, logout, session bootstrap, or similar browser-session behavior
-- **THEN** the backend exposes minimal non-GraphQL HTTP endpoints for those concerns without duplicating the core resource-management contract
-
-### Requirement: Same-origin management delivery baseline
-The system SHALL present the separated administrator frontend and the administrator API to the browser as one origin.
-
-#### Scenario: Same-origin frontend and API delivery
-- **WHEN** an operator deploys the separated administrator console
-- **THEN** the frontend application and the administrator API are composed under one external origin even if internal serving or proxying responsibilities differ
-
-#### Scenario: API paths remain distinct from frontend routes
-- **WHEN** the separated administrator console handles browser routes and API requests
-- **THEN** administrator API paths remain explicitly namespaced so frontend route handling and API routing are not ambiguous
+#### Scenario: Management access requires protected transport
+- **WHEN** 使用管理员凭据访问管理面
+- **THEN** 管理端点预期运行在 TLS 保护之后；本地回环明文仅用于开发和自动化测试
 
 ### Requirement: Administrator session endpoint baseline
-The system SHALL expose dedicated same-origin administrator session endpoints for the separated admin console.
+系统 MUST 为专用 admin console 暴露同源管理员会话端点。
 
 #### Scenario: Login creates an administrator browser session
-- **WHEN** a valid administrator submits credentials to the separated admin-console login endpoint
-- **THEN** the system verifies those credentials against the protected administrator credential source, creates a server-managed administrator session, sets a browser session cookie, and returns the minimal bootstrap information needed for the frontend shell
+- **WHEN** 有效管理员向 `/api/admin/login` 提交凭据
+- **THEN** 系统根据受保护管理员凭据源校验凭据，创建服务端管理的浏览器会话，设置会话 Cookie，并返回前端 shell 所需的最小启动信息
 
 #### Scenario: Session bootstrap returns current auth context
-- **WHEN** the separated frontend calls the administrator session bootstrap endpoint with a valid browser session
-- **THEN** the system returns the minimal authenticated administrator context needed for route guards, shell initialization, and CSRF-aware follow-up requests
+- **WHEN** 专用前端携带有效浏览器会话调用 `/api/admin/session`
+- **THEN** 系统返回路由守卫、shell 初始化和后续 CSRF 感知请求所需的最小管理员上下文
 
 #### Scenario: Logout invalidates the administrator browser session
-- **WHEN** the separated frontend calls the administrator logout endpoint for a current browser session
-- **THEN** the system invalidates the corresponding server-managed session and clears the browser session cookie
-
-### Requirement: Session bootstrap baseline
-The system SHALL provide a browser-session bootstrap contract for the separated administrator console.
-
-#### Scenario: Bootstrap returns minimal administrator session context
-- **WHEN** the separated frontend loads or reloads a protected route with a valid administrator session
-- **THEN** the frontend can query the dedicated session/bootstrap endpoint to recover the minimal current-session context, including the information needed for route guards and follow-up authenticated browser requests
+- **WHEN** 专用前端为当前浏览器会话调用 `/api/admin/logout`
+- **THEN** 系统失效对应的服务端会话，并清除浏览器会话 Cookie
 
 ### Requirement: Administrator session lifecycle baseline
-The system SHALL enforce lifecycle rules for separated-console administrator sessions.
+系统 MUST 执行专用 console 管理员会话生命周期规则。
 
-#### Scenario: Session expiry rejects further separated-console access
-- **WHEN** an administrator browser session is missing, expired, or invalid
-- **THEN** the separated-console session bootstrap endpoint and session-authenticated API operations reject access without exposing protected administrator resources
+#### Scenario: Session expiry rejects further access
+- **WHEN** 管理员浏览器会话缺失、过期或无效
+- **THEN** 会话启动端点和基于会话认证的 API 操作拒绝访问，且不暴露受保护的管理员管理资源
 
-#### Scenario: Process restart invalidates in-memory administrator sessions
-- **WHEN** the server process restarts while the first separated-console session implementation uses in-memory session storage
-- **THEN** previously issued administrator sessions are no longer valid and administrators must authenticate again
+#### Scenario: Process restart invalidates in-memory sessions
+- **WHEN** 服务端进程重启，而当前会话实现使用内存会话存储
+- **THEN** 之前签发的管理员会话不再有效，管理员 MUST 重新认证
 
 ### Requirement: Browser mutation CSRF baseline
-The system SHALL protect session-authenticated separated-console mutations against CSRF.
+系统 MUST 保护基于会话认证的专用 console 变更请求，防止 CSRF。
 
 #### Scenario: Session-authenticated mutation requires a valid CSRF token
-- **WHEN** a separated-console browser mutation uses a valid administrator session
-- **THEN** the system requires a valid CSRF token in addition to the session cookie before allowing the mutation to proceed
+- **WHEN** 专用 console 浏览器变更请求使用有效管理员会话
+- **THEN** 系统要求除会话 Cookie 外还携带有效 CSRF 令牌，才允许变更继续
 
 #### Scenario: Session-authenticated query access does not require CSRF
-- **WHEN** a separated-console browser request performs a session-authenticated read-only operation
-- **THEN** the system may allow that request without a CSRF token as long as the administrator session is valid
+- **WHEN** 专用 console 浏览器请求执行只读操作
+- **THEN** 只要管理员会话有效，系统可以不要求 CSRF 令牌
 
-### Requirement: API-only administrator browser surface baseline
-The system SHALL stop serving the legacy server-rendered administrator UI once the session-authenticated admin surface is introduced.
+### Requirement: API namespace and legacy route baseline
+系统 MUST 把管理员浏览器 API 保留在显式命名空间下，并停止服务旧的服务端渲染管理员 UI 和旧浏览器 GraphQL 路由。
 
-#### Scenario: Server-rendered administrator routes are removed
-- **WHEN** the session-authenticated administrator API surface is introduced
-- **THEN** the legacy server-rendered administrator pages and browser-facing form handlers are no longer served
+#### Scenario: API paths remain distinct from frontend routes
+- **WHEN** 同源 admin console 同时处理浏览器路由和 API 请求
+- **THEN** 管理员 API 保留在 `/api/admin/*` 命名空间，使前端路由和 API 路由不产生歧义
 
-#### Scenario: Removed administrator page paths return not found
-- **WHEN** a browser requests removed administrator page paths such as `/`, `/users`, `/clients`, `/proxies`, `/certificates`, or `/audit` on the admin listener after this slice lands
-- **THEN** the admin listener returns `404 Not Found` instead of serving HTML or redirecting to a replacement UI that does not yet exist
-
-#### Scenario: Separated-console API routes use administrator session auth
-- **WHEN** the separated admin frontend calls the new same-origin admin API routes
-- **THEN** those routes authenticate administrators through the server-managed session model rather than repeated Basic Auth prompts
+#### Scenario: Legacy browser admin flow is not retained as fallback
+- **WHEN** 基于会话认证的管理员 API surface 被引入
+- **THEN** 系统不再保留服务端渲染管理员页面、浏览器表单处理器或重复 Basic Auth 提示作为回退路径
 
 #### Scenario: Legacy browser-facing GraphQL route is removed
-- **WHEN** the session-authenticated administrator API surface is introduced
-- **THEN** the legacy browser-facing `POST /graphql` route is no longer served for administrator browser access and browser clients use the session-authenticated GraphQL entrypoint instead
+- **WHEN** 浏览器客户端访问管理员管理数据
+- **THEN** 浏览器使用基于会话认证的 `/api/admin/graphql`，旧的浏览器 `POST /graphql` 管理入口不再服务
+
+### Requirement: Same-origin frontend delivery baseline
+系统 MUST 把专用管理员前端和管理员 API 以一个外部同源呈现给浏览器。
+
+#### Scenario: Frontend assets are served when configured
+- **WHEN** `admin_frontend_dir` 指向包含 `index.html` 的专用前端构建目录
+- **THEN** admin listener 在同源上服务 `/`、`/login`、`/dashboard`、`/users`、`/clients`、`/proxies`、`/certificates`、`/audit` 和受支持深链，同时继续保留 `/api/admin/*` 作为后端 API 命名空间
+
+#### Scenario: Missing frontend keeps transitional not-found behavior
+- **WHEN** `admin_frontend_dir` 未配置
+- **THEN** 非 API 浏览器路由继续返回 `404 Not Found`，而会话认证的管理员 API 保持可用
+
+#### Scenario: Missing asset-like paths return not found
+- **WHEN** 浏览器请求配置前端目录中不存在的资源型路径，例如 `/assets/missing.js`
+- **THEN** admin listener 返回 `404 Not Found`，而不是把缺失资源错误伪装成前端深链
+
+### Requirement: Dedicated administrator frontend baseline
+系统 MUST 把管理员管理 console 视为专用浏览器前端应用，而不是嵌在管理后端中的逐页服务端渲染 HTML。
+
+#### Scenario: Frontend owns browser routing and presentation
+- **WHEN** 已认证管理员使用专用管理 console
+- **THEN** 浏览器路由渲染、页面组合、加载状态、空状态和表单交互行为由前端应用处理
+
+#### Scenario: Root route redirects by auth state
+- **WHEN** 浏览器请求专用管理员前端根路由 `/`
+- **THEN** 前端通过会话启动端点解析管理员会话状态，并把已认证管理员导向 `/dashboard`，把未认证访问者导向 `/login`
+
+#### Scenario: Protected routes bootstrap before rendering content
+- **WHEN** 浏览器加载、刷新或直接打开 `/dashboard`、`/users/:id`、`/clients/:id` 或 `/proxies/:id` 等受保护路由
+- **THEN** 前端在渲染受保护资源内容前，先通过专用会话启动端点校验当前管理员会话
+
+### Requirement: Frontend route shell baseline
+系统 MUST 把专用管理员前端定义为一个同源路由 shell，使用会话端点处理守卫，使用 GraphQL 处理业务数据。
+
+#### Scenario: Shell separates public and protected route groups
+- **WHEN** 专用管理员前端路由模型被实现
+- **THEN** 它包含一个未认证的 `/login` 路由，以及一个已认证应用 shell，覆盖 `/dashboard`、`/users`、`/users/:id`、`/clients`、`/clients/:id`、`/proxies`、`/proxies/:id`、`/certificates` 和 `/audit`
+
+#### Scenario: Navigation exposes confirmed pages only
+- **WHEN** 已认证管理员使用专用前端 shell
+- **THEN** 主导航只暴露 Dashboard、Users、Clients、Proxies、Certificates 和 Audit，不暴露配额、设置、告警、更完整可观测性、域名工作流、RBAC 重设计或普通用户自助入口
+
+#### Scenario: Intended destination restores after login
+- **WHEN** 未认证访问者从有效受保护路由被重定向到 `/login`
+- **THEN** 成功登录后，前端恢复该受保护目标；缺失、不安全、不支持或无效目标回退到 `/dashboard`
+
+### Requirement: API-first management backend baseline
+系统 MUST 通过可由专用前端消费的 API 合同暴露管理员管理面。
+
+#### Scenario: GraphQL remains the primary resource contract
+- **WHEN** 专用前端读取或变更管理员管理资源
+- **THEN** dashboard、用户、客户端、代理、证书和审计资源操作通过基于会话认证的 `/api/admin/graphql` 暴露，并由 admin query 与 command 服务支撑
+
+#### Scenario: Auxiliary HTTP endpoints remain narrow
+- **WHEN** 专用前端或启动流程需要登录、登出、会话启动或类似浏览器会话行为
+- **THEN** 后端只为这些关注点暴露最小非 GraphQL HTTP 端点，不复制核心资源管理合同
 
 ### Requirement: Administrator dashboard baseline
-The system SHALL provide a minimal administrator dashboard summary aligned with currently trustworthy runtime aggregates.
+系统 MUST 提供与当前可信运行时聚合对齐的最小管理员 dashboard 摘要。
 
 #### Scenario: Dashboard summary fields
-- **WHEN** an administrator loads the V1 dashboard summary
-- **THEN** the response includes `onlineClientCount`, `enabledProxyCount`, `activeTCPConnectionCount`, `cumulativeUploadBytes`, `cumulativeDownloadBytes`, `cumulativeTCPErrorCount`, `cumulativeUDPErrorCount`, and `cumulativeHTTPErrorCount`
+- **WHEN** 管理员加载 V1 dashboard 摘要
+- **THEN** 响应包含 `onlineClientCount`、`enabledProxyCount`、`activeTCPConnectionCount`、`cumulativeUploadBytes`、`cumulativeDownloadBytes`、`cumulativeTCPErrorCount`、`cumulativeUDPErrorCount` 和 `cumulativeHTTPErrorCount`
 
 #### Scenario: Dashboard excludes unfinished observability projections
-- **WHEN** an administrator views the V1 dashboard
-- **THEN** the dashboard does not claim alert-state rollups, time-window traffic summaries, or richer observability projections that lack implemented evidence
+- **WHEN** 管理员查看 V1 dashboard
+- **THEN** dashboard 不声明缺少实现证据的告警状态汇总、时间窗口流量摘要或更丰富可观测性投影
 
 ### Requirement: Administrator user-management baseline
-The system SHALL provide administrator-only user management for the first API/UI batch.
+系统 MUST 为首批 API/UI 提供管理员专用用户管理。
 
 #### Scenario: List and view users
-- **WHEN** an authenticated administrator queries the V1 user-management surface
-- **THEN** the system returns user list and detail views for managed users
+- **WHEN** 已认证管理员查询 V1 用户管理面
+- **THEN** 系统返回托管用户列表和详情视图
 
 #### Scenario: Create user
-- **WHEN** an authenticated administrator creates a user in the V1 management plane
-- **THEN** the system persists the user resource without requiring initial quota or limit assignment fields
+- **WHEN** 已认证管理员在 V1 管理面创建用户
+- **THEN** 系统持久化用户资源，不要求初始配额或限制字段
 
 #### Scenario: Disable user
-- **WHEN** an authenticated administrator disables a user in the V1 management plane
-- **THEN** the system updates the user status so future runtime admission checks can treat that user as disabled
+- **WHEN** 已认证管理员在 V1 管理面禁用用户
+- **THEN** 系统更新用户状态，使后续运行时准入检查可以把该用户视为禁用
 
 #### Scenario: Modify user password
-- **WHEN** an authenticated administrator updates a managed user password in the V1 management plane
-- **THEN** the system stores the updated password verifier without exposing plaintext password material in management responses
+- **WHEN** 已认证管理员更新托管用户密码
+- **THEN** 系统存储更新后的密码校验材料，并且不在管理响应中暴露明文密码材料
 
-### Requirement: Administrator client-visibility baseline
-The system SHALL provide administrator-only client list and detail views in the first API/UI batch.
+### Requirement: Administrator client-management baseline
+系统 MUST 提供管理员专用客户端列表、详情、创建和凭据轮换合同，其中凭据处理为一次性返回。
 
 #### Scenario: List clients
-- **WHEN** an authenticated administrator queries clients in the V1 management plane
-- **THEN** the system returns client list data suitable for an administrator control console
+- **WHEN** 已认证管理员查询 V1 管理面中的客户端
+- **THEN** 系统返回适合管理员控制 console 的分页、可过滤、可排序客户端列表数据
 
 #### Scenario: View client detail with runtime state
-- **WHEN** an authenticated administrator views client detail in the V1 management plane
-- **THEN** the system composes persisted client data with currently available runtime/session state for that client
+- **WHEN** 已认证管理员查看客户端详情
+- **THEN** 系统组合持久化客户端数据与当前可用运行时/会话状态，并包含该客户端管理的代理上下文
+
+#### Scenario: Create or rotate client credential returns secret once
+- **WHEN** 已认证管理员创建客户端或轮换客户端凭据
+- **THEN** 新凭据可以在该变更 payload 中精确返回一次，后续列表或详情查询 MUST NOT 暴露该凭据
 
 ### Requirement: Administrator proxy-management baseline
-The system SHALL provide full administrator CRUD and lifecycle control for the currently supported reverse-proxy resource types in the first API/UI batch, and SHALL reject TCP or UDP lifecycle changes that would violate active runtime listener admission before invalid state is accepted where possible.
+系统 MUST 为当前支持的反向代理资源类型提供完整管理员 CRUD 与生命周期控制，并尽可能在接受无效状态前拒绝会违反活跃运行时监听器准入的 TCP 或 UDP 生命周期变更。
 
 #### Scenario: Manage supported reverse-proxy types
-- **WHEN** an authenticated administrator creates or updates a proxy in V1
-- **THEN** the management plane supports the currently implemented reverse-proxy types `TCP`, `UDP`, `HTTP`, and `HTTPS`, and does not claim forward-proxy creation in this batch
+- **WHEN** 已认证管理员在 V1 创建或更新代理
+- **THEN** 管理面支持当前已实现的 `TCP`、`UDP`、`HTTP` 和 `HTTPS` 反向代理类型，且不声明本批次支持正向代理创建
 
 #### Scenario: View proxy list and detail
-- **WHEN** an authenticated administrator queries proxies in V1
-- **THEN** the system returns proxy list and detail views that combine persisted configuration with available runtime and aggregate status information
+- **WHEN** 已认证管理员查询 V1 代理
+- **THEN** 系统返回组合持久化配置、可用运行时状态和聚合状态信息的代理列表与详情视图
 
 #### Scenario: Create proxy
-- **WHEN** an authenticated administrator creates a valid proxy in V1
-- **THEN** the system persists the proxy resource and records the control-plane action
-
-#### Scenario: Create TCP or UDP proxy rejected by listener admission
-- **WHEN** an authenticated administrator creates a TCP or UDP proxy whose requested active listener conflicts with the active runtime listener set under the V1 `same network + same port` rule
-- **THEN** the system rejects the operation with `ENTRY_CONFLICT` semantics before accepting invalid persisted state where possible
+- **WHEN** 已认证管理员创建有效代理
+- **THEN** 系统持久化代理资源并记录控制面动作
 
 #### Scenario: Update proxy without type mutation
-- **WHEN** an authenticated administrator updates an existing proxy in V1
-- **THEN** the system allows updates to supported proxy fields but rejects in-place mutation of the proxy type
-
-#### Scenario: Update TCP or UDP proxy rejected by listener admission
-- **WHEN** an authenticated administrator updates a TCP or UDP proxy so its resulting active listener would conflict with the active runtime listener set under the V1 `same network + same port` rule
-- **THEN** the system rejects the operation with `ENTRY_CONFLICT` semantics before accepting invalid persisted state where possible
+- **WHEN** 已认证管理员更新现有代理
+- **THEN** 系统允许更新受支持代理字段，但拒绝原地变更代理类型
 
 #### Scenario: Enable or disable proxy
-- **WHEN** an authenticated administrator enables or disables a proxy in V1
-- **THEN** the system treats that action as an explicit lifecycle operation rather than an incidental status field edit
-
-#### Scenario: Enable TCP or UDP proxy rejected by listener admission
-- **WHEN** an authenticated administrator enables a TCP or UDP proxy whose active listener would conflict with the active runtime listener set under the V1 `same network + same port` rule
-- **THEN** the system rejects the enable operation with `ENTRY_CONFLICT` semantics before accepting invalid active state where possible
-
-#### Scenario: Listener admission evaluates full active runtime listener space
-- **WHEN** the management plane evaluates listener admission for a TCP or UDP create, update, or enable operation
-- **THEN** it checks configured static listeners from `control_quic_listen`, `control_tls_listen`, `admin_listen`, `http_entry_listen`, and `https_entry_listen` where applicable, plus enabled TCP proxies and enabled UDP proxies
-
-#### Scenario: Disabled proxies are excluded from active listener admission
-- **WHEN** the management plane evaluates listener admission for a TCP or UDP create, update, or enable operation
-- **THEN** disabled proxies are excluded from the active claim set used for conflict detection
+- **WHEN** 已认证管理员启用或禁用代理
+- **THEN** 系统把该动作视为显式生命周期操作，而不是偶然的状态字段编辑
 
 #### Scenario: Delete requires disabled proxy
-- **WHEN** an authenticated administrator requests proxy deletion in V1
-- **THEN** the system only allows delete after the proxy has first been disabled
-
-### Requirement: Managed certificate admin baseline
-The system SHALL provide administrator certificate status and lifecycle actions for managed HTTPS certificates in the first API/UI batch.
-
-#### Scenario: View managed certificate status
-- **WHEN** an authenticated administrator views managed certificate state for an HTTPS proxy in V1
-- **THEN** the system returns the managed certificate status surface already supported by current certificate management behavior
-
-#### Scenario: Issue or renew managed certificate
-- **WHEN** an authenticated administrator triggers managed certificate issue or renewal in V1
-- **THEN** the system performs the supported managed certificate lifecycle action and records the control-plane operation
-
-### Requirement: Minimal administrator audit list baseline
-The system SHALL expose a minimal recent audit-event list for the first admin API/UI batch.
-
-#### Scenario: Recent audit events list
-- **WHEN** an authenticated administrator requests the V1 audit view
-- **THEN** the system returns a recent-event list containing actor, resource type, resource ID, action, result, and timestamp fields in reverse chronological order
-
-#### Scenario: Audit view excludes advanced query behavior
-- **WHEN** an authenticated administrator uses the V1 audit surface
-- **THEN** the system does not claim advanced filtering, export, or log-correlation behavior in that first batch
-
-### Requirement: Frontend-grade list interaction baseline
-The system SHALL support frontend-grade interaction for administrator list views in the separated console.
-
-#### Scenario: Primary list views support pagination and filtering
-- **WHEN** an authenticated administrator uses `users`, `clients`, `proxies`, `certificates`, or `audit` list views in the separated console
-- **THEN** the management API supports pagination and view-appropriate filtering so the frontend does not rely on whole-table dumps
-
-#### Scenario: Primary list views support explicit sorting semantics
-- **WHEN** an authenticated administrator changes the ordering of a supported list view in the separated console
-- **THEN** the management API applies explicit sort behavior instead of relying on implicit storage order
-
-### Requirement: Frontend-consumable error semantics baseline
-The system SHALL expose frontend-consumable authorization, validation, and failure semantics for the separated administrator console.
-
-#### Scenario: Validation errors are structured for form UX
-- **WHEN** a separated-console create or update operation fails validation
-- **THEN** the response includes machine-readable validation semantics and field-level error details where applicable so the frontend can present actionable form feedback
-
-#### Scenario: Authentication failures are distinguishable from generic server errors
-- **WHEN** a separated-console request fails because the administrator session is missing, expired, or invalid
-- **THEN** the frontend can distinguish that authentication failure from authorization denial, validation failure, and unexpected backend errors
-
-### Requirement: Polling refresh baseline
-The system SHALL use fixed client-side polling instead of realtime subscriptions for the first separated admin-console batch.
-
-#### Scenario: Five-second view-scoped polling refresh
-- **WHEN** an administrator views runtime-oriented separated-console pages such as dashboard, clients, proxies, or certificates
-- **THEN** the frontend refreshes the relevant API queries using a 5-second polling interval instead of whole-page refreshes or realtime push behavior
-
-### Requirement: GraphQL admin API gap tracking
-The admin-resource-management spec SHALL treat the administrator GraphQL management API as the primary business-data contract for the separated console while continuing to track broader management capabilities as future work.
-
-#### Scenario: Separated console uses GraphQL for scoped management resources
-- **WHEN** an authenticated administrator uses the separated management console
-- **THEN** the console reads and mutates the confirmed scoped management resources through the session-authenticated administrator GraphQL entrypoint rather than through repeated Basic Auth browser prompts
-
-#### Scenario: Broader management domains remain a gap
-- **WHEN** ordinary-user self-service, subscriptions, advanced log/audit analysis, settings control, quota editing, domain lifecycle management, or alert-center workflow behavior is referenced from product or design documents
-- **THEN** that behavior MUST remain future work until explicitly scoped and implemented
-
-### Requirement: Admin web UI gap tracking
-The admin-resource-management spec SHALL treat the dedicated administrator frontend application as the target management UI shape while continuing to track broader web-management behavior as future work.
-
-#### Scenario: Dedicated frontend target covers confirmed views
-- **WHEN** an authenticated administrator uses the post-migration management console
-- **THEN** the system provides the confirmed administrator views through a dedicated frontend application for dashboard, user management, client visibility, proxy management, managed certificate actions, and recent audit views
-
-#### Scenario: Broader frontend capability remains a gap
-- **WHEN** advanced dashboards, quota/settings UI, domain workflows, alert-center workflows, or broader observability pages are referenced from product or design documents
-- **THEN** that behavior MUST remain future work until explicitly scoped and implemented
-
-### Requirement: Full management policy gap tracking
-The admin-resource-management baseline SHALL treat the confirmed V1 administrator resource-management surface as implemented while continuing to exclude broader policy and management domains from the first batch.
-
-#### Scenario: V1 management surface is limited to confirmed resources
-- **WHEN** an operator describes the V1 administrator management plane
-- **THEN** it includes dashboard summary, user list/detail/create/disable/password modification, client list/detail, proxy CRUD plus lifecycle control, managed certificate status and issue/renew operations, and a minimal recent audit list
-
-#### Scenario: Adjacent policy behavior remains a gap
-- **WHEN** quota editing, limit enforcement UI, advanced resource filtering, system settings changes, log search, audit export, alert-center workflow, domain lifecycle management, or forward-proxy management behavior is referenced from product or design documents
-- **THEN** the behavior MUST remain a gap in this spec until evidence-backed implementation exists
-
-### Requirement: Frontend-consumable admin GraphQL list contracts
-The system SHALL expose frontend-consumable GraphQL list contracts for the separated administrator console using page-oriented shapes rather than raw whole-table responses.
-
-#### Scenario: Paginated and filterable management lists
-- **WHEN** an authenticated administrator queries `users`, `clients`, `proxies`, `certificates`, or `audit` through `/api/admin/graphql`
-- **THEN** each list contract returns a page-oriented result with `items`, `totalCount`, paging context, and structured filter input semantics suitable for a frontend list view
-
-#### Scenario: Explicit sort semantics for management lists
-- **WHEN** an authenticated administrator changes ordering for a supported management list
-- **THEN** the GraphQL contract applies explicit sort key and sort direction semantics instead of relying on implicit storage order
-
-### Requirement: Frontend-consumable admin GraphQL detail and mutation contracts
-The system SHALL expose resource-focused admin GraphQL detail and mutation contracts that support frontend page rendering and targeted refresh behavior.
-
-#### Scenario: Detail queries use resource-focused page models with runtime overlays where appropriate
-- **WHEN** an authenticated administrator queries detail for a supported admin resource through `/api/admin/graphql`
-- **THEN** the detail contract returns a resource-focused page model and may include runtime overlay fields only where the page needs live operational context
-
-#### Scenario: Mutations return input/payload shapes with refresh context
-- **WHEN** an authenticated administrator performs a supported admin mutation through `/api/admin/graphql`
-- **THEN** the contract uses one input object and one payload object and returns enough resource identity or status context for the frontend to re-query the affected list or detail view after success
-
-### Requirement: User management contract semantics
-The system SHALL expose administrator user-management read models and mutations with explicit lifecycle behavior.
-
-#### Scenario: User list and detail support admin lifecycle views
-- **WHEN** an authenticated administrator queries user list or user detail through `/api/admin/graphql`
-- **THEN** the contract returns a paginated, filterable, sortable list and a user-focused detail model with identity, status, and management context suitable for the admin page
-
-#### Scenario: User lifecycle mutations keep password material secret
-- **WHEN** an authenticated administrator creates a user, disables a user, or updates a user password through `/api/admin/graphql`
-- **THEN** the contract treats disable as an explicit lifecycle action and does not expose plaintext password material in queries or mutation payloads
-
-### Requirement: Client management contract semantics
-The system SHALL expose administrator client-management mutations and read models that treat clients as pre-registered managed nodes with write-only credential handling.
-
-#### Scenario: Client credential is returned only at create or rotate time
-- **WHEN** an authenticated administrator creates a client or rotates a client credential through `/api/admin/graphql`
-- **THEN** the new client credential may be returned in that mutation payload exactly once and is not exposed by subsequent list or detail queries
-
-#### Scenario: Client detail includes runtime overlay and managed proxies
-- **WHEN** an authenticated administrator views client detail through `/api/admin/graphql`
-- **THEN** the detail contract combines persisted client identity with available runtime/session overlay information and includes the client's `managedProxies`
+- **WHEN** 已认证管理员请求删除代理
+- **THEN** 系统只允许先禁用后删除
 
 ### Requirement: Proxy listener-admission semantics
-The system SHALL evaluate TCP and UDP proxy socket admission through a shared ListenerClaim model over the active runtime listener space and surface active listener conflicts as explicit contract behavior.
+系统 MUST 通过共享 ListenerClaim 模型在活跃运行时监听空间上评估 TCP 和 UDP 代理 socket 准入，并把活跃监听冲突作为显式合同行为暴露。
 
 #### Scenario: ListenerClaim conflict rejects create, update, or enable operations
-- **WHEN** an authenticated administrator creates, updates, or enables a TCP or UDP proxy whose requested active listener conflicts with an existing active claim under the V1 `same network + same port` rule
-- **THEN** the operation is rejected with `ENTRY_CONFLICT` semantics rather than a generic persistence failure
+- **WHEN** 已认证管理员创建、更新或启用 TCP/UDP 代理，且请求的活跃监听器与现有活跃 claim 在 V1 `same network + same port` 规则下冲突
+- **THEN** 操作以 `ENTRY_CONFLICT` 语义被拒绝，而不是落为通用持久化失败
 
 #### Scenario: Active ListenerClaim set includes configured static listeners
-- **WHEN** listener admission is evaluated for TCP or UDP proxy activity
-- **THEN** the active ListenerClaim set includes configured listeners derived from `control_quic_listen`, `control_tls_listen`, `admin_listen`, `http_entry_listen`, and `https_entry_listen` where those listeners are configured and participate in runtime binding
+- **WHEN** 为 TCP 或 UDP 代理活动评估监听器准入
+- **THEN** 活跃 ListenerClaim 集合包含来自 `control_quic_listen`、`control_tls_listen`、`admin_listen`、`http_entry_listen` 和 `https_entry_listen` 的已配置静态监听器，只要这些监听器参与运行时绑定
 
 #### Scenario: Active ListenerClaim set includes enabled TCP and UDP proxies
-- **WHEN** listener admission is evaluated for TCP or UDP proxy activity
-- **THEN** the active ListenerClaim set includes enabled TCP proxies and enabled UDP proxies that would occupy active runtime listeners
+- **WHEN** 为 TCP 或 UDP 代理活动评估监听器准入
+- **THEN** 活跃 ListenerClaim 集合包含会占用活跃运行时监听器的已启用 TCP 代理和已启用 UDP 代理
 
 #### Scenario: Disabled proxies do not participate in active ListenerClaim admission
-- **WHEN** listener admission is evaluated for TCP or UDP proxy activity
-- **THEN** disabled proxies do not participate in the active claim set used for conflict detection
+- **WHEN** 为 TCP 或 UDP 代理活动评估监听器准入
+- **THEN** 禁用代理不参与用于冲突检测的活跃 claim 集合
 
-### Requirement: Structured admin GraphQL error semantics
-The system SHALL expose structured GraphQL error semantics that the separated administrator frontend can consume directly.
+### Requirement: Managed certificate admin baseline
+系统 MUST 在首批 API/UI 中为托管 HTTPS 证书提供管理员证书状态和生命周期动作。
 
-#### Scenario: GraphQL errors expose machine-readable contract codes
-- **WHEN** an admin GraphQL operation fails through `/api/admin/graphql`
-- **THEN** the response exposes machine-readable error semantics for `UNAUTHENTICATED`, `FORBIDDEN`, `VALIDATION_FAILED`, `NOT_FOUND`, `CONFLICT`, `UNSUPPORTED`, `ENTRY_CONFLICT`, and `INTERNAL`
+#### Scenario: View managed certificate status
+- **WHEN** 已认证管理员查看 V1 中某个 HTTPS 代理的托管证书状态
+- **THEN** 系统返回当前证书管理行为已支持的托管证书状态 surface
 
-#### Scenario: Validation failures include field-level details
-- **WHEN** an admin GraphQL operation fails input validation for one or more fields
-- **THEN** the response includes field-level validation details where applicable so the frontend can map failures to form fields without parsing only human prose
-
-### Requirement: Certificate lifecycle status contract
-The system SHALL expose a status-oriented certificate management contract for managed HTTPS proxies without exposing private-key material.
-
-#### Scenario: Certificate list is lifecycle-oriented
-- **WHEN** an authenticated administrator queries certificates through `/api/admin/graphql`
-- **THEN** the contract returns a status-oriented list suitable for frontend display of host, owning proxy, lifecycle status, and expiry context
+#### Scenario: Issue or renew managed certificate
+- **WHEN** 已认证管理员触发 V1 托管证书签发或续期
+- **THEN** 系统执行受支持的托管证书生命周期动作，并记录控制面操作
 
 #### Scenario: Certificate lifecycle actions do not expose secret material
-- **WHEN** an authenticated administrator triggers certificate issue or renew actions through `/api/admin/graphql`
-- **THEN** the mutation contract returns operational lifecycle results without exposing private keys or other private-key material
+- **WHEN** 已认证管理员通过 `/api/admin/graphql` 触发证书签发或续期
+- **THEN** 变更合同返回运行生命周期结果，且不暴露私钥或其他私钥材料
 
-### Requirement: Audit actor identity semantics
-The system SHALL expose audit timeline semantics that do not misleadingly model every actor as only a user ID.
+### Requirement: Minimal administrator audit list baseline
+系统 MUST 为首批 admin API/UI 暴露最小近期审计事件列表。
 
-#### Scenario: Audit timeline uses actor identity direction
-- **WHEN** an authenticated administrator queries the audit timeline through `/api/admin/graphql`
-- **THEN** each audit event exposes actor identity semantics using a direction such as actor type plus actor ID, along with action, resource, result, and timestamp context suitable for a control-plane timeline
+#### Scenario: Recent audit events list
+- **WHEN** 已认证管理员请求 V1 审计视图
+- **THEN** 系统按倒序时间返回近期事件列表，包含 actor type、actor ID、资源类型、资源 ID、动作、结果和时间戳字段
 
-#### Scenario: Audit remains a lightweight control-plane timeline
-- **WHEN** an authenticated administrator uses the initial audit timeline contract
-- **THEN** the contract remains a lightweight recent-event control-plane view rather than claiming full observability search or log-correlation behavior
+#### Scenario: Audit view excludes advanced query behavior
+- **WHEN** 已认证管理员使用 V1 审计 surface
+- **THEN** 系统不声明首批支持高级过滤、导出或日志关联行为
 
-### Requirement: Admin polling model
-The system SHALL define view-scoped polling expectations for the initial administrator GraphQL contract instead of relying on subscriptions.
+### Requirement: Frontend-grade list interaction baseline
+系统 MUST 支持专用 console 管理员列表视图所需的前端级交互。
+
+#### Scenario: Primary list views support pagination and filtering
+- **WHEN** 已认证管理员使用 `users`、`clients`、`proxies`、`certificates` 或 `audit` 列表视图
+- **THEN** 管理 API 支持分页和视图适配的过滤，使前端不依赖整表转储
+
+#### Scenario: Primary list views support explicit sorting semantics
+- **WHEN** 已认证管理员改变受支持列表视图排序
+- **THEN** 管理 API 应用显式排序字段和排序方向，而不是依赖隐式存储顺序
+
+### Requirement: Frontend-consumable error semantics baseline
+系统 MUST 为专用管理员 console 暴露可由前端消费的认证、授权、校验和失败语义。
+
+#### Scenario: GraphQL errors expose machine-readable contract codes
+- **WHEN** `/api/admin/graphql` 管理操作失败
+- **THEN** 响应暴露 `UNAUTHENTICATED`、`FORBIDDEN`、`VALIDATION_FAILED`、`NOT_FOUND`、`CONFLICT`、`UNSUPPORTED`、`ENTRY_CONFLICT`、`INVALID_CSRF` 和 `INTERNAL` 等机器可读错误语义
+
+#### Scenario: Validation failures include field-level details
+- **WHEN** admin GraphQL 操作因为一个或多个字段输入校验失败
+- **THEN** 响应在适用时包含字段级校验详情，使前端无需只解析人类文本即可把失败映射到表单字段
+
+#### Scenario: Authentication failures are distinguishable
+- **WHEN** 专用 console 请求因为管理员会话缺失、过期或无效而失败
+- **THEN** 前端可以把该认证失败与授权拒绝、校验失败和意外后端错误区分开
+
+### Requirement: Shared frontend page-state semantics baseline
+系统 MUST 在专用管理员前端中保持共享页面状态语义，使受保护路由、列表、详情和刷新行为一致。
+
+#### Scenario: Empty state distinguishes no-data from no-match
+- **WHEN** `users`、`clients`、`proxies`、`certificates` 或 `audit` 等列表页没有可显示条目
+- **THEN** 前端区分资源集合为空的基线空状态和当前过滤/搜索导致的无匹配状态
+
+#### Scenario: Detail pages distinguish missing resource from backend failure
+- **WHEN** 已认证管理员打开 `users/:id`、`clients/:id` 或 `proxies/:id` 等有效详情路由
+- **THEN** 前端把托管资源缺失与通用后端失败区分开，而不是折叠成单一通用错误状态
+
+#### Scenario: Dashboard zero values remain content
+- **WHEN** 已认证管理员查看 dashboard，且当前可信聚合均为零值
+- **THEN** 前端把零值字段渲染为 dashboard 内容，而不是替换为通用空状态
+
+#### Scenario: Validation failure remains scoped to active form
+- **WHEN** 创建、更新或生命周期动作以结构化校验语义失败
+- **THEN** 前端在当前表单或动作 surface 内展示校验失败，而不是把整页折叠成通用错误
+
+### Requirement: Polling refresh baseline
+系统 MUST 为首批专用 admin console 使用固定客户端轮询，而不是实时订阅。
 
 #### Scenario: Runtime-oriented pages poll frequently
-- **WHEN** an authenticated administrator uses dashboard, clients, proxies, or certificates views through `/api/admin/graphql`
-- **THEN** dashboard, clients, and proxies use 5-second polling, and certificates use either low-frequency polling or the same 5-second interval when one runtime refresh cadence is preferred
+- **WHEN** 管理员打开 dashboard、clients 或 proxies 等运行时导向页面
+- **THEN** 前端按 5 秒节奏刷新相关 GraphQL 查询，而不是整页刷新或使用实时推送
 
 #### Scenario: Low-churn pages avoid aggressive refresh
-- **WHEN** an authenticated administrator uses users or audit views through `/api/admin/graphql`
-- **THEN** those views use manual refresh or low-frequency polling and polling remains scoped to the active page rather than resetting unrelated screen state
+- **WHEN** 管理员使用 users、audit 或 certificates 页面
+- **THEN** 这些页面使用手动刷新、低频轮询或动作驱动刷新，并且刷新作用域保持在当前页面
+
+#### Scenario: Targeted post-mutation refresh
+- **WHEN** 创建、更新、启用、禁用、删除、签发或续期等变更成功
+- **THEN** 前端重新查询受影响的列表、详情或两者，而不是依赖浏览器整页 reload 同步状态
 
 ### Requirement: Admin GraphQL implementation alignment baseline
-The system SHALL align the existing administrator GraphQL/API implementation with the canonical admin-resource-management contract while preserving the current admin read and command service boundaries.
+系统 MUST 把现有管理员 GraphQL/API 实现与规范化 admin-resource-management 合同对齐，同时保留当前 admin read 和 command 服务边界。
 
 #### Scenario: Admin GraphQL reads and commands preserve canonical boundaries
-- **WHEN** the implementation aligns dashboard, user, client, proxy, certificate, or audit behavior at `/api/admin/graphql`
-- **THEN** read operations continue to use `internal/adminquery` for page-oriented list and detail models, and command operations continue to use `internal/admin` for lifecycle and mutation behavior
+- **WHEN** 实现在 `/api/admin/graphql` 对齐 dashboard、用户、客户端、代理、证书或审计行为
+- **THEN** 读操作继续使用 `internal/adminquery` 的面向页面列表和详情模型，命令操作继续使用 `internal/admin` 的生命周期与变更行为
 
 #### Scenario: Admin GraphQL contracts align with canonical frontend semantics
-- **WHEN** the implementation updates existing admin GraphQL list, detail, or mutation operations
-- **THEN** the resulting contract preserves canonical page-oriented list/detail behavior, shared pagination/filter/sort inputs where applicable, one-input/one-payload mutation semantics, one-time client credential return behavior, structured GraphQL error codes with validation details, and audit actor identity direction toward `actorType` plus `actorId`
+- **WHEN** 实现更新 admin GraphQL 列表、详情或变更操作
+- **THEN** 结果合同保留规范化页面导向列表/详情行为、共享分页/过滤/排序输入、单 input/单 payload 变更语义、客户端凭据一次性返回行为、带校验详情的结构化 GraphQL 错误码，以及审计 actor type 加 actor ID 的身份方向
 
 #### Scenario: Alignment excludes unrelated admin redesign work
-- **WHEN** the implementation change is scoped for admin GraphQL contract alignment
-- **THEN** it does not widen the slice into quotas or rate limiting, observability overhaul, admin session persistence redesign, RBAC redesign, forward proxy support, or unrelated deployment or backup/restore work
+- **WHEN** 实现变更限定在 admin GraphQL 合同对齐范围
+- **THEN** 不把范围扩大到配额或限速、可观测性重做、管理员会话持久化重设计、RBAC 重设计、正向代理支持、无关部署工作或备份/恢复工作
+
+### Requirement: Management policy gap tracking
+admin-resource-management 基线 MUST 把已确认的 V1 管理员资源管理 surface 视为当前能力，同时继续排除更广泛的策略和管理域。
+
+#### Scenario: V1 management surface is limited to confirmed resources
+- **WHEN** 操作者描述 V1 管理员管理面
+- **THEN** 它包含 dashboard 摘要、用户列表/详情/创建/禁用/密码修改、客户端列表/详情/创建/凭据轮换、代理 CRUD 与生命周期控制、托管证书状态/签发/续期，以及最小近期审计列表
+
+#### Scenario: Adjacent policy behavior remains a gap
+- **WHEN** 产品或设计文档提到配额编辑、限制执行 UI、高级资源过滤、系统设置变更、日志搜索、审计导出、告警中心工作流、域名生命周期管理或正向代理管理行为
+- **THEN** 在存在证据支持的实现前，该行为 MUST 作为本规格中的缺口保留
