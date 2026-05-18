@@ -22,7 +22,6 @@ import (
 	"github.com/graphql-go/graphql/language/source"
 	"github.com/simp-frp/go-ginx-2/internal/admin"
 	"github.com/simp-frp/go-ginx-2/internal/adminquery"
-	"github.com/simp-frp/go-ginx-2/internal/config"
 	"github.com/simp-frp/go-ginx-2/internal/contracterr"
 	"github.com/simp-frp/go-ginx-2/internal/deploypath"
 	"github.com/simp-frp/go-ginx-2/internal/domain"
@@ -377,6 +376,9 @@ func (server *Server) serveFrontendFile(w http.ResponseWriter, r *http.Request, 
 	seeker, ok := file.(io.ReadSeeker)
 	if !ok {
 		return false
+	}
+	if strings.EqualFold(path.Ext(info.Name()), ".js") {
+		w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
 	}
 	http.ServeContent(w, r, info.Name(), info.ModTime(), seeker)
 	return true
@@ -877,10 +879,10 @@ func (server *Server) buildSchema() (graphql.Schema, error) {
 		"id":               &graphql.InputObjectFieldConfig{Type: graphql.String},
 		"userId":           &graphql.InputObjectFieldConfig{Type: graphql.NewNonNull(graphql.String)},
 		"name":             &graphql.InputObjectFieldConfig{Type: graphql.NewNonNull(graphql.String)},
-		"enrollmentUrl":    &graphql.InputObjectFieldConfig{Type: graphql.NewNonNull(graphql.String)},
-		"serverAddress":    &graphql.InputObjectFieldConfig{Type: graphql.NewNonNull(graphql.String)},
+		"enrollmentUrl":    &graphql.InputObjectFieldConfig{Type: graphql.String},
+		"serverAddress":    &graphql.InputObjectFieldConfig{Type: graphql.String},
 		"serverTLSAddress": &graphql.InputObjectFieldConfig{Type: graphql.String},
-		"serverName":       &graphql.InputObjectFieldConfig{Type: graphql.NewNonNull(graphql.String)},
+		"serverName":       &graphql.InputObjectFieldConfig{Type: graphql.String},
 		"serverCAFile":     &graphql.InputObjectFieldConfig{Type: graphql.String},
 		"ttlSeconds":       &graphql.InputObjectFieldConfig{Type: graphql.Int},
 	}})
@@ -1084,6 +1086,13 @@ func (server *Server) buildSchema() (graphql.Schema, error) {
 				return nil, err
 			}
 			return clientPayload{Client: detail}, nil
+		})},
+		"deleteClient": &graphql.Field{Type: clientPayloadType, Args: graphql.FieldConfigArgument{"input": &graphql.ArgumentConfig{Type: graphql.NewNonNull(userIDInput)}}, Resolve: server.wrapResolve(func(params graphql.ResolveParams) (interface{}, error) {
+			clientID := stringValue(mapArg(params.Args, "input"), "id")
+			if err := server.commands.DeleteClient(params.Context, clientID, actorFromContext(params.Context)); err != nil {
+				return nil, err
+			}
+			return clientPayload{Client: adminquery.ClientDetail{ID: clientID, Status: domain.ClientDisabled}}, nil
 		})},
 		"rotateClientCredential": &graphql.Field{Type: clientPayloadType, Args: graphql.FieldConfigArgument{"input": &graphql.ArgumentConfig{Type: graphql.NewNonNull(userIDInput)}}, Resolve: server.wrapResolve(func(params graphql.ResolveParams) (interface{}, error) {
 			clientID := stringValue(mapArg(params.Args, "input"), "id")
@@ -1307,9 +1316,10 @@ func createProxyInputFromArgs(args map[string]interface{}, actor string) admin.C
 func createClientJoinInputFromArgs(args map[string]interface{}, actor string) admin.CreateClientJoinInput {
 	input := admin.CreateClientJoinInput{ID: stringValue(args, "id"), UserID: stringValue(args, "userId"), Name: stringValue(args, "name"), ActorID: actor, EnrollmentURL: stringValue(args, "enrollmentUrl"), ServerAddress: stringValue(args, "serverAddress"), ServerTLSAddress: stringValue(args, "serverTLSAddress"), ServerName: stringValue(args, "serverName"), ServerCAFile: stringValue(args, "serverCAFile")}
 	if strings.TrimSpace(input.ServerCAFile) == "" {
-		input.ServerCAFile = config.DefaultServer().ControlTLSCAFile
+		input.ServerCAFile = ""
+	} else {
+		input.ServerCAFile = deploymentRelativePath(input.ServerCAFile)
 	}
-	input.ServerCAFile = deploymentRelativePath(input.ServerCAFile)
 	if ttlSeconds := intValue(args, "ttlSeconds"); ttlSeconds > 0 {
 		input.TTL = time.Duration(ttlSeconds) * time.Second
 	}

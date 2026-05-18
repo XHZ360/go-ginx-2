@@ -22,6 +22,7 @@ type Service struct {
 	Store                store.Store
 	Certificates         certmanager.Service
 	StaticListenerClaims []domain.ListenerClaim
+	DefaultJoin          config.JoinServiceDefaults
 }
 
 type CreateUserInput struct {
@@ -225,6 +226,21 @@ func (service Service) CreateClientJoin(ctx context.Context, input CreateClientJ
 	}
 	if input.Reconnect.InitialDelay <= 0 || input.Reconnect.MaxDelay <= 0 {
 		input.Reconnect = config.DefaultClient().Reconnect
+	}
+	if strings.TrimSpace(input.EnrollmentURL) == "" {
+		input.EnrollmentURL = service.DefaultJoin.EnrollmentURL
+	}
+	if strings.TrimSpace(input.ServerAddress) == "" {
+		input.ServerAddress = service.DefaultJoin.ServerAddress
+	}
+	if strings.TrimSpace(input.ServerTLSAddress) == "" {
+		input.ServerTLSAddress = service.DefaultJoin.ServerTLSAddress
+	}
+	if strings.TrimSpace(input.ServerName) == "" {
+		input.ServerName = service.DefaultJoin.ServerName
+	}
+	if strings.TrimSpace(input.ServerCAFile) == "" {
+		input.ServerCAFile = service.DefaultJoin.ServerCAFile
 	}
 	if strings.TrimSpace(input.EnrollmentURL) == "" {
 		return CreateClientJoinResult{}, contracterr.Validation("validation failed", map[string]string{"enrollmentUrl": "enrollment url is required"})
@@ -531,6 +547,31 @@ func (service Service) DisableClient(ctx context.Context, clientID string, actor
 		return err
 	}
 	return service.audit(ctx, actorID, "client", clientID, "disable_client")
+}
+
+func (service Service) DeleteClient(ctx context.Context, clientID string, actorID string) error {
+	if service.Store == nil {
+		return errors.New("store is required")
+	}
+	if strings.TrimSpace(clientID) == "" {
+		return contracterr.Validation("validation failed", map[string]string{"id": "client id is required"})
+	}
+	if _, err := service.Store.Clients().ByID(ctx, clientID); err != nil {
+		return err
+	}
+	proxies, err := service.Store.Proxies().ByClientID(ctx, clientID)
+	if err != nil {
+		return err
+	}
+	for _, proxy := range proxies {
+		if proxy.Status == domain.ProxyEnabled {
+			return contracterr.Conflict("client has enabled proxies; disable proxies before deleting the client", nil)
+		}
+	}
+	if err := service.Store.Clients().Delete(ctx, clientID); err != nil {
+		return err
+	}
+	return service.audit(ctx, actorID, "client", clientID, "delete_client")
 }
 
 func (service Service) RotateClientCredential(ctx context.Context, input RotateClientCredentialInput) (RotateClientCredentialResult, error) {

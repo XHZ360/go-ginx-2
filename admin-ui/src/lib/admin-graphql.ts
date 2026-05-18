@@ -570,6 +570,19 @@ export function mutateRotateClientCredential(csrfToken: string, id: string) {
   });
 }
 
+export function mutateDeleteClient(csrfToken: string, id: string) {
+  return graphqlClient.request<{ deleteClient: { clientId: string; client?: ClientDetail | null } }>({
+    query: `mutation DeleteClient($input: AdminUserIDInput!) {
+      deleteClient(input: $input) {
+        clientId
+      }
+    }`,
+    variables: { input: { id } },
+    mutation: true,
+    csrfToken,
+  });
+}
+
 export function mutateCreateProxy(
   csrfToken: string,
   input: {

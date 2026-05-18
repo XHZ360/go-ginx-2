@@ -7,6 +7,7 @@ import { SessionProvider } from '../session';
 import { ProtectedLayout } from '../components/Layout';
 import { ClientsPage } from '../routes/ClientsPage';
 import { ClientDetailPage } from '../routes/ClientDetailPage';
+import { ProxiesPage } from '../routes/ProxiesPage';
 import { UsersPage } from '../routes/UsersPage';
 import { UserDetailPage } from '../routes/UserDetailPage';
 
@@ -87,6 +88,7 @@ function renderAdmin(initialEntries: string[]) {
               <Route path="users/:id" element={<UserDetailPage />} />
               <Route path="clients" element={<ClientsPage />} />
               <Route path="clients/:id" element={<ClientDetailPage />} />
+              <Route path="proxies" element={<ProxiesPage />} />
             </Route>
           </Routes>
         </MemoryRouter>
@@ -103,6 +105,7 @@ function createFetchMock(options?: { createValidationFailure?: boolean; rotateFa
   const clientsByUser: Record<string, ReturnType<typeof client>[]> = {
     '': [client('client-all', 'user-2', 'all-node')],
     'user-1': [client('client-1', 'user-1', 'home-node')],
+    'user-2': [client('client-all', 'user-2', 'all-node')],
     'user-missing': [],
   };
 
@@ -117,7 +120,7 @@ function createFetchMock(options?: { createValidationFailure?: boolean; rotateFa
 
     const body = JSON.parse(String(init?.body ?? '{}')) as {
       query?: string;
-      variables?: { input?: { filter?: { userId?: string }; userId?: string; name?: string; serverAddress?: string } };
+      variables?: { input?: { filter?: { userId?: string }; id?: string; userId?: string; clientId?: string; name?: string; serverAddress?: string } };
     };
     const query = body.query ?? '';
     const variables = body.variables ?? {};
@@ -135,6 +138,9 @@ function createFetchMock(options?: { createValidationFailure?: boolean; rotateFa
     }
     if (query.includes('query Client(')) {
       return graphQL({ data: { client: client('client-1', 'user-1', 'home-node') } });
+    }
+    if (query.includes('query Proxies')) {
+      return graphQL({ data: { proxies: { items: [], totalCount: 0, pageInfo } } });
     }
     if (query.includes('mutation CreateClientJoin')) {
       return graphQL({
@@ -178,6 +184,38 @@ function createFetchMock(options?: { createValidationFailure?: boolean; rotateFa
             clientId: 'client-1',
             credential: 'rotated-secret',
             client: client('client-1', 'user-1', 'home-node'),
+          },
+        },
+      });
+    }
+    if (query.includes('mutation DeleteClient')) {
+      return graphQL({ data: { deleteClient: { clientId: variables.input?.id ?? 'client-1' } } });
+    }
+    if (query.includes('mutation CreateProxy')) {
+      return graphQL({
+        data: {
+          createProxy: {
+            proxyId: 'proxy-created',
+            status: 'enabled',
+            proxy: {
+              id: 'proxy-created',
+              userId: variables.input?.userId ?? '',
+              clientId: variables.input?.clientId ?? '',
+              name: variables.input?.name ?? '',
+              type: 'http',
+              status: 'enabled',
+              runtimeStatus: 'offline',
+              activeTCPConnections: 0,
+              uploadBytes: 0,
+              downloadBytes: 0,
+              tcpErrorCount: 0,
+              udpErrorCount: 0,
+              httpErrorCount: 0,
+              config: { entryHost: 'app.example.com', targetHost: '127.0.0.1', targetPort: 8080 },
+              certificate: null,
+              createdAt: '2026-05-17T00:00:00Z',
+              updatedAt: '2026-05-17T00:00:00Z',
+            },
           },
         },
       });
@@ -276,6 +314,36 @@ describe('admin client management', () => {
     await screen.findByRole('heading', { name: 'Clients' });
     expect(screen.getByLabelText('User')).toHaveValue('user-1');
     await screen.findByText('home-node');
+  });
+
+  it('opens proxy creation from a client with editable user and client defaults', async () => {
+    const fetchMock = createFetchMock();
+    vi.stubGlobal('fetch', fetchMock);
+
+    renderAdmin(['/clients?userId=user-1']);
+
+    await screen.findByText('home-node');
+    await userEvent.click(screen.getByRole('button', { name: 'Create proxy' }));
+
+    const dialog = await screen.findByRole('dialog', { name: 'Create proxy' });
+    expect(within(dialog).getByLabelText('User')).toHaveValue('user-1');
+    expect(within(dialog).getByLabelText('Client')).toHaveValue('client-1');
+
+    await userEvent.selectOptions(within(dialog).getByLabelText('User'), 'user-2');
+    expect(within(dialog).getByLabelText('Client')).toHaveValue('');
+
+    await userEvent.selectOptions(within(dialog).getByLabelText('Client'), 'client-all');
+    await userEvent.type(within(dialog).getByLabelText('Name'), 'web');
+    await userEvent.type(within(dialog).getByLabelText('Entry host'), 'app.example.com');
+    await userEvent.type(within(dialog).getByLabelText('Target host'), '127.0.0.1');
+    await userEvent.type(within(dialog).getByLabelText('Target port'), '8080');
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Create proxy' }));
+
+    await waitFor(() => {
+      expect(fetchMock).toHaveBeenCalledWith('/api/admin/graphql', expect.objectContaining({
+        body: expect.stringContaining('"clientId":"client-all"'),
+      }));
+    });
   });
 
   it('rotates client credentials and keeps detail content visible on rotation errors', async () => {

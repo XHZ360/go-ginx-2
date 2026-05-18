@@ -67,6 +67,7 @@ func applyManagedServerEnv(cfg *Server) {
 	envString("GOGINX_CONTROL_TLS_CA_FILE", &cfg.ControlTLSCAFile)
 	envString("GOGINX_CONTROL_TLS_CERT_FILE", &cfg.ControlTLSCertFile)
 	envString("GOGINX_CONTROL_TLS_KEY_FILE", &cfg.ControlTLSKeyFile)
+	envString("GOGINX_JOIN_SERVICE_HOST", &cfg.JoinServiceHost)
 	envString("GOGINX_TCP_ENTRY_HOST", &cfg.TCPEntryHost)
 	envString("GOGINX_HTTP_ENTRY_LISTEN", &cfg.HTTPEntryListen)
 	envString("GOGINX_HTTPS_ENTRY_LISTEN", &cfg.HTTPSEntryListen)

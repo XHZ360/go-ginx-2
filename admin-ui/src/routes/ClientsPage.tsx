@@ -5,11 +5,12 @@ import { Dialog } from '../components/Dialog';
 import { SelectField, TextField } from '../components/FormField';
 import { useAuthedQuery } from '../hooks/useAuthedQuery';
 import { useMutationWithAuth } from '../hooks/useMutationWithAuth';
-import { mutateCreateClient, mutateCreateClientJoin, queryClients, queryUsers, type ClientFilter, type ClientJoinInput } from '../lib/admin-graphql';
+import { mutateCreateClient, mutateCreateClientJoin, mutateDeleteClient, queryClients, queryUsers, type ClientFilter, type ClientJoinInput } from '../lib/admin-graphql';
 import { isApiError, type User } from '../lib/contracts';
 import { EmptyState, ErrorState, FilteredEmptyState, PageLoading, ValidationBanner } from '../components/PageStates';
 import { useSession } from '../session';
 import { PageHeader, Pagination, StatusBadge, Timestamp } from './shared';
+import { ConfirmButton } from '../components/ConfirmButton';
 
 const defaultFilter: ClientFilter = { query: '', userId: '', status: '' };
 const defaultServerName = 'go-ginx-control.local';
@@ -111,6 +112,7 @@ export function ClientsPage() {
   const [createdCredential, setCreatedCredential] = useState<string>();
   const [createdJoinToken, setCreatedJoinToken] = useState<string>();
   const [copyStatus, setCopyStatus] = useState<string>();
+  const [actionError, setActionError] = useState<string>();
 
   useEffect(() => {
     setFilter((current) => (current.userId === scopedUserId ? current : { ...current, userId: scopedUserId }));
@@ -173,6 +175,17 @@ export function ClientsPage() {
       } else {
         setFormError(error.message);
       }
+    },
+  });
+
+  const deleteMutation = useMutationWithAuth({
+    mutationFn: (id: string) => mutateDeleteClient(session.csrfToken ?? '', id),
+    onSuccess: async () => {
+      setActionError(undefined);
+      await queryClient.invalidateQueries({ queryKey: ['clients'] });
+    },
+    onError: (error) => {
+      setActionError(error.message);
     },
   });
 
@@ -250,6 +263,10 @@ export function ClientsPage() {
     }, { replace: true });
   };
 
+  const createProxyForClient = (clientId: string, userId: string) => {
+    navigate(`/proxies?create=1&userId=${encodeURIComponent(userId)}&clientId=${encodeURIComponent(clientId)}`);
+  };
+
   if (query.isLoading) {
     return <PageLoading label="Loading clients..." />;
   }
@@ -304,6 +321,8 @@ export function ClientsPage() {
         </label>
       </div>
 
+      {actionError ? <div className="banner banner--danger">{actionError}</div> : null}
+
       {data.items.length === 0 ? (
         hasFilter ? (
           <FilteredEmptyState onClear={clearFilters} />
@@ -325,6 +344,7 @@ export function ClientsPage() {
                   <th>Active proxies</th>
                   <th>Active streams</th>
                   <th>Last heartbeat</th>
+                  <th>Actions</th>
                 </tr>
               </thead>
               <tbody>
@@ -339,6 +359,19 @@ export function ClientsPage() {
                     <td>{client.runtime.activeProxies ?? 0}</td>
                     <td>{client.runtime.activeStreams ?? 0}</td>
                     <td><Timestamp value={client.runtime.lastHeartbeat} /></td>
+                    <td>
+                      <div className="inline-actions" onClick={(event) => event.stopPropagation()}>
+                        <button type="button" className="button button--secondary" onClick={() => createProxyForClient(client.id, client.userId)}>
+                          Create proxy
+                        </button>
+                        <ConfirmButton
+                          label="Delete"
+                          confirmLabel="Delete this client?"
+                          onConfirm={() => deleteMutation.mutate(client.id)}
+                          disabled={deleteMutation.isPending}
+                        />
+                      </div>
+                    </td>
                   </tr>
                 ))}
               </tbody>

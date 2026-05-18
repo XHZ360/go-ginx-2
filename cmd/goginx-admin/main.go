@@ -238,14 +238,18 @@ func existingAdminID(ctx context.Context, service admin.Service, id string, user
 }
 
 func createClientJoin(flags *flag.FlagSet, args []string) error {
+	joinDefaults, err := defaultJoinServiceDefaults()
+	if err != nil {
+		return err
+	}
 	id := flags.String("id", "", "client ID")
 	userID := flags.String("user", "", "owner user ID")
 	name := flags.String("name", "", "client display name")
-	enrollmentURL := flags.String("enrollment-url", "http://127.0.0.1:8080/api/client/enroll", "client enrollment URL")
-	serverAddress := flags.String("server-address", "127.0.0.1:8443", "control QUIC server address")
-	serverTLSAddress := flags.String("server-tls-address", "127.0.0.1:9443", "control TCP+TLS server address")
-	serverName := flags.String("server-name", config.DefaultServer().ControlTLSServerName, "control TLS server name")
-	serverCAFile := flags.String("server-ca-file", config.DefaultServer().ControlTLSCAFile, "control TLS CA file")
+	enrollmentURL := flags.String("enrollment-url", joinDefaults.EnrollmentURL, "client enrollment URL")
+	serverAddress := flags.String("server-address", joinDefaults.ServerAddress, "control QUIC server address")
+	serverTLSAddress := flags.String("server-tls-address", joinDefaults.ServerTLSAddress, "control TCP+TLS server address")
+	serverName := flags.String("server-name", joinDefaults.ServerName, "control TLS server name")
+	serverCAFile := flags.String("server-ca-file", joinDefaults.ServerCAFile, "control TLS CA file")
 	ttl := flags.Duration("ttl", time.Hour, "join token lifetime")
 	if err := flags.Parse(args); err != nil {
 		return err
@@ -275,6 +279,17 @@ func createClientJoin(flags *flag.FlagSet, args []string) error {
 	}
 	fmt.Println(result.Token)
 	return nil
+}
+
+func defaultJoinServiceDefaults() (config.JoinServiceDefaults, error) {
+	cfg := config.DefaultServer()
+	cfg.JoinServiceHost = "127.0.0.1"
+	defaults, err := config.ConfirmJoinServiceDefaults(cfg)
+	if err != nil {
+		return config.JoinServiceDefaults{}, err
+	}
+	defaults.ServerCAFile = deploymentRelativePath(defaults.ServerCAFile)
+	return defaults, nil
 }
 
 func manageCertificate(flags *flag.FlagSet, args []string, action string) error {

@@ -85,6 +85,8 @@ $env:CGO_ENABLED="0"
 token="$(./bin/goginx-admin create-client-join -id client-1 -user admin-1 -name home)"
 ```
 
+服务端启动时会确认一个默认 join 服务域名或 IP，并在日志中显示 `join_service_host`、来源和默认控制通道地址。未显式填写地址时，管理 API 生成的 join token 会使用该默认值；CLI 默认使用本机部署常用的 `127.0.0.1`，远程客户端场景应按下例覆盖。
+
 如果客户端不在本机，需要显式指定外部可访问地址，例如：
 
 ```bash
@@ -188,6 +190,7 @@ HTTPS 静态证书终止示例：
 - `GOGINX_CONTROL_TLS_CA_FILE`
 - `GOGINX_CONTROL_TLS_CERT_FILE`
 - `GOGINX_CONTROL_TLS_KEY_FILE`
+- `GOGINX_JOIN_SERVICE_HOST`
 - `GOGINX_TCP_ENTRY_HOST`
 - `GOGINX_HTTP_ENTRY_LISTEN`
 - `GOGINX_HTTPS_ENTRY_LISTEN`
@@ -210,6 +213,7 @@ HTTPS 静态证书终止示例：
   "control_tls_ca_file": "data/certs/control-ca.crt",
   "control_tls_cert_file": "data/certs/control.crt",
   "control_tls_key_file": "data/certs/control.key",
+  "join_service_host": "control.example.com",
   "tcp_entry_host": "0.0.0.0",
   "http_entry_listen": "0.0.0.0:8081",
   "https_entry_listen": "0.0.0.0:8444",

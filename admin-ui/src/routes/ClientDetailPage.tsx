@@ -1,10 +1,10 @@
 import { useState } from 'react';
-import { useParams } from 'react-router-dom';
+import { useNavigate, useParams } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { ConfirmButton } from '../components/ConfirmButton';
 import { useAuthedQuery } from '../hooks/useAuthedQuery';
 import { useMutationWithAuth } from '../hooks/useMutationWithAuth';
-import { mutateRotateClientCredential, queryClient } from '../lib/admin-graphql';
+import { mutateDeleteClient, mutateRotateClientCredential, queryClient } from '../lib/admin-graphql';
 import { formatBytes } from '../lib/format';
 import { ErrorState, NotFoundState, PageLoading } from '../components/PageStates';
 import { isNotFoundError } from '../lib/contracts';
@@ -14,9 +14,11 @@ import { DetailBackLink, PageHeader, StatusBadge, Timestamp } from './shared';
 export function ClientDetailPage() {
   const { id = '' } = useParams();
   const session = useSession();
+  const navigate = useNavigate();
   const queryClientInstance = useQueryClient();
   const [rotatedCredential, setRotatedCredential] = useState<string>();
   const [rotationError, setRotationError] = useState<string>();
+  const [deleteError, setDeleteError] = useState<string>();
   const query = useAuthedQuery({
     queryKey: ['client', id],
     queryFn: () => queryClient(id),
@@ -33,6 +35,17 @@ export function ClientDetailPage() {
     onError: (error) => {
       setRotatedCredential(undefined);
       setRotationError(error.message);
+    },
+  });
+  const deleteMutation = useMutationWithAuth({
+    mutationFn: () => mutateDeleteClient(session.csrfToken ?? '', id),
+    onSuccess: async () => {
+      setDeleteError(undefined);
+      await queryClientInstance.invalidateQueries({ queryKey: ['clients'] });
+      navigate('/clients');
+    },
+    onError: (error) => {
+      setDeleteError(error.message);
     },
   });
 
@@ -60,6 +73,13 @@ export function ClientDetailPage() {
         actions={
           <>
             <StatusBadge value={client.status} />
+            <button
+              type="button"
+              className="button button--secondary"
+              onClick={() => navigate(`/proxies?create=1&userId=${encodeURIComponent(client.userId)}&clientId=${encodeURIComponent(client.id)}`)}
+            >
+              Create proxy
+            </button>
             <ConfirmButton
               label="Rotate credential"
               confirmLabel="Rotate this client credential?"
@@ -67,10 +87,17 @@ export function ClientDetailPage() {
               disabled={rotateMutation.isPending}
               tone="secondary"
             />
+            <ConfirmButton
+              label="Delete client"
+              confirmLabel="Delete this client?"
+              onConfirm={() => deleteMutation.mutate(undefined)}
+              disabled={deleteMutation.isPending}
+            />
           </>
         }
       />
       {rotationError ? <div className="banner banner--danger">{rotationError}</div> : null}
+      {deleteError ? <div className="banner banner--danger">{deleteError}</div> : null}
       {rotatedCredential ? (
         <div className="banner banner--success" role="status">
           <strong>New client credential</strong>

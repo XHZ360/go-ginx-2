@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"github.com/simp-frp/go-ginx-2/internal/certmanager"
+	"github.com/simp-frp/go-ginx-2/internal/config"
+	"github.com/simp-frp/go-ginx-2/internal/contracterr"
 	"github.com/simp-frp/go-ginx-2/internal/domain"
 	"github.com/simp-frp/go-ginx-2/internal/enrollment"
 	httpsproxy "github.com/simp-frp/go-ginx-2/internal/proxy/https"
@@ -106,6 +108,38 @@ func TestServiceCreatesClientJoinToken(t *testing.T) {
 	}
 }
 
+func TestServiceCreatesClientJoinTokenFromDefaultJoin(t *testing.T) {
+	ctx := context.Background()
+	db := openTestStore(t)
+	caFile := filepath.Join(t.TempDir(), "ca.crt")
+	if err := os.WriteFile(caFile, []byte("ca-pem"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	service := Service{Store: db, DefaultJoin: config.JoinServiceDefaults{
+		EnrollmentURL:    "http://server.example.com:8080/api/client/enroll",
+		ServerAddress:    "server.example.com:8443",
+		ServerTLSAddress: "server.example.com:9443",
+		ServerName:       "go-ginx-control.test",
+		ServerCAFile:     caFile,
+	}}
+	user, err := service.CreateUser(ctx, CreateUserInput{ID: "user-1", Username: "alice", ActorID: "admin-1"})
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+
+	result, err := service.CreateClientJoin(ctx, CreateClientJoinInput{ID: "client-join-1", UserID: user.ID, Name: "home", ActorID: "admin-1", TTL: time.Hour})
+	if err != nil {
+		t.Fatalf("create client join: %v", err)
+	}
+	payload, err := enrollment.DecodeToken(result.Token)
+	if err != nil {
+		t.Fatalf("decode join token: %v", err)
+	}
+	if payload.EnrollmentURL != service.DefaultJoin.EnrollmentURL || payload.ServerAddress != service.DefaultJoin.ServerAddress || payload.ServerTLSAddress != service.DefaultJoin.ServerTLSAddress || payload.ServerName != service.DefaultJoin.ServerName {
+		t.Fatalf("join token did not use defaults: %+v", payload)
+	}
+}
+
 func TestServiceRejectsInvalidMilestoneOneInputs(t *testing.T) {
 	ctx := context.Background()
 	service := Service{Store: openTestStore(t)}
@@ -133,6 +167,69 @@ func TestServicePropagatesDuplicateUser(t *testing.T) {
 	}
 	if _, err := service.CreateUser(ctx, input); !errors.Is(err, store.ErrAlreadyExists) {
 		t.Fatalf("expected duplicate error, got %v", err)
+	}
+}
+
+func TestServiceDeleteClientRemovesDisabledClientResources(t *testing.T) {
+	ctx := context.Background()
+	db := openTestStore(t)
+	service := Service{Store: db}
+	user, err := service.CreateUser(ctx, CreateUserInput{ID: "user-1", Username: "alice", ActorID: "admin-1"})
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	client, err := service.CreateClient(ctx, CreateClientInput{ID: "client-1", UserID: user.ID, Name: "home", Credential: "secret", ActorID: "admin-1"})
+	if err != nil {
+		t.Fatalf("create client: %v", err)
+	}
+	proxy, err := service.CreateProxy(ctx, CreateProxyInput{ID: "proxy-1", UserID: user.ID, ClientID: client.ID, Name: "web", Type: domain.ProxyHTTP, EntryHost: "app.example.com", TargetHost: "127.0.0.1", TargetPort: 8080, ActorID: "admin-1"})
+	if err != nil {
+		t.Fatalf("create proxy: %v", err)
+	}
+	if err := service.DisableProxy(ctx, proxy.ID, "admin-1"); err != nil {
+		t.Fatalf("disable proxy: %v", err)
+	}
+	if err := db.ClientEnrollments().Create(ctx, domain.ClientEnrollment{ID: "join-1", ClientID: client.ID, SecretHash: "secret-hash", TokenHash: "token-hash", ExpiresAt: time.Now().UTC().Add(time.Hour)}); err != nil {
+		t.Fatalf("create enrollment: %v", err)
+	}
+
+	if err := service.DeleteClient(ctx, client.ID, "admin-1"); err != nil {
+		t.Fatalf("delete client: %v", err)
+	}
+	if _, err := db.Clients().ByID(ctx, client.ID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("expected deleted client not found, got %v", err)
+	}
+	if _, err := db.Proxies().ByID(ctx, proxy.ID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("expected disabled proxy cascade delete, got %v", err)
+	}
+	if _, err := db.ClientEnrollments().ByID(ctx, "join-1"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("expected enrollment cascade delete, got %v", err)
+	}
+}
+
+func TestServiceDeleteClientRejectsEnabledProxy(t *testing.T) {
+	ctx := context.Background()
+	db := openTestStore(t)
+	service := Service{Store: db}
+	user, err := service.CreateUser(ctx, CreateUserInput{ID: "user-1", Username: "alice", ActorID: "admin-1"})
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	client, err := service.CreateClient(ctx, CreateClientInput{ID: "client-1", UserID: user.ID, Name: "home", Credential: "secret", ActorID: "admin-1"})
+	if err != nil {
+		t.Fatalf("create client: %v", err)
+	}
+	if _, err := service.CreateProxy(ctx, CreateProxyInput{ID: "proxy-1", UserID: user.ID, ClientID: client.ID, Name: "web", Type: domain.ProxyHTTP, EntryHost: "app.example.com", TargetHost: "127.0.0.1", TargetPort: 8080, ActorID: "admin-1"}); err != nil {
+		t.Fatalf("create proxy: %v", err)
+	}
+
+	err = service.DeleteClient(ctx, client.ID, "admin-1")
+	var contractError *contracterr.Error
+	if !errors.As(err, &contractError) || contractError.Code != contracterr.CodeConflict {
+		t.Fatalf("expected conflict deleting client with enabled proxy, got %v", err)
+	}
+	if _, err := db.Clients().ByID(ctx, client.ID); err != nil {
+		t.Fatalf("client should remain after rejected delete: %v", err)
 	}
 }
 

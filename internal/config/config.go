@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/simp-frp/go-ginx-2/internal/domain"
 )
@@ -24,6 +25,7 @@ type Server struct {
 	ControlTLSCAFile       string        `json:"control_tls_ca_file"`
 	ControlTLSCertFile     string        `json:"control_tls_cert_file"`
 	ControlTLSKeyFile      string        `json:"control_tls_key_file"`
+	JoinServiceHost        string        `json:"join_service_host"`
 	TCPEntryHost           string        `json:"tcp_entry_host"`
 	HTTPEntryListen        string        `json:"http_entry_listen"`
 	HTTPSEntryListen       string        `json:"https_entry_listen"`
@@ -38,6 +40,16 @@ type Server struct {
 	ACMECloudflareTokenEnv string        `json:"acme_cloudflare_token_env"`
 	HeartbeatTimeout       time.Duration `json:"heartbeat_timeout"`
 	LogRetentionDays       int           `json:"log_retention_days"`
+}
+
+type JoinServiceDefaults struct {
+	Host             string
+	Source           string
+	ServerAddress    string
+	ServerTLSAddress string
+	EnrollmentURL    string
+	ServerName       string
+	ServerCAFile     string
 }
 
 type Client struct {
@@ -68,6 +80,7 @@ func DefaultServer() Server {
 		ControlTLSCAFile:       "data/certs/control-ca.crt",
 		ControlTLSCertFile:     "data/certs/control.crt",
 		ControlTLSKeyFile:      "data/certs/control.key",
+		JoinServiceHost:        "",
 		TCPEntryHost:           "0.0.0.0",
 		HTTPEntryListen:        ":8081",
 		HTTPSEntryListen:       "",
@@ -131,6 +144,9 @@ func (cfg Server) Validate() error {
 	if strings.TrimSpace(cfg.ControlTLSKeyFile) == "" {
 		return errors.New("control_tls_key_file is required")
 	}
+	if err := validateOptionalServiceHost("join_service_host", cfg.JoinServiceHost); err != nil {
+		return err
+	}
 	if strings.TrimSpace(cfg.TCPEntryHost) == "" {
 		return errors.New("tcp_entry_host is required")
 	}
@@ -175,6 +191,41 @@ func (cfg Server) Validate() error {
 		return errors.New("log_retention_days must be positive")
 	}
 	return nil
+}
+
+func ConfirmJoinServiceDefaults(cfg Server) (JoinServiceDefaults, error) {
+	if err := cfg.Validate(); err != nil {
+		return JoinServiceDefaults{}, err
+	}
+	host, source, err := confirmedJoinServiceHost(cfg)
+	if err != nil {
+		return JoinServiceDefaults{}, err
+	}
+	quicPort, err := addressPort("control_quic_listen", cfg.ControlQUICListen)
+	if err != nil {
+		return JoinServiceDefaults{}, err
+	}
+	tlsAddress := ""
+	if strings.TrimSpace(cfg.ControlTLSListen) != "" {
+		tlsPort, err := addressPort("control_tls_listen", cfg.ControlTLSListen)
+		if err != nil {
+			return JoinServiceDefaults{}, err
+		}
+		tlsAddress = net.JoinHostPort(host, tlsPort)
+	}
+	adminPort, err := addressPort("admin_listen", cfg.AdminListen)
+	if err != nil {
+		return JoinServiceDefaults{}, err
+	}
+	return JoinServiceDefaults{
+		Host:             host,
+		Source:           source,
+		ServerAddress:    net.JoinHostPort(host, quicPort),
+		ServerTLSAddress: tlsAddress,
+		EnrollmentURL:    "http://" + net.JoinHostPort(host, adminPort) + "/api/client/enroll",
+		ServerName:       cfg.ControlTLSServerName,
+		ServerCAFile:     cfg.ControlTLSCAFile,
+	}, nil
 }
 
 func (cfg Client) Validate() error {
@@ -253,6 +304,116 @@ func requireAddress(name, value string) error {
 		return fmt.Errorf("%s must be host:port: %w", name, err)
 	}
 	return nil
+}
+
+func validateOptionalServiceHost(name string, value string) error {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	if strings.Contains(value, "://") || strings.Contains(value, "/") {
+		return fmt.Errorf("%s must be a domain name or IP address without scheme or path", name)
+	}
+	if strings.Contains(value, ":") && net.ParseIP(value) == nil {
+		return fmt.Errorf("%s must not include a port", name)
+	}
+	if ip := net.ParseIP(value); ip != nil {
+		return nil
+	}
+	labels := strings.Split(value, ".")
+	for _, label := range labels {
+		if label == "" || strings.HasPrefix(label, "-") || strings.HasSuffix(label, "-") {
+			return fmt.Errorf("%s must be a valid domain name or IP address", name)
+		}
+		for _, r := range label {
+			if !(unicode.IsLetter(r) || unicode.IsDigit(r) || r == '-') {
+				return fmt.Errorf("%s must be a valid domain name or IP address", name)
+			}
+		}
+	}
+	return nil
+}
+
+func confirmedJoinServiceHost(cfg Server) (string, string, error) {
+	if host := strings.TrimSpace(cfg.JoinServiceHost); host != "" {
+		if err := validateOptionalServiceHost("join_service_host", host); err != nil {
+			return "", "", err
+		}
+		return trimIPv6Brackets(host), "join_service_host", nil
+	}
+	for _, candidate := range []struct {
+		source  string
+		address string
+	}{
+		{source: "control_quic_listen", address: cfg.ControlQUICListen},
+		{source: "control_tls_listen", address: cfg.ControlTLSListen},
+	} {
+		host, _, err := net.SplitHostPort(strings.TrimSpace(candidate.address))
+		if err != nil || isUnspecifiedHost(host) {
+			continue
+		}
+		return trimIPv6Brackets(host), candidate.source, nil
+	}
+	if host := firstNonLoopbackIP(); host != "" {
+		return host, "local_interface", nil
+	}
+	return "127.0.0.1", "loopback_fallback", nil
+}
+
+func isUnspecifiedHost(host string) bool {
+	host = strings.TrimSpace(trimIPv6Brackets(host))
+	if host == "" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsUnspecified()
+}
+
+func firstNonLoopbackIP() string {
+	interfaces, err := net.Interfaces()
+	if err != nil {
+		return ""
+	}
+	for _, iface := range interfaces {
+		if iface.Flags&net.FlagUp == 0 || iface.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, addr := range addrs {
+			var ip net.IP
+			switch value := addr.(type) {
+			case *net.IPNet:
+				ip = value.IP
+			case *net.IPAddr:
+				ip = value.IP
+			}
+			if ip == nil || ip.IsLoopback() || ip.IsUnspecified() {
+				continue
+			}
+			if ipv4 := ip.To4(); ipv4 != nil {
+				return ipv4.String()
+			}
+		}
+	}
+	return ""
+}
+
+func addressPort(name string, value string) (string, error) {
+	_, port, err := net.SplitHostPort(strings.TrimSpace(value))
+	if err != nil {
+		return "", fmt.Errorf("%s must be host:port: %w", name, err)
+	}
+	if port == "" {
+		return "", fmt.Errorf("%s port is invalid", name)
+	}
+	return port, nil
+}
+
+func trimIPv6Brackets(host string) string {
+	return strings.TrimSuffix(strings.TrimPrefix(strings.TrimSpace(host), "["), "]")
 }
 
 func listenerClaimFromAddress(sourceName string, network string, value string) []domain.ListenerClaim {

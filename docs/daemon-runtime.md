@@ -57,6 +57,8 @@ You can generate it from the admin UI Clients page with `Create join token`, or 
 ./.tmp/goginx-admin.exe create-client-join -id client-1 -user admin-1 -name home
 ```
 
+During server startup, the server confirms a default join service host from `join_service_host`, the control listener host, a local interface address, or a loopback fallback. The startup log prints the confirmed host, source, and default control addresses. Set `GOGINX_JOIN_SERVICE_HOST` or `join_service_host` when clients must use a public DNS name or load-balancer address instead of the inferred host.
+
 On the client host:
 
 ```powershell
@@ -66,7 +68,7 @@ On the client host:
 
 The join command redeems the token through `/api/client/enroll`, writes `data/client-state.json`, writes `data/certs/server-ca.crt`, and subsequent client runs use that managed state. By default these paths are under the deployment root derived from the `goginx-client` binary location; when the binary is under `bin/`, the deployment root is the parent of `bin/`.
 
-Managed startup accepts environment overrides for file-free deployments that need non-default ports or paths, including `GOGINX_ADMIN_LISTEN`, `GOGINX_CONTROL_QUIC_LISTEN`, `GOGINX_CONTROL_TLS_LISTEN`, `GOGINX_HTTP_ENTRY_LISTEN`, `GOGINX_SQLITE_PATH`, `GOGINX_DATA_DIR`, and `GOGINX_CERTIFICATE_DIR`.
+Managed startup accepts environment overrides for file-free deployments that need non-default ports, paths, or join defaults, including `GOGINX_ADMIN_LISTEN`, `GOGINX_CONTROL_QUIC_LISTEN`, `GOGINX_CONTROL_TLS_LISTEN`, `GOGINX_JOIN_SERVICE_HOST`, `GOGINX_HTTP_ENTRY_LISTEN`, `GOGINX_SQLITE_PATH`, `GOGINX_DATA_DIR`, and `GOGINX_CERTIFICATE_DIR`.
 
 ## Optional Server Config
 
@@ -78,6 +80,7 @@ Explicit JSON config remains supported for advanced deployments. Create `server.
   "admin_frontend_dir": "web/admin",
   "control_quic_listen": "127.0.0.1:8443",
   "control_tls_listen": "127.0.0.1:9443",
+  "join_service_host": "control.example.com",
   "control_tls_cert_file": "data/certs/control.crt",
   "control_tls_key_file": "data/certs/control.key",
   "tcp_entry_host": "127.0.0.1",

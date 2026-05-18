@@ -49,6 +49,7 @@ type ServerRuntime struct {
 	UDPListeners       []*udpproxy.Listener
 	HTTPServer         *httpproxy.Server
 	HTTPSListener      *httpsproxy.Listener
+	JoinService        config.JoinServiceDefaults
 
 	cancel context.CancelFunc
 	once   sync.Once
@@ -75,6 +76,10 @@ func startServerWithStore(parent context.Context, cfg config.Server, db store.St
 	if err != nil {
 		return nil, err
 	}
+	joinDefaults, err := config.ConfirmJoinServiceDefaults(cfg)
+	if err != nil {
+		return nil, err
+	}
 	runtimeCtx, cancel := context.WithCancel(parent)
 	sessions := session.NewManager()
 	persistentStats, err := stats.NewPersistent(runtimeCtx, db.Stats(), 30*time.Second)
@@ -92,7 +97,7 @@ func startServerWithStore(parent context.Context, cfg config.Server, db store.St
 		cancel()
 		return nil, fmt.Errorf("listen control quic: %w", err)
 	}
-	runtime := &ServerRuntime{Store: db, Sessions: sessions, Stats: memoryStats, persistentStats: persistentStats, ControlListener: controlListener, cancel: cancel}
+	runtime := &ServerRuntime{Store: db, Sessions: sessions, Stats: memoryStats, persistentStats: persistentStats, ControlListener: controlListener, JoinService: joinDefaults, cancel: cancel}
 	go func() { _ = controlListener.Serve(runtimeCtx) }()
 	if cfg.AdminEnabled || cfg.AdminCredentialsFile != "" {
 		staticListenerClaims, err := cfg.RuntimeListenerClaims(true)
@@ -100,7 +105,7 @@ func startServerWithStore(parent context.Context, cfg config.Server, db store.St
 			_ = runtime.Close()
 			return nil, fmt.Errorf("assemble runtime listener claims: %w", err)
 		}
-		adminService := admin.Service{Store: db, StaticListenerClaims: staticListenerClaims}
+		adminService := admin.Service{Store: db, StaticListenerClaims: staticListenerClaims, DefaultJoin: joinDefaults}
 		if cfg.ACMEEnabled {
 			certificateService, err := managedCertificateService(cfg, db)
 			if err != nil {

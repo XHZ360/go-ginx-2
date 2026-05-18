@@ -130,6 +130,7 @@ func (r authClientRepository) SetStatus(context.Context, string, domain.ClientSt
 }
 
 func (r authClientRepository) RotateCredential(context.Context, string, string) error { return nil }
+func (r authClientRepository) Delete(context.Context, string) error                   { return nil }
 
 type authClientEnrollmentRepository struct{}
 

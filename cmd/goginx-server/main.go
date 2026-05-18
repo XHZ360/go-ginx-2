@@ -43,7 +43,7 @@ func main() {
 	if runtime.HTTPSListener != nil {
 		httpsAddress = runtime.HTTPSListener.Addr().String()
 	}
-	log.Printf("go-ginx server started: admin=%s control_quic=%s control_tls=%s http=%s https=%s tcp_entries=%d udp_entries=%d", adminAddress, runtime.ControlListener.Addr(), controlTLSAddress, runtime.HTTPServer.Addr(), httpsAddress, len(runtime.TCPListeners), len(runtime.UDPListeners))
+	log.Printf("go-ginx server started: admin=%s control_quic=%s control_tls=%s http=%s https=%s join_service_host=%s join_service_source=%s join_server_address=%s join_server_tls_address=%s tcp_entries=%d udp_entries=%d", adminAddress, runtime.ControlListener.Addr(), controlTLSAddress, runtime.HTTPServer.Addr(), httpsAddress, runtime.JoinService.Host, runtime.JoinService.Source, runtime.JoinService.ServerAddress, runtime.JoinService.ServerTLSAddress, len(runtime.TCPListeners), len(runtime.UDPListeners))
 	<-ctx.Done()
 }
 

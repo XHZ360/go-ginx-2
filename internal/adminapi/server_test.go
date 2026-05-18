@@ -513,6 +513,60 @@ func TestServerProxyEntryConflictAndDeleteAfterDisable(t *testing.T) {
 	assertGraphQLErrorCode(t, deleteBlocked, http.StatusOK, "CONFLICT")
 }
 
+func TestServerClientJoinDefaultsAndDeleteContract(t *testing.T) {
+	caFile := filepath.Join(t.TempDir(), "control-ca.crt")
+	if err := os.WriteFile(caFile, []byte("ca-pem"), 0o600); err != nil {
+		t.Fatalf("write control ca: %v", err)
+	}
+	server := startAdminTestServer(t, func(entry *Entry) {
+		entry.Commands.DefaultJoin = config.JoinServiceDefaults{
+			EnrollmentURL:    "http://server.example.com:8080/api/client/enroll",
+			ServerAddress:    "server.example.com:8443",
+			ServerTLSAddress: "server.example.com:9443",
+			ServerName:       "go-ginx-control.test",
+			ServerCAFile:     caFile,
+		}
+	})
+	client := newAdminHTTPClient(t)
+	bootstrap := loginAdmin(t, client, server.Addr().String(), "admin", "secret")
+
+	joinResult := postAdminGraphQL(t, client, server.Addr().String(), `mutation {
+  createClientJoin(input: {
+    userId: "user-1"
+    name: "join-default-node"
+  }) {
+    clientId
+    token
+  }
+}`, bootstrap.CSRFToken, http.StatusOK)
+	joinPayload := joinResult["data"].(map[string]any)["createClientJoin"].(map[string]any)
+	tokenPayload, err := enrollment.DecodeToken(joinPayload["token"].(string))
+	if err != nil {
+		t.Fatalf("decode join token: %v", err)
+	}
+	if tokenPayload.ServerAddress != "server.example.com:8443" || tokenPayload.ServerTLSAddress != "server.example.com:9443" || tokenPayload.EnrollmentURL != "http://server.example.com:8080/api/client/enroll" {
+		t.Fatalf("join token did not use defaults: %+v", tokenPayload)
+	}
+
+	assertGraphQLErrorCodeForQuery(t, client, server.Addr().String(), `mutation {
+  deleteClient(input: { id: "client-1" }) { clientId }
+}`, bootstrap.CSRFToken, "CONFLICT")
+
+	postAdminGraphQL(t, client, server.Addr().String(), `mutation {
+  disableProxy(input: { id: "proxy-1" }) { proxyId }
+}`, bootstrap.CSRFToken, http.StatusOK)
+	deleteResult := postAdminGraphQL(t, client, server.Addr().String(), `mutation {
+  deleteClient(input: { id: "client-1" }) { clientId }
+}`, bootstrap.CSRFToken, http.StatusOK)
+	deletePayload := deleteResult["data"].(map[string]any)["deleteClient"].(map[string]any)
+	if deletePayload["clientId"] != "client-1" {
+		t.Fatalf("unexpected delete payload: %+v", deletePayload)
+	}
+	assertGraphQLErrorCodeForQuery(t, client, server.Addr().String(), `query {
+  client(id: "client-1") { id }
+}`, "", "NOT_FOUND")
+}
+
 func TestServerCertificateResponsesStaySecretSafe(t *testing.T) {
 	server := startAdminTestServer(t, func(entry *Entry) {
 		ctx := context.Background()

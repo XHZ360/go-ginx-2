@@ -169,6 +169,11 @@ func (r clientRepository) RotateCredential(ctx context.Context, id string, crede
 	return resultError(result, err)
 }
 
+func (r clientRepository) Delete(ctx context.Context, id string) error {
+	result, err := r.db.ExecContext(ctx, `delete from clients where id = ?`, id)
+	return resultError(result, err)
+}
+
 type clientEnrollmentRepository struct{ db *sql.DB }
 
 func (r clientEnrollmentRepository) Create(ctx context.Context, enrollment domain.ClientEnrollment) error {

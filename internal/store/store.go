@@ -72,6 +72,7 @@ type ClientRepository interface {
 	List(ctx context.Context) ([]domain.Client, error)
 	SetStatus(ctx context.Context, id string, status domain.ClientStatus) error
 	RotateCredential(ctx context.Context, id string, credentialHash string) error
+	Delete(ctx context.Context, id string) error
 }
 
 type ClientEnrollmentRepository interface {

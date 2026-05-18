@@ -60,7 +60,7 @@ func TestServerValidateAcceptsConfiguredACME(t *testing.T) {
 
 func TestLoadServerAcceptsAdminFrontendDir(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "server.json")
-	content := `{"admin_listen":"127.0.0.1:8080","admin_credentials_file":"admins.json","admin_frontend_dir":"web/admin","control_quic_listen":"127.0.0.1:8443","control_tls_listen":"127.0.0.1:9443","control_tls_cert_file":"control.crt","control_tls_key_file":"control.key","tcp_entry_host":"127.0.0.1","http_entry_listen":"127.0.0.1:8081","sqlite_path":"data/go-ginx.db","data_dir":"data","certificate_dir":"data/certs","heartbeat_timeout":1000000000,"log_retention_days":7}`
+	content := `{"admin_listen":"127.0.0.1:8080","admin_credentials_file":"admins.json","admin_frontend_dir":"web/admin","control_quic_listen":"127.0.0.1:8443","control_tls_listen":"127.0.0.1:9443","control_tls_cert_file":"control.crt","control_tls_key_file":"control.key","join_service_host":"server.example.com","tcp_entry_host":"127.0.0.1","http_entry_listen":"127.0.0.1:8081","sqlite_path":"data/go-ginx.db","data_dir":"data","certificate_dir":"data/certs","heartbeat_timeout":1000000000,"log_retention_days":7}`
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -71,6 +71,55 @@ func TestLoadServerAcceptsAdminFrontendDir(t *testing.T) {
 	}
 	if cfg.AdminFrontendDir != "web/admin" {
 		t.Fatalf("unexpected admin frontend dir %q", cfg.AdminFrontendDir)
+	}
+	if cfg.JoinServiceHost != "server.example.com" {
+		t.Fatalf("unexpected join service host %q", cfg.JoinServiceHost)
+	}
+}
+
+func TestConfirmJoinServiceDefaultsUsesExplicitHost(t *testing.T) {
+	cfg := DefaultServer()
+	cfg.JoinServiceHost = "server.example.com"
+
+	defaults, err := ConfirmJoinServiceDefaults(cfg)
+	if err != nil {
+		t.Fatalf("confirm join service defaults: %v", err)
+	}
+	if defaults.Host != "server.example.com" || defaults.Source != "join_service_host" {
+		t.Fatalf("unexpected host defaults: %+v", defaults)
+	}
+	if defaults.ServerAddress != "server.example.com:8443" || defaults.ServerTLSAddress != "server.example.com:9443" {
+		t.Fatalf("unexpected join addresses: %+v", defaults)
+	}
+	if defaults.EnrollmentURL != "http://server.example.com:8080/api/client/enroll" {
+		t.Fatalf("unexpected enrollment url %q", defaults.EnrollmentURL)
+	}
+}
+
+func TestConfirmJoinServiceDefaultsRejectsInvalidExplicitHost(t *testing.T) {
+	cfg := DefaultServer()
+	cfg.JoinServiceHost = "http://server.example.com:8443/path"
+
+	if _, err := ConfirmJoinServiceDefaults(cfg); err == nil {
+		t.Fatal("expected invalid join_service_host error")
+	}
+}
+
+func TestConfirmJoinServiceDefaultsInfersConfiguredHost(t *testing.T) {
+	cfg := DefaultServer()
+	cfg.ControlQUICListen = "control.example.com:18443"
+	cfg.ControlTLSListen = "control.example.com:19443"
+	cfg.AdminListen = "127.0.0.1:18080"
+
+	defaults, err := ConfirmJoinServiceDefaults(cfg)
+	if err != nil {
+		t.Fatalf("confirm join service defaults: %v", err)
+	}
+	if defaults.Host != "control.example.com" || defaults.Source != "control_quic_listen" {
+		t.Fatalf("unexpected inferred defaults: %+v", defaults)
+	}
+	if defaults.ServerAddress != "control.example.com:18443" || defaults.ServerTLSAddress != "control.example.com:19443" {
+		t.Fatalf("unexpected inferred addresses: %+v", defaults)
 	}
 }
 
@@ -203,6 +252,7 @@ func TestLoadManagedServerAppliesEnvironmentOverrides(t *testing.T) {
 	t.Setenv("GOGINX_CONTROL_TLS_CA_FILE", filepath.Join(root, "data", "certs", "control-ca.crt"))
 	t.Setenv("GOGINX_CONTROL_TLS_CERT_FILE", filepath.Join(root, "data", "certs", "control.crt"))
 	t.Setenv("GOGINX_CONTROL_TLS_KEY_FILE", filepath.Join(root, "data", "certs", "control.key"))
+	t.Setenv("GOGINX_JOIN_SERVICE_HOST", "join.example.com")
 
 	cfg, err := LoadManagedServer()
 	if err != nil {
@@ -210,6 +260,9 @@ func TestLoadManagedServerAppliesEnvironmentOverrides(t *testing.T) {
 	}
 	if !cfg.AdminEnabled || cfg.AdminListen != "127.0.0.1:18080" || cfg.ControlQUICListen != "127.0.0.1:18443" || cfg.ControlTLSListen != "127.0.0.1:19443" {
 		t.Fatalf("environment overrides were not applied: %+v", cfg)
+	}
+	if cfg.JoinServiceHost != "join.example.com" {
+		t.Fatalf("join service environment override was not applied: %+v", cfg)
 	}
 	if _, err := os.Stat(cfg.ControlTLSCAFile); err != nil {
 		t.Fatalf("expected generated ca file: %v", err)
