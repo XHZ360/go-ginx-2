@@ -240,6 +240,9 @@ func (service Service) CreateClientJoin(ctx context.Context, input CreateClientJ
 	}
 	caPEM, err := os.ReadFile(input.ServerCAFile)
 	if err != nil {
+		if os.IsNotExist(err) {
+			return CreateClientJoinResult{}, contracterr.Validation("validation failed", map[string]string{"serverCAFile": "server CA file was not found"})
+		}
 		return CreateClientJoinResult{}, err
 	}
 	clientResult, err := service.CreateClientWithCredential(ctx, CreateClientInput{ID: input.ID, UserID: input.UserID, Name: input.Name, ActorID: input.ActorID})

@@ -22,7 +22,9 @@ import (
 	"github.com/graphql-go/graphql/language/source"
 	"github.com/simp-frp/go-ginx-2/internal/admin"
 	"github.com/simp-frp/go-ginx-2/internal/adminquery"
+	"github.com/simp-frp/go-ginx-2/internal/config"
 	"github.com/simp-frp/go-ginx-2/internal/contracterr"
+	"github.com/simp-frp/go-ginx-2/internal/deploypath"
 	"github.com/simp-frp/go-ginx-2/internal/domain"
 	"github.com/simp-frp/go-ginx-2/internal/enrollment"
 	"github.com/simp-frp/go-ginx-2/internal/store"
@@ -315,20 +317,9 @@ func loadAdminFrontend(dir string) (*adminFrontend, error) {
 }
 
 func defaultAdminFrontendPath() (string, error) {
-	executable, err := executablePath()
+	deploymentRoot, err := deploypath.Root(executablePath)
 	if err != nil {
-		return "", fmt.Errorf("resolve executable path: %w", err)
-	}
-	absExecutable, err := filepath.Abs(executable)
-	if err != nil {
-		return "", fmt.Errorf("resolve absolute executable path: %w", err)
-	}
-	if resolved, err := filepath.EvalSymlinks(absExecutable); err == nil {
-		absExecutable = resolved
-	}
-	deploymentRoot := filepath.Dir(absExecutable)
-	if filepath.Base(deploymentRoot) == defaultBinaryDir {
-		deploymentRoot = filepath.Dir(deploymentRoot)
+		return "", err
 	}
 	return filepath.Join(deploymentRoot, defaultAdminFrontendDir), nil
 }
@@ -1315,10 +1306,22 @@ func createProxyInputFromArgs(args map[string]interface{}, actor string) admin.C
 
 func createClientJoinInputFromArgs(args map[string]interface{}, actor string) admin.CreateClientJoinInput {
 	input := admin.CreateClientJoinInput{ID: stringValue(args, "id"), UserID: stringValue(args, "userId"), Name: stringValue(args, "name"), ActorID: actor, EnrollmentURL: stringValue(args, "enrollmentUrl"), ServerAddress: stringValue(args, "serverAddress"), ServerTLSAddress: stringValue(args, "serverTLSAddress"), ServerName: stringValue(args, "serverName"), ServerCAFile: stringValue(args, "serverCAFile")}
+	if strings.TrimSpace(input.ServerCAFile) == "" {
+		input.ServerCAFile = config.DefaultServer().ControlTLSCAFile
+	}
+	input.ServerCAFile = deploymentRelativePath(input.ServerCAFile)
 	if ttlSeconds := intValue(args, "ttlSeconds"); ttlSeconds > 0 {
 		input.TTL = time.Duration(ttlSeconds) * time.Second
 	}
 	return input
+}
+
+func deploymentRelativePath(path string) string {
+	root, err := deploypath.Root(executablePath)
+	if err != nil {
+		return path
+	}
+	return deploypath.Resolve(root, path)
 }
 
 func updateProxyInputFromArgs(args map[string]interface{}, actor string) admin.UpdateProxyInput {

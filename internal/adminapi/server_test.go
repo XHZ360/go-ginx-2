@@ -381,6 +381,9 @@ func TestServerSessionGraphQLAndCanonicalQueries(t *testing.T) {
 }
 
 func TestServerClientCredentialAndValidationContract(t *testing.T) {
+	deploymentRoot := t.TempDir()
+	setDefaultAdminExecutable(t, deploymentRoot)
+	t.Chdir(t.TempDir())
 	server := startAdminTestServer(t, nil)
 	client := newAdminHTTPClient(t)
 	bootstrap := loginAdmin(t, client, server.Addr().String(), "admin", "secret")
@@ -399,8 +402,11 @@ func TestServerClientCredentialAndValidationContract(t *testing.T) {
 		t.Fatalf("expected one-time credential in create payload: %+v", createPayload)
 	}
 
-	caFile := filepath.ToSlash(filepath.Join(t.TempDir(), "control-ca.crt"))
-	if err := os.WriteFile(caFile, []byte("ca-pem"), 0o600); err != nil {
+	caFile := filepath.ToSlash(filepath.Join("data", "certs", "control-ca.crt"))
+	if err := os.MkdirAll(filepath.Join(deploymentRoot, "data", "certs"), 0o755); err != nil {
+		t.Fatalf("create control ca dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(deploymentRoot, "data", "certs", "control-ca.crt"), []byte("ca-pem"), 0o600); err != nil {
 		t.Fatalf("write control ca: %v", err)
 	}
 	joinResult := postAdminGraphQL(t, client, server.Addr().String(), `mutation {
