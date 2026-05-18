@@ -350,6 +350,10 @@ func TestServerSessionGraphQLAndCanonicalQueries(t *testing.T) {
   proxy(id: "proxy-1") { id name type config { entryHost targetHost targetPort } }
 }`, "", http.StatusOK)
 	detailData := detailResult["data"].(map[string]any)
+	userDetail := detailData["user"].(map[string]any)
+	if userDetail["id"].(string) != "user-1" {
+		t.Fatalf("unexpected user detail id: %+v", userDetail)
+	}
 	managedProxies := detailData["client"].(map[string]any)["managedProxies"].([]any)
 	if len(managedProxies) != 1 {
 		t.Fatalf("unexpected managed proxies: %+v", managedProxies)

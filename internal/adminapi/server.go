@@ -744,7 +744,7 @@ func (server *Server) buildSchema() (graphql.Schema, error) {
 		"updatedAt":      &graphql.Field{Type: graphql.String, Resolve: timeResolve(func(value adminquery.ClientDetail) time.Time { return value.UpdatedAt })},
 	}})
 	userType := graphql.NewObject(graphql.ObjectConfig{Name: "AdminUser", Fields: graphql.Fields{
-		"id":              &graphql.Field{Type: graphql.String},
+		"id":              &graphql.Field{Type: graphql.String, Resolve: userIDResolve()},
 		"username":        &graphql.Field{Type: graphql.String},
 		"role":            &graphql.Field{Type: graphql.String},
 		"status":          &graphql.Field{Type: graphql.String},
@@ -1505,6 +1505,19 @@ func nullableUserTimeResolve(selector func(adminquery.UserListItem) *time.Time) 
 			}
 		}
 		return nil, nil
+	}
+}
+
+func userIDResolve() graphql.FieldResolveFn {
+	return func(params graphql.ResolveParams) (interface{}, error) {
+		switch value := params.Source.(type) {
+		case adminquery.UserListItem:
+			return value.ID, nil
+		case adminquery.UserDetail:
+			return value.ID, nil
+		default:
+			return "", nil
+		}
 	}
 }
 

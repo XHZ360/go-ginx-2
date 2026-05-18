@@ -99,7 +99,7 @@ function sessionResponse() {
   return graphQL({ authenticated: true, username: 'admin', csrfToken: 'csrf', pollIntervalSeconds: 5 });
 }
 
-function createFetchMock(options?: { createValidationFailure?: boolean; rotateFailure?: boolean }) {
+function createFetchMock(options?: { createValidationFailure?: boolean; rotateFailure?: boolean; userDetailNullID?: boolean }) {
   const clientsByUser: Record<string, ReturnType<typeof client>[]> = {
     '': [client('client-all', 'user-2', 'all-node')],
     'user-1': [client('client-1', 'user-1', 'home-node')],
@@ -126,7 +126,7 @@ function createFetchMock(options?: { createValidationFailure?: boolean; rotateFa
       return graphQL({ data: { users: { items: users, totalCount: users.length, pageInfo: { ...pageInfo, totalCount: users.length } } } });
     }
     if (query.includes('query User(')) {
-      return graphQL({ data: { user: users[0] } });
+      return graphQL({ data: { user: options?.userDetailNullID ? { ...users[0], id: null } : users[0] } });
     }
     if (query.includes('query Clients')) {
       const userId = variables.input?.filter?.userId ?? '';
@@ -266,7 +266,7 @@ describe('admin client management', () => {
   });
 
   it('navigates from user detail to scoped clients', async () => {
-    vi.stubGlobal('fetch', createFetchMock());
+    vi.stubGlobal('fetch', createFetchMock({ userDetailNullID: true }));
 
     renderAdmin(['/users/user-1']);
 

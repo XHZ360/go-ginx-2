@@ -67,16 +67,17 @@ export function UserDetailPage() {
   }
 
   const user = query.data;
+  const userId = user.id || id;
 
   return (
     <section className="page-section">
       <DetailBackLink to="/users" label="Back to users" />
       <PageHeader
         title={user.username}
-        description={`User ID: ${user.id}`}
+        description={`User ID: ${userId}`}
         actions={
           <>
-            <button type="button" className="button button--secondary" onClick={() => navigate(`/clients?userId=${encodeURIComponent(user.id)}`)}>
+            <button type="button" className="button button--secondary" onClick={() => navigate(`/clients?userId=${encodeURIComponent(userId)}`)}>
               View clients
             </button>
             <button type="button" className="button button--secondary" onClick={() => setPasswordDialog(true)}>
