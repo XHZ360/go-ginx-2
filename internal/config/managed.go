@@ -14,6 +14,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/simp-frp/go-ginx-2/internal/deploypath"
 )
 
 const (
@@ -22,13 +24,39 @@ const (
 )
 
 func LoadManagedServer() (Server, error) {
+	return LoadManagedServerAtRoot("")
+}
+
+func LoadManagedServerAtRoot(root string) (Server, error) {
 	cfg := DefaultServer()
 	cfg.AdminEnabled = true
 	applyManagedServerEnv(&cfg)
+	ResolveServerPaths(&cfg, root)
 	if err := PrepareManagedServer(&cfg); err != nil {
 		return Server{}, err
 	}
 	return cfg, cfg.Validate()
+}
+
+func ResolveServerPaths(cfg *Server, root string) {
+	if cfg == nil {
+		return
+	}
+	cfg.AdminCredentialsFile = deploypath.Resolve(root, cfg.AdminCredentialsFile)
+	cfg.AdminFrontendDir = deploypath.Resolve(root, cfg.AdminFrontendDir)
+	cfg.ControlTLSCAFile = deploypath.Resolve(root, cfg.ControlTLSCAFile)
+	cfg.ControlTLSCertFile = deploypath.Resolve(root, cfg.ControlTLSCertFile)
+	cfg.ControlTLSKeyFile = deploypath.Resolve(root, cfg.ControlTLSKeyFile)
+	cfg.SQLitePath = deploypath.Resolve(root, cfg.SQLitePath)
+	cfg.DataDir = deploypath.Resolve(root, cfg.DataDir)
+	cfg.CertificateDir = deploypath.Resolve(root, cfg.CertificateDir)
+}
+
+func ResolveClientPaths(cfg *Client, root string) {
+	if cfg == nil {
+		return
+	}
+	cfg.ServerCAFile = deploypath.Resolve(root, cfg.ServerCAFile)
 }
 
 func applyManagedServerEnv(cfg *Server) {

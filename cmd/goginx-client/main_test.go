@@ -95,6 +95,37 @@ func TestLoadClientConfigExplainsMissingManagedState(t *testing.T) {
 	}
 }
 
+func TestLoadClientConfigResolvesRelativeConfigAndCAFromDeploymentRoot(t *testing.T) {
+	deploymentRoot := t.TempDir()
+	setClientExecutable(t, deploymentRoot)
+	t.Chdir(t.TempDir())
+	configPath := filepath.Join(deploymentRoot, "config", "client.json")
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.DefaultClient()
+	cfg.ServerAddress = "127.0.0.1:8443"
+	cfg.ServerName = "go-ginx-control.test"
+	cfg.ServerCAFile = "data/certs/server-ca.crt"
+	cfg.ClientID = "client-1"
+	cfg.Credential = "secret"
+	content, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath, content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := loadClientConfig(filepath.Join("config", "client.json"))
+	if err != nil {
+		t.Fatalf("load client config: %v", err)
+	}
+	if loaded.ServerCAFile != filepath.Join(deploymentRoot, "data", "certs", "server-ca.crt") {
+		t.Fatalf("expected deployment-root ca file, got %q", loaded.ServerCAFile)
+	}
+}
+
 func setClientExecutable(t *testing.T, deploymentRoot string) {
 	t.Helper()
 	previous := executablePath

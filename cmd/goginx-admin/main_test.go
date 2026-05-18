@@ -182,6 +182,82 @@ func TestRunCreatesClientJoinToken(t *testing.T) {
 	}
 }
 
+func TestRunCreateClientJoinDefaultsCAFileFromDeploymentRoot(t *testing.T) {
+	deploymentRoot := t.TempDir()
+	stateDir := t.TempDir()
+	previousExecutablePath := executablePath
+	executablePath = func() (string, error) {
+		return filepath.Join(deploymentRoot, "bin", "goginx-admin"), nil
+	}
+	t.Cleanup(func() {
+		executablePath = previousExecutablePath
+	})
+	t.Chdir(stateDir)
+	if err := os.MkdirAll(filepath.Join(deploymentRoot, "data", "certs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(deploymentRoot, "data", "certs", "control-ca.crt"), []byte("ca-pem"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	dbPath := filepath.Join(deploymentRoot, "data", "go-ginx.db")
+	if err := run([]string{"create-user", "-id", "user-1", "-username", "alice"}); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	if err := run([]string{"create-client-join", "-id", "client-1", "-user", "user-1", "-name", "home", "-server-name", "go-ginx-control.test", "-server-address", "127.0.0.1:8443", "-enrollment-url", "http://127.0.0.1:8080/api/client/enroll"}); err != nil {
+		t.Fatalf("create client join: %v", err)
+	}
+	if _, err := os.Stat(dbPath); err != nil {
+		t.Fatalf("expected deployment-root db: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(stateDir, "data", "go-ginx.db")); !os.IsNotExist(err) {
+		t.Fatalf("expected no cwd-relative db, got err=%v", err)
+	}
+}
+
+func TestRunManageCertificateDefaultsDirectoryFromDeploymentRoot(t *testing.T) {
+	deploymentRoot := t.TempDir()
+	stateDir := t.TempDir()
+	previousExecutablePath := executablePath
+	executablePath = func() (string, error) {
+		return filepath.Join(deploymentRoot, "bin", "goginx-admin"), nil
+	}
+	t.Cleanup(func() {
+		executablePath = previousExecutablePath
+	})
+	t.Chdir(stateDir)
+	t.Setenv("CF_DNS_API_TOKEN", "token")
+	oldIssuer := newACMEIssuer
+	oldProvider := newDNSProvider
+	newACMEIssuer = func() certmanager.Issuer { return adminMainFakeIssuer{} }
+	newDNSProvider = func(string) (certmanager.DNSChallengeProvider, error) { return adminMainFakeDNSProvider{}, nil }
+	t.Cleanup(func() {
+		newACMEIssuer = oldIssuer
+		newDNSProvider = oldProvider
+	})
+
+	if err := run([]string{"create-user", "-id", "user-1", "-username", "alice"}); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	if err := run([]string{"create-client", "-id", "client-1", "-user", "user-1", "-name", "home", "-credential", "secret"}); err != nil {
+		t.Fatalf("create client: %v", err)
+	}
+	if err := run([]string{"create-https-proxy", "-id", "https-1", "-user", "user-1", "-client", "client-1", "-name", "secure", "-host", "app.example.com", "-target-host", "127.0.0.1", "-target-port", "8080"}); err != nil {
+		t.Fatalf("create https proxy: %v", err)
+	}
+	if err := run([]string{"issue-managed-certificate", "-proxy", "https-1", "-acme-account-email", "ops@example.com", "-acme-terms-accepted"}); err != nil {
+		t.Fatalf("issue managed certificate: %v", err)
+	}
+
+	wantCert := filepath.Join(deploymentRoot, "data", "certs", "managed", "app.example.com", "active.crt")
+	if _, err := os.Stat(wantCert); err != nil {
+		t.Fatalf("expected deployment-root managed certificate %s: %v", wantCert, err)
+	}
+	if _, err := os.Stat(filepath.Join(stateDir, "data", "certs", "managed", "app.example.com", "active.crt")); !os.IsNotExist(err) {
+		t.Fatalf("expected no cwd-relative managed certificate, got err=%v", err)
+	}
+}
+
 func TestRunRejectsUnknownCommand(t *testing.T) {
 	if err := run([]string{"unknown"}); err == nil {
 		t.Fatal("expected unknown command error")

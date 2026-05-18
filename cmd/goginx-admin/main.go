@@ -15,6 +15,7 @@ import (
 	"github.com/simp-frp/go-ginx-2/internal/certmanager"
 	"github.com/simp-frp/go-ginx-2/internal/config"
 	"github.com/simp-frp/go-ginx-2/internal/deploy"
+	"github.com/simp-frp/go-ginx-2/internal/deploypath"
 	"github.com/simp-frp/go-ginx-2/internal/domain"
 	httpsproxy "github.com/simp-frp/go-ginx-2/internal/proxy/https"
 	"github.com/simp-frp/go-ginx-2/internal/store"
@@ -31,8 +32,6 @@ var (
 		return provider, nil
 	}
 )
-
-const defaultBinaryDir = "bin"
 
 var executablePath = os.Executable
 
@@ -61,6 +60,7 @@ func run(args []string) error {
 		if err := flags.Parse(args[1:]); err != nil {
 			return err
 		}
+		*dbPath = deploymentRelativePath(*dbPath)
 		if strings.TrimSpace(*password) == "" {
 			return fmt.Errorf("administrator password is required")
 		}
@@ -96,6 +96,7 @@ func run(args []string) error {
 		if err := flags.Parse(args[1:]); err != nil {
 			return err
 		}
+		*dbPath = deploymentRelativePath(*dbPath)
 		service, closeStore, err := openService(*dbPath)
 		if err != nil {
 			return err
@@ -115,6 +116,7 @@ func run(args []string) error {
 		if err := flags.Parse(args[1:]); err != nil {
 			return err
 		}
+		*dbPath = deploymentRelativePath(*dbPath)
 		service, closeStore, err := openService(*dbPath)
 		if err != nil {
 			return err
@@ -197,8 +199,10 @@ func createProxy(flags *flag.FlagSet, args []string, proxyType domain.ProxyType)
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
-	dbPath := flags.Lookup("db").Value.String()
+	dbPath := deploymentRelativePath(flags.Lookup("db").Value.String())
 	actorID := flags.Lookup("actor").Value.String()
+	*certFile = deploymentRelativePath(*certFile)
+	*keyFile = deploymentRelativePath(*keyFile)
 	service, closeStore, err := openService(dbPath)
 	if err != nil {
 		return err
@@ -246,8 +250,9 @@ func createClientJoin(flags *flag.FlagSet, args []string) error {
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
-	dbPath := flags.Lookup("db").Value.String()
+	dbPath := deploymentRelativePath(flags.Lookup("db").Value.String())
 	actorID := flags.Lookup("actor").Value.String()
+	*serverCAFile = deploymentRelativePath(*serverCAFile)
 	service, closeStore, err := openService(dbPath)
 	if err != nil {
 		return err
@@ -283,8 +288,9 @@ func manageCertificate(flags *flag.FlagSet, args []string, action string) error 
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
-	dbPath := flags.Lookup("db").Value.String()
+	dbPath := deploymentRelativePath(flags.Lookup("db").Value.String())
 	actorID := flags.Lookup("actor").Value.String()
+	*certificateDir = deploymentRelativePath(*certificateDir)
 	service, closeStore, err := openService(dbPath, certificateServiceConfig{CertificateDir: *certificateDir, DirectoryURL: *acmeDirectoryURL, AccountEmail: *acmeAccountEmail, TermsAccepted: *acmeTermsAccepted, TokenEnv: *acmeTokenEnv, RenewalWindow: *acmeRenewalWindow})
 	if err != nil {
 		return err
@@ -351,26 +357,19 @@ func defaultAdminDBPath() string {
 	if err != nil {
 		return config.DefaultServer().SQLitePath
 	}
-	return filepath.Join(root, config.DefaultServer().SQLitePath)
+	return deploypath.Resolve(root, config.DefaultServer().SQLitePath)
 }
 
 func deploymentRoot() (string, error) {
-	executable, err := executablePath()
+	return deploypath.Root(executablePath)
+}
+
+func deploymentRelativePath(path string) string {
+	root, err := deploymentRoot()
 	if err != nil {
-		return "", fmt.Errorf("resolve executable path: %w", err)
+		return path
 	}
-	absExecutable, err := filepath.Abs(executable)
-	if err != nil {
-		return "", fmt.Errorf("resolve absolute executable path: %w", err)
-	}
-	if resolved, err := filepath.EvalSymlinks(absExecutable); err == nil {
-		absExecutable = resolved
-	}
-	root := filepath.Dir(absExecutable)
-	if filepath.Base(root) == defaultBinaryDir {
-		root = filepath.Dir(root)
-	}
-	return root, nil
+	return deploypath.Resolve(root, path)
 }
 
 func ensureDatabaseParentDir(dbPath string) error {
