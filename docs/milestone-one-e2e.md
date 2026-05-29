@@ -57,7 +57,7 @@ go test ./e2e -run TestDeployBundleRuntimeRestartRecovery -count=1
 
 Covered behavior:
 
-- `goginx-admin build-deploy-bundle` creates a stable core bundle with binaries, config, environment examples, data/log directories, and `systemd` unit files.
+- `goginx-admin build-deploy-bundle` creates a stable core bundle with binaries, config, environment examples, data/log directories, and Linux `systemd` unit files; Windows bundles omit `systemd` and keep the same runtime directory layout.
 - The packaged runtime binaries start successfully from the generated bundle layout.
 - A packaged client reconnects after the packaged server process restarts.
 - Deployments carry dedicated admin frontend assets in the install-root `admin-ui/` directory by default and may point `admin_frontend_dir` at another built frontend directory without changing the `/api/admin/*` API namespace.

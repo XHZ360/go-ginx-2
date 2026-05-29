@@ -323,13 +323,13 @@ func TestRunBuildsDeployBundle(t *testing.T) {
 		_ = os.Chdir(workingDir)
 	}()
 	outputDir := filepath.Join(t.TempDir(), "bundle")
-	if err := run([]string{"build-deploy-bundle", "-output", outputDir, "-goos", runtime.GOOS, "-goarch", runtime.GOARCH, "-install-root", "/opt/go-ginx"}); err != nil {
+	if err := run([]string{"build-deploy-bundle", "-output", outputDir, "-goos", "linux", "-goarch", runtime.GOARCH, "-install-root", "/opt/go-ginx"}); err != nil {
 		t.Fatalf("build deploy bundle: %v", err)
 	}
 	for _, path := range []string{
-		filepath.Join(outputDir, "bin", bundleBinaryName("goginx-server")),
-		filepath.Join(outputDir, "bin", bundleBinaryName("goginx-client")),
-		filepath.Join(outputDir, "bin", bundleBinaryName("goginx-admin")),
+		filepath.Join(outputDir, "bin", "goginx-server"),
+		filepath.Join(outputDir, "bin", "goginx-client"),
+		filepath.Join(outputDir, "bin", "goginx-admin"),
 		filepath.Join(outputDir, "config", "server.json"),
 		filepath.Join(outputDir, "config", "client.json"),
 		filepath.Join(outputDir, "config", "admin-credentials.json.example"),
@@ -358,6 +358,41 @@ func TestRunBuildsDeployBundle(t *testing.T) {
 	clientConfig := readBundleClientConfig(t, filepath.Join(outputDir, "config", "client.json"))
 	if clientConfig.ServerName != "go-ginx-control.local" || clientConfig.ServerCAFile != "data/certs/server-ca.crt" {
 		t.Fatalf("unexpected client trust config: %+v", clientConfig)
+	}
+}
+
+func TestRunBuildsWindowsDeployBundle(t *testing.T) {
+	repoRoot := adminMainTestBundleRepoRoot(t, true)
+	workingDir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(repoRoot); err != nil {
+		t.Fatalf("chdir repo root: %v", err)
+	}
+	defer func() {
+		_ = os.Chdir(workingDir)
+	}()
+	outputDir := filepath.Join(t.TempDir(), "bundle")
+	if err := run([]string{"build-deploy-bundle", "-output", outputDir, "-goos", "windows", "-goarch", "amd64"}); err != nil {
+		t.Fatalf("build windows deploy bundle: %v", err)
+	}
+	for _, path := range []string{
+		filepath.Join(outputDir, "bin", "goginx-server.exe"),
+		filepath.Join(outputDir, "bin", "goginx-client.exe"),
+		filepath.Join(outputDir, "bin", "goginx-admin.exe"),
+		filepath.Join(outputDir, "config", "server.json"),
+		filepath.Join(outputDir, "config", "client.json"),
+		filepath.Join(outputDir, "data", "certs", "managed"),
+		filepath.Join(outputDir, "logs"),
+		filepath.Join(outputDir, "admin-ui", "index.html"),
+	} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("expected %s: %v", path, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(outputDir, "systemd")); !os.IsNotExist(err) {
+		t.Fatalf("expected no systemd directory for windows bundle, got err=%v", err)
 	}
 }
 
@@ -427,13 +462,6 @@ func TestRunBuildsDeployBundleWithAdminFrontendAssets(t *testing.T) {
 	if clientConfig.ServerName != "go-ginx-control.local" || clientConfig.ServerCAFile != "data/certs/server-ca.crt" {
 		t.Fatalf("unexpected client trust config: %+v", clientConfig)
 	}
-}
-
-func bundleBinaryName(name string) string {
-	if runtime.GOOS == "windows" {
-		return name + ".exe"
-	}
-	return name
 }
 
 func adminMainTestBundleRepoRoot(t *testing.T, includeFrontendDist bool) string {

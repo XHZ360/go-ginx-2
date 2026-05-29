@@ -26,7 +26,9 @@ type BundleOptions struct {
 const bundledAdminFrontendDir = "admin-ui"
 
 func BuildBundle(ctx context.Context, options BundleOptions) error {
-	if err := options.validate(); err != nil {
+	var err error
+	options, err = options.normalize()
+	if err != nil {
 		return err
 	}
 	adminFrontendDist, err := requireAdminFrontendDist(options)
@@ -44,9 +46,13 @@ func BuildBundle(ctx context.Context, options BundleOptions) error {
 		filepath.Join(options.OutputDir, "data", "certs"),
 		filepath.Join(options.OutputDir, "data", "certs", "managed"),
 		filepath.Join(options.OutputDir, "logs"),
-		filepath.Join(options.OutputDir, "systemd"),
 	} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return err
+		}
+	}
+	if options.GoOS == "linux" {
+		if err := os.MkdirAll(filepath.Join(options.OutputDir, "systemd"), 0o755); err != nil {
 			return err
 		}
 	}
@@ -80,38 +86,40 @@ func BuildBundle(ctx context.Context, options BundleOptions) error {
 	if err := os.WriteFile(filepath.Join(options.OutputDir, "config", "goginx-client.env.example"), []byte(clientEnvExample()), 0o644); err != nil {
 		return err
 	}
-	for _, serviceName := range []string{"goginx-server.service", "goginx-client.service"} {
-		content, err := renderSystemdTemplate(options, serviceName)
-		if err != nil {
-			return err
-		}
-		if err := os.WriteFile(filepath.Join(options.OutputDir, "systemd", serviceName), content, 0o644); err != nil {
-			return err
+	if options.GoOS == "linux" {
+		for _, serviceName := range []string{"goginx-server.service", "goginx-client.service"} {
+			content, err := renderSystemdTemplate(options, serviceName)
+			if err != nil {
+				return err
+			}
+			if err := os.WriteFile(filepath.Join(options.OutputDir, "systemd", serviceName), content, 0o644); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
 }
 
-func (options BundleOptions) validate() error {
+func (options BundleOptions) normalize() (BundleOptions, error) {
 	if strings.TrimSpace(options.RepoRoot) == "" {
-		return errors.New("repo root is required")
+		return BundleOptions{}, errors.New("repo root is required")
 	}
 	if strings.TrimSpace(options.OutputDir) == "" {
-		return errors.New("output directory is required")
+		return BundleOptions{}, errors.New("output directory is required")
 	}
 	if strings.TrimSpace(options.GoOS) == "" {
 		options.GoOS = runtime.GOOS
 	}
 	if strings.TrimSpace(options.GoArch) == "" {
-		return errors.New("goarch is required")
+		options.GoArch = runtime.GOARCH
 	}
-	if strings.TrimSpace(options.InstallRoot) == "" {
-		return errors.New("install root is required")
+	if options.GoOS == "linux" && strings.TrimSpace(options.InstallRoot) == "" {
+		return BundleOptions{}, errors.New("install root is required for linux bundles")
 	}
 	if _, err := os.Stat(filepath.Join(options.RepoRoot, "go.mod")); err != nil {
-		return fmt.Errorf("repo root must contain go.mod: %w", err)
+		return BundleOptions{}, fmt.Errorf("repo root must contain go.mod: %w", err)
 	}
-	return nil
+	return options, nil
 }
 
 func buildBinary(ctx context.Context, options BundleOptions, packagePath string, output string) error {

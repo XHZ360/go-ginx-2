@@ -14,13 +14,14 @@ import (
 func TestBuildBundleCreatesExpectedLayout(t *testing.T) {
 	root := testBundleRepoRoot(t, true)
 	outputDir := filepath.Join(t.TempDir(), "bundle")
-	if err := BuildBundle(context.Background(), BundleOptions{RepoRoot: root, OutputDir: outputDir, GoOS: runtime.GOOS, GoArch: runtime.GOARCH, InstallRoot: "/opt/go-ginx"}); err != nil {
+	targetGOOS := "linux"
+	if err := BuildBundle(context.Background(), BundleOptions{RepoRoot: root, OutputDir: outputDir, GoOS: targetGOOS, GoArch: runtime.GOARCH, InstallRoot: "/opt/go-ginx"}); err != nil {
 		t.Fatalf("build bundle: %v", err)
 	}
 	for _, path := range []string{
-		filepath.Join(outputDir, "bin", binaryName("goginx-server", runtime.GOOS)),
-		filepath.Join(outputDir, "bin", binaryName("goginx-client", runtime.GOOS)),
-		filepath.Join(outputDir, "bin", binaryName("goginx-admin", runtime.GOOS)),
+		filepath.Join(outputDir, "bin", binaryName("goginx-server", targetGOOS)),
+		filepath.Join(outputDir, "bin", binaryName("goginx-client", targetGOOS)),
+		filepath.Join(outputDir, "bin", binaryName("goginx-admin", targetGOOS)),
 		filepath.Join(outputDir, "config", "server.json"),
 		filepath.Join(outputDir, "config", "client.json"),
 		filepath.Join(outputDir, "config", "admin-credentials.json.example"),
@@ -63,6 +64,31 @@ func TestBuildBundleCreatesExpectedLayout(t *testing.T) {
 	}
 	if bytes.Contains(clientService, []byte("-config")) {
 		t.Fatalf("expected configless client service, got %s", string(clientService))
+	}
+}
+
+func TestBuildBundleCreatesWindowsLayoutWithoutSystemd(t *testing.T) {
+	root := testBundleRepoRoot(t, true)
+	outputDir := filepath.Join(t.TempDir(), "bundle")
+	if err := BuildBundle(context.Background(), BundleOptions{RepoRoot: root, OutputDir: outputDir, GoOS: "windows", GoArch: "amd64"}); err != nil {
+		t.Fatalf("build windows bundle: %v", err)
+	}
+	for _, path := range []string{
+		filepath.Join(outputDir, "bin", "goginx-server.exe"),
+		filepath.Join(outputDir, "bin", "goginx-client.exe"),
+		filepath.Join(outputDir, "bin", "goginx-admin.exe"),
+		filepath.Join(outputDir, "config", "server.json"),
+		filepath.Join(outputDir, "config", "client.json"),
+		filepath.Join(outputDir, "data", "certs", "managed"),
+		filepath.Join(outputDir, "logs"),
+		filepath.Join(outputDir, bundledAdminFrontendDir, "index.html"),
+	} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("expected %s: %v", path, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(outputDir, "systemd")); !os.IsNotExist(err) {
+		t.Fatalf("expected no systemd directory for windows bundle, got err=%v", err)
 	}
 }
 

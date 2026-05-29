@@ -163,6 +163,19 @@ The core bundle layout is stable and contains:
 
 Deployments use the install-root `admin-ui/` directory by default. Rebuild the frontend before packaging; `build-deploy-bundle` fails if `admin-ui/dist` is missing. Deployments that need a custom frontend may include built assets in a different directory inside the install root, such as `web/admin/`, and set `admin_frontend_dir` through explicit config.
 
+Build the Windows release bundle for direct execution on Windows hosts:
+
+```powershell
+Set-Location admin-ui
+npm ci
+npm run build
+Set-Location ..
+$env:CGO_ENABLED="0"
+go run ./cmd/goginx-admin build-deploy-bundle -output ./.tmp/windows-amd64-bundle -goos windows -goarch amd64
+```
+
+The Windows bundle keeps `bin/`, `config/`, `data/`, `logs/`, and `admin-ui/`, but does not include `systemd/`. Run the generated `.exe` files from the unpacked bundle root.
+
 Run the server from the desired state directory:
 
 ```powershell

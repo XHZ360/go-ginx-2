@@ -19,7 +19,7 @@
   - `goginx-admin` 可创建管理员、用户、客户端、一次性 join token、代理记录和部署包。
   - 管理监听器提供登录、会话引导、登出、GraphQL 管理操作、客户端注册和同源管理前端。
   - 管理前端默认使用部署根目录 `admin-ui/` 静态资源，`admin_frontend_dir` 可覆盖为自定义构建目录。
-- 部署：`build-deploy-bundle` 可生成包含服务端、客户端、管理 CLI、示例配置、目录结构和 `systemd` service 的部署包。
+- 部署：`build-deploy-bundle` 可生成 Linux `systemd` 部署包或 Windows 发布包，包含服务端、客户端、管理 CLI、示例配置、目录结构和对应平台的运行时布局。
 
 ## 仓库结构
 
@@ -359,6 +359,19 @@ go run ./cmd/goginx-admin build-deploy-bundle -output ./dist/linux-systemd-bundl
 ```
 
 `build-deploy-bundle` 会把 `admin-ui/dist` 复制为发布包根目录下的 `admin-ui/`。将 `./dist/linux-systemd-bundle` 作为 Release 产物发布；目标服务器只需要拿到这个目录或其压缩包。
+
+生成 Windows 发布包：
+
+```powershell
+Set-Location admin-ui
+npm ci
+npm run build
+Set-Location ..
+$env:CGO_ENABLED="0"
+go run ./cmd/goginx-admin build-deploy-bundle -output ./dist/windows-amd64-bundle -goos windows -goarch amd64
+```
+
+`build-deploy-bundle` 会把 `admin-ui/dist` 复制为发布包根目录下的 `admin-ui/`。Windows 产物不包含 `systemd/`，但保留 `bin/`、`config/`、`data/`、`logs/` 和 `admin-ui/` 目录，适合解压后直接运行 `.\bin\goginx-server.exe`、`.\bin\goginx-client.exe` 和 `.\bin\goginx-admin.exe`。
 
 ## Release 部署包部署
 

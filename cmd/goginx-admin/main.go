@@ -152,12 +152,15 @@ func run(args []string) error {
 }
 
 func buildDeployBundle(flags *flag.FlagSet, args []string) error {
-	outputDir := flags.String("output", filepath.Join("dist", runtime.GOOS+"-"+runtime.GOARCH+"-bundle"), "bundle output directory")
 	goos := flags.String("goos", runtime.GOOS, "target GOOS")
 	goarch := flags.String("goarch", runtime.GOARCH, "target GOARCH")
+	outputDir := flags.String("output", "", "bundle output directory")
 	installRoot := flags.String("install-root", "/opt/go-ginx", "install root rendered into service templates")
 	if err := flags.Parse(args); err != nil {
 		return err
+	}
+	if strings.TrimSpace(*outputDir) == "" {
+		*outputDir = filepath.Join("dist", *goos+"-"+*goarch+"-bundle")
 	}
 	repoRoot, err := os.Getwd()
 	if err != nil {
