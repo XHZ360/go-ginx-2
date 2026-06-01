@@ -6,3 +6,6 @@ admin-ui/.vite/
 admin-ui/coverage/
 dist/
 data/
+
+deploye*.jsonc
+*.log
