@@ -142,6 +142,7 @@ type ClientEnrollment struct {
 	ClientID   string
 	SecretHash string
 	TokenHash  string
+	Token      string
 	ExpiresAt  time.Time
 	UsedAt     *time.Time
 	CreatedAt  time.Time
@@ -260,6 +261,9 @@ func (enrollment ClientEnrollment) Validate() error {
 	}
 	if strings.TrimSpace(enrollment.TokenHash) == "" {
 		return errors.New("client enrollment token hash is required")
+	}
+	if strings.TrimSpace(enrollment.Token) == "" {
+		return errors.New("client enrollment token is required")
 	}
 	if enrollment.ExpiresAt.IsZero() {
 		return errors.New("client enrollment expiry is required")

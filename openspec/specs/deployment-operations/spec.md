@@ -38,12 +38,35 @@
 - **WHEN** 操作者遇到已知本地配置问题，例如未知配置字段、缺少 TLS 文件、CA/SNI 不匹配、认证拒绝、缺少监听器、Host 不匹配、目标不可达、UDP 响应问题或统计刷盘时机
 - **THEN** 当前文档提供该问题类别的故障排查指导
 
+### Requirement: Server service address confirmation
+系统 MUST 在服务端配置加载和守护进程启动阶段确认当前服务可供客户端 join 使用的默认域名或 IP，并把该确认结果作为运行时状态提供给 join/enrollment 生成路径。
+
+#### Scenario: Explicit configured service address is confirmed
+- **WHEN** 操作者通过受支持的配置、命令参数或环境覆盖提供服务域名或 IP
+- **THEN** 服务端启动时确认该显式值为默认 join 服务地址来源，并优先于自动推断结果
+
+#### Scenario: Configless startup infers service address
+- **WHEN** 服务端以 configless 模式启动且操作者未显式提供服务域名或 IP
+- **THEN** 服务端根据已配置或默认控制通道监听地址、本机可用地址和本地开发兜底规则确认一个默认 join 服务地址来源
+
+#### Scenario: Confirmed address is operator-visible
+- **WHEN** 服务端启动完成或管理员查看用于生成 join token 的默认连接信息
+- **THEN** 系统提供可诊断的默认服务域名或 IP 及其来源，使操作者能够发现需要显式覆盖的 NAT、容器或负载均衡场景
+
+#### Scenario: Invalid explicit service address fails clearly
+- **WHEN** 操作者显式配置的服务域名或 IP 无法通过格式校验或无法组合为受支持的 join 连接地址
+- **THEN** 服务端启动或配置校验失败并返回明确错误，而不是静默回退到自动推断地址
+
 ### Requirement: Packaged deployment bundle baseline
-系统 MUST 为首个受支持的单节点部署模型生成可复现部署包，并且基础启动路径 MUST NOT 依赖操作者编辑或携带额外配置文件。
+系统 MUST 为首个受支持的单节点部署模型生成可复现部署包，并且基础启动路径 MUST NOT 依赖操作者编辑或携带额外配置文件；部署包 MUST 包含默认管理前端运行所需的 `admin-ui/` 构建产物目录。
 
 #### Scenario: Bundle contains required runtime artifacts
 - **WHEN** 操作者为受支持的生产模型构建部署包
-- **THEN** 输出包含 `goginx-server`、`goginx-client` 和 `goginx-admin` 二进制文件、服务单元模板、文档化的可选配置覆盖位置，以及数据、证书和日志的预期运行时目录布局
+- **THEN** 输出包含 `goginx-server`、`goginx-client` 和 `goginx-admin` 二进制文件、默认 `admin-ui/` 前端构建产物目录、服务单元模板、文档化的可选配置覆盖位置，以及数据、证书和日志的预期运行时目录布局
+
+#### Scenario: Bundle requires frontend build output
+- **WHEN** 操作者构建部署包但仓库中没有可复制的管理前端构建产物
+- **THEN** 打包流程失败并提示先构建管理前端，而不是生成缺少默认 `admin-ui/` 运行时目录的部署包
 
 #### Scenario: Bundle marks sample config as optional
 - **WHEN** 部署包包含 server 或 client JSON 示例
@@ -76,12 +99,12 @@
 系统 MUST 为 configless 打包部署、可选配置覆盖和受监督重启模型提供有证据支持的验证。
 
 #### Scenario: Packaged runtime starts without config files
-- **WHEN** 自动化验证针对部署包运行，并且没有提供 `server.json`、`client.json`、管理员凭据文件或 admin 前端目录配置
-- **THEN** 它证明打包后的 server 可以使用内置默认值和受管状态成功启动
+- **WHEN** 自动化验证针对部署包运行，并且没有提供 `server.json`、`client.json`、管理员凭据文件或 `admin_frontend_dir` 配置，但保留部署包根目录默认 `admin-ui/` 目录，且进程工作目录可以不同于部署根目录
+- **THEN** 它证明打包后的 server 可以使用内置默认值、受管状态和部署根目录默认 `admin-ui/` 前端目录成功启动，并能服务管理前端入口
 
 #### Scenario: Joined client starts from managed state
 - **WHEN** 自动化验证完成客户端 join/enrollment 流程
-- **THEN** 它证明打包后的 client 可以在后续无 `-config` 启动时通过控制通道认证并接收代理快照
+- **THEN** 它证明打包后的 client 把受管 `data/client-state.json` 和 `data/certs/server-ca.crt` 写入由 `goginx-client` 二进制位置推导出的部署根目录，并且可以在后续无 `-config`、进程工作目录不同于部署根目录时通过控制通道认证并接收代理快照
 
 #### Scenario: Packaged runtime supports explicit override layout
 - **WHEN** 自动化验证针对显式配置覆盖路径运行

@@ -252,7 +252,7 @@ func TestServerRedeemsClientEnrollmentToken(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := db.ClientEnrollments().Create(context.Background(), domain.ClientEnrollment{ID: payload.EnrollmentID, ClientID: payload.ClientID, SecretHash: enrollment.HashSecret(payload.Secret), TokenHash: enrollment.HashToken(token), ExpiresAt: expiresAt}); err != nil {
+	if err := db.ClientEnrollments().Create(context.Background(), domain.ClientEnrollment{ID: payload.EnrollmentID, ClientID: payload.ClientID, SecretHash: enrollment.HashSecret(payload.Secret), TokenHash: enrollment.HashToken(token), Token: token, ExpiresAt: expiresAt}); err != nil {
 		t.Fatal(err)
 	}
 	server, err := Listen(Entry{ListenAddress: "127.0.0.1:0", AdminFrontendDir: writeAdminFrontendFixture(t), Query: adminquery.Service{Store: db, Sessions: sessions, Stats: memory}, Commands: admin.Service{Store: db}, Enrollment: enrollment.Service{Store: db}})

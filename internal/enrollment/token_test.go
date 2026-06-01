@@ -86,7 +86,7 @@ func enrollmentTestToken(t *testing.T, db *sqlite.Store, expiresAt time.Time) st
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := db.ClientEnrollments().Create(context.Background(), domain.ClientEnrollment{ID: payload.EnrollmentID, ClientID: payload.ClientID, SecretHash: HashSecret(payload.Secret), TokenHash: HashToken(token), ExpiresAt: expiresAt}); err != nil {
+	if err := db.ClientEnrollments().Create(context.Background(), domain.ClientEnrollment{ID: payload.EnrollmentID, ClientID: payload.ClientID, SecretHash: HashSecret(payload.Secret), TokenHash: HashToken(token), Token: token, ExpiresAt: expiresAt}); err != nil {
 		t.Fatal(err)
 	}
 	return token

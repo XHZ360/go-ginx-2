@@ -64,6 +64,7 @@ type UserRepository interface {
 	List(ctx context.Context) ([]domain.User, error)
 	SetStatus(ctx context.Context, id string, status domain.UserStatus) error
 	SetPassword(ctx context.Context, id string, passwordHash string) error
+	Delete(ctx context.Context, id string) error
 }
 
 type ClientRepository interface {
@@ -78,6 +79,7 @@ type ClientRepository interface {
 type ClientEnrollmentRepository interface {
 	Create(ctx context.Context, enrollment domain.ClientEnrollment) error
 	ByID(ctx context.Context, id string) (domain.ClientEnrollment, error)
+	LatestReviewableByClientID(ctx context.Context, clientID string, now time.Time) (domain.ClientEnrollment, error)
 	MarkUsed(ctx context.Context, id string, usedAt time.Time) error
 }
 

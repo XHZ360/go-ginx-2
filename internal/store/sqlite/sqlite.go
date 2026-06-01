@@ -57,6 +57,9 @@ func (s *Store) migrate(ctx context.Context) error {
 	if err := addProxyCertificateColumns(ctx, s.db); err != nil {
 		return err
 	}
+	if err := addClientEnrollmentTokenColumn(ctx, s.db); err != nil {
+		return err
+	}
 	return addUserPasswordColumn(ctx, s.db)
 }
 
@@ -112,6 +115,11 @@ func (r userRepository) SetStatus(ctx context.Context, id string, status domain.
 
 func (r userRepository) SetPassword(ctx context.Context, id string, passwordHash string) error {
 	result, err := r.db.ExecContext(ctx, `update users set password_hash = ?, updated_at = ? where id = ?`, passwordHash, time.Now().UTC(), id)
+	return resultError(result, err)
+}
+
+func (r userRepository) Delete(ctx context.Context, id string) error {
+	result, err := r.db.ExecContext(ctx, `delete from users where id = ?`, id)
 	return resultError(result, err)
 }
 
@@ -187,12 +195,16 @@ func (r clientEnrollmentRepository) Create(ctx context.Context, enrollment domai
 	if enrollment.UpdatedAt.IsZero() {
 		enrollment.UpdatedAt = now
 	}
-	_, err := r.db.ExecContext(ctx, `insert into client_enrollments (id, client_id, secret_hash, token_hash, expires_at, used_at, created_at, updated_at) values (?, ?, ?, ?, ?, ?, ?, ?)`, enrollment.ID, enrollment.ClientID, enrollment.SecretHash, enrollment.TokenHash, enrollment.ExpiresAt, enrollment.UsedAt, enrollment.CreatedAt, enrollment.UpdatedAt)
+	_, err := r.db.ExecContext(ctx, `insert into client_enrollments (id, client_id, secret_hash, token_hash, token, expires_at, used_at, created_at, updated_at) values (?, ?, ?, ?, ?, ?, ?, ?, ?)`, enrollment.ID, enrollment.ClientID, enrollment.SecretHash, enrollment.TokenHash, enrollment.Token, enrollment.ExpiresAt, enrollment.UsedAt, enrollment.CreatedAt, enrollment.UpdatedAt)
 	return translateError(err)
 }
 
 func (r clientEnrollmentRepository) ByID(ctx context.Context, id string) (domain.ClientEnrollment, error) {
-	return scanClientEnrollment(r.db.QueryRowContext(ctx, `select id, client_id, secret_hash, token_hash, expires_at, used_at, created_at, updated_at from client_enrollments where id = ?`, id))
+	return scanClientEnrollment(r.db.QueryRowContext(ctx, `select id, client_id, secret_hash, token_hash, token, expires_at, used_at, created_at, updated_at from client_enrollments where id = ?`, id))
+}
+
+func (r clientEnrollmentRepository) LatestReviewableByClientID(ctx context.Context, clientID string, now time.Time) (domain.ClientEnrollment, error) {
+	return scanClientEnrollment(r.db.QueryRowContext(ctx, `select id, client_id, secret_hash, token_hash, token, expires_at, used_at, created_at, updated_at from client_enrollments where client_id = ? and token <> '' and used_at is null and expires_at > ? order by created_at desc, id desc limit 1`, clientID, now))
 }
 
 func (r clientEnrollmentRepository) MarkUsed(ctx context.Context, id string, usedAt time.Time) error {
@@ -542,7 +554,7 @@ func scanClientRows(rows *sql.Rows) (domain.Client, error) {
 func scanClientEnrollment(row *sql.Row) (domain.ClientEnrollment, error) {
 	var enrollment domain.ClientEnrollment
 	var usedAt sql.NullTime
-	err := row.Scan(&enrollment.ID, &enrollment.ClientID, &enrollment.SecretHash, &enrollment.TokenHash, &enrollment.ExpiresAt, &usedAt, &enrollment.CreatedAt, &enrollment.UpdatedAt)
+	err := row.Scan(&enrollment.ID, &enrollment.ClientID, &enrollment.SecretHash, &enrollment.TokenHash, &enrollment.Token, &enrollment.ExpiresAt, &usedAt, &enrollment.CreatedAt, &enrollment.UpdatedAt)
 	if usedAt.Valid {
 		enrollment.UsedAt = &usedAt.Time
 	}
@@ -610,6 +622,10 @@ func addProxyCertificateColumns(ctx context.Context, db *sql.DB) error {
 
 func addUserPasswordColumn(ctx context.Context, db *sql.DB) error {
 	return addColumnIfMissing(ctx, db, "users", "password_hash", "text not null default ''")
+}
+
+func addClientEnrollmentTokenColumn(ctx context.Context, db *sql.DB) error {
+	return addColumnIfMissing(ctx, db, "client_enrollments", "token", "text not null default ''")
 }
 
 func addColumnIfMissing(ctx context.Context, db *sql.DB, table string, column string, definition string) error {
@@ -698,6 +714,7 @@ create table if not exists client_enrollments (
     client_id text not null references clients(id) on delete cascade,
     secret_hash text not null,
     token_hash text not null,
+    token text not null default '',
     expires_at timestamp not null,
     used_at timestamp,
     created_at timestamp not null,

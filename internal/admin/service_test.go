@@ -100,11 +100,76 @@ func TestServiceCreatesClientJoinToken(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load enrollment record: %v", err)
 	}
-	if record.ClientID != result.Client.ID || record.TokenHash != enrollment.HashToken(result.Token) {
+	if record.ClientID != result.Client.ID || record.TokenHash != enrollment.HashToken(result.Token) || record.Token != result.Token {
 		t.Fatalf("unexpected enrollment record: %+v", record)
+	}
+	reviewed, err := service.ReviewClientJoinToken(ctx, result.Client.ID, "admin-1")
+	if err != nil {
+		t.Fatalf("review join token: %v", err)
+	}
+	reviewedAgain, err := service.ReviewClientJoinToken(ctx, result.Client.ID, "admin-1")
+	if err != nil {
+		t.Fatalf("review join token again: %v", err)
+	}
+	if reviewed.Token != result.Token || reviewedAgain.Token != result.Token || reviewed.ExpiresAt.IsZero() {
+		t.Fatalf("unexpected reviewed token: first=%+v second=%+v", reviewed, reviewedAgain)
 	}
 	if _, err := db.Clients().ByID(ctx, result.Client.ID); err != nil {
 		t.Fatalf("client was not created: %v", err)
+	}
+}
+
+func TestServiceReviewClientJoinTokenRejectsUnavailableToken(t *testing.T) {
+	ctx := context.Background()
+	db := openTestStore(t)
+	service := Service{Store: db}
+	user, err := service.CreateUser(ctx, CreateUserInput{ID: "user-1", Username: "alice", ActorID: "admin-1"})
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	client, err := service.CreateClient(ctx, CreateClientInput{ID: "client-1", UserID: user.ID, Name: "home", Credential: "secret", ActorID: "admin-1"})
+	if err != nil {
+		t.Fatalf("create client: %v", err)
+	}
+	usedAt := time.Now().UTC()
+	for _, tc := range []struct {
+		name       string
+		enrollment domain.ClientEnrollment
+	}{
+		{
+			name: "used token",
+			enrollment: domain.ClientEnrollment{
+				ID:         "join-used",
+				ClientID:   client.ID,
+				SecretHash: "secret-hash",
+				TokenHash:  "token-hash-used",
+				Token:      "goginx_join_used",
+				ExpiresAt:  time.Now().UTC().Add(time.Hour),
+				UsedAt:     &usedAt,
+			},
+		},
+		{
+			name: "expired token",
+			enrollment: domain.ClientEnrollment{
+				ID:         "join-expired",
+				ClientID:   client.ID,
+				SecretHash: "secret-hash",
+				TokenHash:  "token-hash-expired",
+				Token:      "goginx_join_expired",
+				ExpiresAt:  time.Now().UTC().Add(-time.Hour),
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := db.ClientEnrollments().Create(ctx, tc.enrollment); err != nil {
+				t.Fatalf("create enrollment: %v", err)
+			}
+			_, err := service.ReviewClientJoinToken(ctx, client.ID, "admin-1")
+			var contractError *contracterr.Error
+			if !errors.As(err, &contractError) || contractError.Code != contracterr.CodeConflict {
+				t.Fatalf("expected conflict, got %v", err)
+			}
+		})
 	}
 }
 
@@ -189,7 +254,7 @@ func TestServiceDeleteClientRemovesDisabledClientResources(t *testing.T) {
 	if err := service.DisableProxy(ctx, proxy.ID, "admin-1"); err != nil {
 		t.Fatalf("disable proxy: %v", err)
 	}
-	if err := db.ClientEnrollments().Create(ctx, domain.ClientEnrollment{ID: "join-1", ClientID: client.ID, SecretHash: "secret-hash", TokenHash: "token-hash", ExpiresAt: time.Now().UTC().Add(time.Hour)}); err != nil {
+	if err := db.ClientEnrollments().Create(ctx, domain.ClientEnrollment{ID: "join-1", ClientID: client.ID, SecretHash: "secret-hash", TokenHash: "token-hash", Token: "goginx_join_token", ExpiresAt: time.Now().UTC().Add(time.Hour)}); err != nil {
 		t.Fatalf("create enrollment: %v", err)
 	}
 
@@ -303,6 +368,47 @@ func TestServiceDisablesUserAndSetsPassword(t *testing.T) {
 	}
 	if !domain.CheckPasswordHash("secret-2", updated.PasswordHash) {
 		t.Fatalf("expected updated password hash: %+v", updated)
+	}
+}
+
+func TestServiceDeletesUserWithoutDependentResources(t *testing.T) {
+	ctx := context.Background()
+	db := openTestStore(t)
+	service := Service{Store: db}
+	user, err := service.CreateUser(ctx, CreateUserInput{ID: "user-1", Username: "alice", ActorID: "admin-1"})
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	if err := service.DeleteUser(ctx, user.ID, "admin-1"); err != nil {
+		t.Fatalf("delete user: %v", err)
+	}
+	if _, err := db.Users().ByID(ctx, user.ID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("expected deleted user not found, got %v", err)
+	}
+}
+
+func TestServiceDeleteUserRejectsDependentResources(t *testing.T) {
+	ctx := context.Background()
+	db := openTestStore(t)
+	service := Service{Store: db}
+	user, err := service.CreateUser(ctx, CreateUserInput{ID: "user-1", Username: "alice", ActorID: "admin-1"})
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	client, err := service.CreateClient(ctx, CreateClientInput{ID: "client-1", UserID: user.ID, Name: "home", Credential: "secret", ActorID: "admin-1"})
+	if err != nil {
+		t.Fatalf("create client: %v", err)
+	}
+	if _, err := service.CreateProxy(ctx, CreateProxyInput{ID: "proxy-1", UserID: user.ID, ClientID: client.ID, Name: "web", Type: domain.ProxyHTTP, EntryHost: "app.example.com", TargetHost: "127.0.0.1", TargetPort: 8080, ActorID: "admin-1"}); err != nil {
+		t.Fatalf("create proxy: %v", err)
+	}
+	err = service.DeleteUser(ctx, user.ID, "admin-1")
+	var contractError *contracterr.Error
+	if !errors.As(err, &contractError) || contractError.Code != contracterr.CodeConflict {
+		t.Fatalf("expected conflict deleting user with dependencies, got %v", err)
+	}
+	if _, err := db.Users().ByID(ctx, user.ID); err != nil {
+		t.Fatalf("user should remain after rejected delete: %v", err)
 	}
 }
 

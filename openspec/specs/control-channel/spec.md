@@ -47,11 +47,12 @@
 
 #### Scenario: Generate client join material
 - **WHEN** 已授权管理员为某个客户端生成 join/enrollment 材料
-- **THEN** 系统生成包含或可换取服务端地址、TLS 信任材料、TLS 服务端名称、客户端 ID、客户端凭据和协议默认值的一次性 join 材料
+- **THEN** 系统生成包含或可换取服务端地址、TLS 信任材料、TLS 服务端名称、客户端 ID、客户端凭据和协议默认值的 join 材料
+- **AND** 管理员可以在该材料未使用且未过期期间重复查看完整 token
 
-#### Scenario: Join material is time-bounded or single-use
-- **WHEN** join/enrollment 材料已被消费、过期或被撤销
-- **THEN** 后续使用该材料的客户端入网请求 MUST 被拒绝
+#### Scenario: Reuse, expiry, and revocation are rejected
+- **WHEN** join/enrollment 材料已被客户端消费、过期或被撤销
+- **THEN** 后续客户端 join 尝试 MUST 被拒绝，并且管理员侧不再返回该 token 明文
 
 #### Scenario: Client join writes managed local state
 - **WHEN** 操作者在客户端主机执行文档化的 join 流程
@@ -63,7 +64,37 @@
 
 #### Scenario: Join does not log reusable secrets
 - **WHEN** 生成、消费或拒绝 join/enrollment 材料
-- **THEN** 普通日志和审计事件 MUST NOT 明文记录可重放的客户端 credential 或完整 join secret
+- **THEN** 普通日志和审计事件 MUST NOT 明文记录可重放的客户端 credential 或完整 join token
+
+### Requirement: Whitespace-tolerant join token parsing
+系统 MUST 在客户端 join/enrollment 解析时容忍复制过程中引入的空白字符，同时保持 token 校验语义不变。
+
+#### Scenario: Client accepts wrapped join token
+- **WHEN** 操作者把包含换行的 join token 传给 `goginx-client join`
+- **THEN** 客户端移除 token 中的空白字符后继续解码和兑换 token
+
+#### Scenario: Client accepts token with incidental whitespace
+- **WHEN** join token 中包含首尾空格、行内空格、制表符或回车换行
+- **THEN** 客户端在执行前缀、payload、hash、过期和单次消费校验前忽略这些空白字符
+
+#### Scenario: Token security checks remain enforced
+- **WHEN** 移除空白后的 join token 已使用、过期、被篡改或 hash 不匹配
+- **THEN** 客户端 join 仍被拒绝
+
+### Requirement: Join material default service address
+系统 MUST 在生成客户端 join/enrollment 材料时，默认使用服务端配置和启动阶段确认的服务域名或 IP 作为客户端连接服务端的地址来源，并且显式输入 MUST 能覆盖该默认值。
+
+#### Scenario: Join material uses confirmed service address by default
+- **WHEN** 已授权管理员生成客户端 join/enrollment 材料，且请求未显式提供服务端控制通道地址
+- **THEN** 系统把服务端启动时确认的默认服务域名或 IP 组合为 join 材料中的默认 `serverAddress`、相关 TLS 地址和 enrollment URL 地址来源
+
+#### Scenario: Explicit join address overrides confirmed default
+- **WHEN** 已授权管理员生成客户端 join/enrollment 材料，并显式提供服务端地址、TLS 地址、服务端名称或 enrollment URL
+- **THEN** 系统使用显式输入填充对应 join 材料字段，而不是强制使用启动时确认的默认值
+
+#### Scenario: Join address default does not expose reusable secrets
+- **WHEN** 系统记录或展示 join/enrollment 材料的默认服务地址来源
+- **THEN** 日志、审计事件和非 secret UI 文案可以包含服务域名或 IP，但 MUST NOT 明文记录完整 join token、客户端 credential 或可重放 join secret
 
 ### Requirement: Client authentication
 服务端 MUST 在注册活跃控制通道会话或向客户端提供代理配置前认证客户端凭据。

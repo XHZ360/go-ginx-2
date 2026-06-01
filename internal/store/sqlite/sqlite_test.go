@@ -39,6 +39,49 @@ func TestUserClientProxyRepositories(t *testing.T) {
 	}
 }
 
+func TestClientEnrollmentRepositoryStoresReviewableToken(t *testing.T) {
+	ctx := context.Background()
+	db := openTestStore(t)
+	seedUserAndClient(t, ctx, db)
+
+	first := domain.ClientEnrollment{ID: "join-1", ClientID: "c1", SecretHash: "secret-hash-1", TokenHash: "token-hash-1", Token: "goginx_join_first", ExpiresAt: time.Now().UTC().Add(time.Hour)}
+	second := domain.ClientEnrollment{ID: "join-2", ClientID: "c1", SecretHash: "secret-hash-2", TokenHash: "token-hash-2", Token: "goginx_join_second", ExpiresAt: time.Now().UTC().Add(2 * time.Hour), CreatedAt: time.Now().UTC().Add(time.Second)}
+	if err := db.ClientEnrollments().Create(ctx, first); err != nil {
+		t.Fatalf("create first enrollment: %v", err)
+	}
+	if err := db.ClientEnrollments().Create(ctx, second); err != nil {
+		t.Fatalf("create second enrollment: %v", err)
+	}
+	if _, err := db.db.ExecContext(ctx, `insert into client_enrollments (id, client_id, secret_hash, token_hash, token, expires_at, created_at, updated_at) values (?, ?, ?, ?, ?, ?, ?, ?)`, "join-empty", "c1", "secret-hash-empty", "token-hash-empty", "", time.Now().UTC().Add(3*time.Hour), time.Now().UTC().Add(2*time.Second), time.Now().UTC().Add(2*time.Second)); err != nil {
+		t.Fatalf("insert legacy empty-token enrollment: %v", err)
+	}
+
+	found, err := db.ClientEnrollments().ByID(ctx, "join-1")
+	if err != nil {
+		t.Fatalf("lookup enrollment: %v", err)
+	}
+	if found.Token != first.Token {
+		t.Fatalf("expected token text to round trip, got %+v", found)
+	}
+	latest, err := db.ClientEnrollments().LatestReviewableByClientID(ctx, "c1", time.Now().UTC())
+	if err != nil {
+		t.Fatalf("lookup latest enrollment: %v", err)
+	}
+	if latest.ID != "join-2" || latest.Token != second.Token {
+		t.Fatalf("expected latest token, got %+v", latest)
+	}
+	if err := db.ClientEnrollments().MarkUsed(ctx, "join-2", time.Now().UTC()); err != nil {
+		t.Fatalf("mark latest token used: %v", err)
+	}
+	latest, err = db.ClientEnrollments().LatestReviewableByClientID(ctx, "c1", time.Now().UTC())
+	if err != nil {
+		t.Fatalf("lookup previous reviewable enrollment: %v", err)
+	}
+	if latest.ID != "join-1" {
+		t.Fatalf("expected used and empty-token enrollments to be skipped, got %+v", latest)
+	}
+}
+
 func TestDuplicateTCPEntryPortIsRejected(t *testing.T) {
 	ctx := context.Background()
 	db := openTestStore(t)

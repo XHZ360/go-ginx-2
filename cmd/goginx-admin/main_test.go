@@ -8,6 +8,8 @@ import (
 	"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
+	"io"
 	"math/big"
 	"os"
 	"path/filepath"
@@ -16,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/simp-frp/go-ginx-2/internal/admintui"
 	"github.com/simp-frp/go-ginx-2/internal/certmanager"
 	"github.com/simp-frp/go-ginx-2/internal/domain"
 	"github.com/simp-frp/go-ginx-2/internal/store/sqlite"
@@ -182,6 +185,34 @@ func TestRunCreatesClientJoinToken(t *testing.T) {
 	}
 }
 
+func TestRunClientJoinCommandOutputsClientCommand(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "admin.db")
+	caFile := filepath.Join(t.TempDir(), "ca.crt")
+	if err := os.WriteFile(caFile, []byte("ca-pem"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := run([]string{"create-user", "-db", dbPath, "-id", "user-1", "-username", "alice"}); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	if err := run([]string{"create-client-join", "-db", dbPath, "-id", "client-1", "-user", "user-1", "-name", "home", "-server-ca-file", caFile, "-server-name", "go-ginx-control.test", "-server-address", "127.0.0.1:8443", "-enrollment-url", "http://127.0.0.1:8080/api/client/enroll"}); err != nil {
+		t.Fatalf("create client join: %v", err)
+	}
+
+	output, err := captureStdout(func() error {
+		return run([]string{"client-join-command", "-db", dbPath, "-client", "client-1"})
+	})
+	if err != nil {
+		t.Fatalf("client join command: %v", err)
+	}
+	output = strings.TrimSpace(output)
+	if !strings.HasPrefix(output, "goginx-client join goginx_join_") {
+		t.Fatalf("expected client join command, got %q", output)
+	}
+	if strings.Contains(output, "\n") {
+		t.Fatalf("expected one-line output, got %q", output)
+	}
+}
+
 func TestRunCreateClientJoinDefaultsCAFileFromDeploymentRoot(t *testing.T) {
 	deploymentRoot := t.TempDir()
 	stateDir := t.TempDir()
@@ -212,6 +243,82 @@ func TestRunCreateClientJoinDefaultsCAFileFromDeploymentRoot(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(stateDir, "data", "go-ginx.db")); !os.IsNotExist(err) {
 		t.Fatalf("expected no cwd-relative db, got err=%v", err)
+	}
+}
+
+func captureStdout(fn func() error) (string, error) {
+	oldStdout := os.Stdout
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		return "", err
+	}
+	os.Stdout = writer
+	runErr := fn()
+	_ = writer.Close()
+	os.Stdout = oldStdout
+	output, readErr := io.ReadAll(reader)
+	_ = reader.Close()
+	if runErr != nil {
+		return string(output), runErr
+	}
+	return string(output), readErr
+}
+
+func TestRunTUIUsesDefaultDBFromDeploymentRoot(t *testing.T) {
+	deploymentRoot := t.TempDir()
+	stateDir := t.TempDir()
+	previousExecutablePath := executablePath
+	executablePath = func() (string, error) {
+		return filepath.Join(deploymentRoot, "bin", "goginx-admin"), nil
+	}
+	t.Cleanup(func() {
+		executablePath = previousExecutablePath
+	})
+	t.Chdir(stateDir)
+
+	oldRunAdminTUI := runAdminTUI
+	var got admintui.RunOptions
+	runAdminTUI = func(_ context.Context, opts admintui.RunOptions) error {
+		got = opts
+		return nil
+	}
+	t.Cleanup(func() { runAdminTUI = oldRunAdminTUI })
+
+	if err := run([]string{"tui", "-actor", "ops-1"}); err != nil {
+		t.Fatalf("run tui: %v", err)
+	}
+
+	if got.ActorID != "ops-1" || !got.RequireTTY || got.Backend == nil {
+		t.Fatalf("unexpected tui options: %+v", got)
+	}
+	if _, ok := got.Backend.(admintui.LocalBackend); !ok {
+		t.Fatalf("expected local backend, got %T", got.Backend)
+	}
+	if _, err := os.Stat(filepath.Join(deploymentRoot, "data", "go-ginx.db")); err != nil {
+		t.Fatalf("expected deployment-root db: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(stateDir, "data", "go-ginx.db")); !os.IsNotExist(err) {
+		t.Fatalf("expected no cwd-relative db, got err=%v", err)
+	}
+}
+
+func TestRunTUIUsesExplicitDBAndPropagatesRunnerError(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "custom", "admin.db")
+	oldRunAdminTUI := runAdminTUI
+	runAdminTUI = func(_ context.Context, opts admintui.RunOptions) error {
+		if opts.Backend == nil || !opts.RequireTTY {
+			t.Fatalf("unexpected tui options: %+v", opts)
+		}
+		return admintui.ErrNonInteractiveTerminal
+	}
+	t.Cleanup(func() { runAdminTUI = oldRunAdminTUI })
+
+	err := run([]string{"tui", "-db", dbPath})
+	if !errors.Is(err, admintui.ErrNonInteractiveTerminal) {
+		t.Fatalf("expected runner error, got %v", err)
+	}
+	if _, err := os.Stat(dbPath); err != nil {
+		t.Fatalf("expected explicit db to be opened: %v", err)
 	}
 }
 

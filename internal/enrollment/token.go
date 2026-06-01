@@ -15,6 +15,7 @@ import (
 
 	"github.com/simp-frp/go-ginx-2/internal/config"
 	"github.com/simp-frp/go-ginx-2/internal/domain"
+	"github.com/simp-frp/go-ginx-2/internal/jointoken"
 	"github.com/simp-frp/go-ginx-2/internal/store"
 )
 
@@ -66,7 +67,7 @@ func EncodeToken(payload TokenPayload) (string, error) {
 }
 
 func DecodeToken(token string) (TokenPayload, error) {
-	raw := strings.TrimSpace(token)
+	raw := jointoken.Normalize(token)
 	if !strings.HasPrefix(raw, TokenPrefix) {
 		return TokenPayload{}, errors.New("join token has invalid prefix")
 	}
@@ -183,7 +184,7 @@ func HashSecret(secret string) string {
 }
 
 func HashToken(token string) string {
-	return hashString(token)
+	return hashString(jointoken.Normalize(token))
 }
 
 func hashString(value string) string {

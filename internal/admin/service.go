@@ -66,6 +66,12 @@ type CreateClientJoinResult struct {
 	Token  string
 }
 
+type ReviewClientJoinTokenResult struct {
+	Client    domain.Client
+	Token     string
+	ExpiresAt time.Time
+}
+
 type CreateProxyInput struct {
 	ID          string
 	UserID      string
@@ -174,6 +180,40 @@ func (service Service) SetUserPassword(ctx context.Context, userID string, passw
 		return err
 	}
 	return service.audit(ctx, actorID, "user", userID, "set_user_password")
+}
+
+func (service Service) DeleteUser(ctx context.Context, userID string, actorID string) error {
+	if service.Store == nil {
+		return errors.New("store is required")
+	}
+	if strings.TrimSpace(userID) == "" {
+		return contracterr.Validation("validation failed", map[string]string{"id": "user id is required"})
+	}
+	if _, err := service.Store.Users().ByID(ctx, userID); err != nil {
+		return err
+	}
+	clients, err := service.Store.Clients().List(ctx)
+	if err != nil {
+		return err
+	}
+	for _, client := range clients {
+		if client.UserID == userID {
+			return contracterr.Conflict("user has clients; disable and delete client resources before deleting the user", nil)
+		}
+	}
+	proxies, err := service.Store.Proxies().List(ctx)
+	if err != nil {
+		return err
+	}
+	for _, proxy := range proxies {
+		if proxy.UserID == userID {
+			return contracterr.Conflict("user has proxies; disable and delete proxy resources before deleting the user", nil)
+		}
+	}
+	if err := service.Store.Users().Delete(ctx, userID); err != nil {
+		return err
+	}
+	return service.audit(ctx, actorID, "user", userID, "delete_user")
 }
 
 func (service Service) CreateClient(ctx context.Context, input CreateClientInput) (domain.Client, error) {
@@ -286,7 +326,7 @@ func (service Service) CreateClientJoin(ctx context.Context, input CreateClientJ
 	if err != nil {
 		return CreateClientJoinResult{}, err
 	}
-	record := domain.ClientEnrollment{ID: enrollmentID, ClientID: clientResult.Client.ID, SecretHash: enrollment.HashSecret(secret), TokenHash: enrollment.HashToken(token), ExpiresAt: expiresAt}
+	record := domain.ClientEnrollment{ID: enrollmentID, ClientID: clientResult.Client.ID, SecretHash: enrollment.HashSecret(secret), TokenHash: enrollment.HashToken(token), Token: token, ExpiresAt: expiresAt}
 	if err := service.Store.ClientEnrollments().Create(ctx, record); err != nil {
 		return CreateClientJoinResult{}, err
 	}
@@ -295,6 +335,31 @@ func (service Service) CreateClientJoin(ctx context.Context, input CreateClientJ
 	}
 	clientResult.Client.CredentialHash = ""
 	return CreateClientJoinResult{Client: clientResult.Client, Token: token}, nil
+}
+
+func (service Service) ReviewClientJoinToken(ctx context.Context, clientID string, actorID string) (ReviewClientJoinTokenResult, error) {
+	if service.Store == nil {
+		return ReviewClientJoinTokenResult{}, errors.New("store is required")
+	}
+	if strings.TrimSpace(clientID) == "" {
+		return ReviewClientJoinTokenResult{}, contracterr.Validation("validation failed", map[string]string{"id": "client id is required"})
+	}
+	client, err := service.Store.Clients().ByID(ctx, clientID)
+	if err != nil {
+		return ReviewClientJoinTokenResult{}, err
+	}
+	now := time.Now().UTC()
+	enrollment, err := service.Store.ClientEnrollments().LatestReviewableByClientID(ctx, clientID, now)
+	if errors.Is(err, store.ErrNotFound) {
+		return ReviewClientJoinTokenResult{}, contracterr.Conflict("join token is not available; generate a new join token", nil)
+	}
+	if err != nil {
+		return ReviewClientJoinTokenResult{}, err
+	}
+	if err := service.audit(ctx, actorID, "client", client.ID, "review_client_join_token"); err != nil {
+		return ReviewClientJoinTokenResult{}, err
+	}
+	return ReviewClientJoinTokenResult{Client: client, Token: enrollment.Token, ExpiresAt: enrollment.ExpiresAt}, nil
 }
 
 func (service Service) CreateProxy(ctx context.Context, input CreateProxyInput) (domain.Proxy, error) {

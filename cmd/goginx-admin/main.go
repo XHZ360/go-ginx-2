@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/simp-frp/go-ginx-2/internal/admin"
+	"github.com/simp-frp/go-ginx-2/internal/adminquery"
+	"github.com/simp-frp/go-ginx-2/internal/admintui"
 	"github.com/simp-frp/go-ginx-2/internal/certmanager"
 	"github.com/simp-frp/go-ginx-2/internal/config"
 	"github.com/simp-frp/go-ginx-2/internal/deploy"
@@ -35,6 +37,10 @@ var (
 
 var executablePath = os.Executable
 
+var runAdminTUI = func(ctx context.Context, opts admintui.RunOptions) error {
+	return admintui.Run(ctx, opts)
+}
+
 func main() {
 	if err := run(os.Args[1:]); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -44,7 +50,7 @@ func main() {
 
 func run(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: goginx-admin <init-admin|create-user|create-client|create-client-join|create-tcp-proxy|create-udp-proxy|create-http-proxy|create-https-proxy|issue-managed-certificate|renew-managed-certificate|managed-certificate-status|build-deploy-bundle> [flags]")
+		return fmt.Errorf("usage: goginx-admin <tui|init-admin|create-user|create-client|create-client-join|client-join-command|create-tcp-proxy|create-udp-proxy|create-http-proxy|create-https-proxy|issue-managed-certificate|renew-managed-certificate|managed-certificate-status|build-deploy-bundle> [flags]")
 	}
 	command := args[0]
 	flags := flag.NewFlagSet(command, flag.ContinueOnError)
@@ -53,6 +59,8 @@ func run(args []string) error {
 	actorID := flags.String("actor", "system", "audit actor user ID")
 
 	switch command {
+	case "tui":
+		return runTUI(flags, args[1:])
 	case "init-admin":
 		username := flags.String("username", "", "administrator username")
 		password := flags.String("password", "", "administrator password")
@@ -130,6 +138,8 @@ func run(args []string) error {
 		return nil
 	case "create-client-join":
 		return createClientJoin(flags, args[1:])
+	case "client-join-command":
+		return clientJoinCommand(flags, args[1:])
 	case "create-tcp-proxy":
 		return createProxy(flags, args[1:], domain.ProxyTCP)
 	case "create-udp-proxy":
@@ -149,6 +159,35 @@ func run(args []string) error {
 	default:
 		return fmt.Errorf("unknown command %q", command)
 	}
+}
+
+func runTUI(flags *flag.FlagSet, args []string) error {
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	dbPath := deploymentRelativePath(flags.Lookup("db").Value.String())
+	actorID := flags.Lookup("actor").Value.String()
+	service, closeStore, err := openService(dbPath)
+	if err != nil {
+		return err
+	}
+	defer closeStore()
+	joinDefaults, err := defaultJoinServiceDefaults()
+	if err != nil {
+		return err
+	}
+	service.DefaultJoin = joinDefaults
+	backend := admintui.LocalBackend{
+		Commands:          service,
+		Queries:           adminquery.Service{Store: service.Store},
+		JoinDefaultsValue: joinDefaults,
+	}
+	return runAdminTUI(context.Background(), admintui.RunOptions{
+		Backend:                   backend,
+		ActorID:                   actorID,
+		ClientJoinCommandTemplate: adminClientJoinCommandTemplate(dbPath),
+		RequireTTY:                true,
+	})
 }
 
 func buildDeployBundle(flags *flag.FlagSet, args []string) error {
@@ -282,6 +321,44 @@ func createClientJoin(flags *flag.FlagSet, args []string) error {
 	}
 	fmt.Println(result.Token)
 	return nil
+}
+
+func clientJoinCommand(flags *flag.FlagSet, args []string) error {
+	clientID := flags.String("client", "", "client ID")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	dbPath := deploymentRelativePath(flags.Lookup("db").Value.String())
+	actorID := flags.Lookup("actor").Value.String()
+	service, closeStore, err := openService(dbPath)
+	if err != nil {
+		return err
+	}
+	defer closeStore()
+	result, err := service.ReviewClientJoinToken(context.Background(), *clientID, actorID)
+	if err != nil {
+		return err
+	}
+	fmt.Println(clientJoinRunCommand(result.Token))
+	return nil
+}
+
+func clientJoinRunCommand(token string) string {
+	return fmt.Sprintf("goginx-client join %s", token)
+}
+
+func adminClientJoinCommandTemplate(dbPath string) string {
+	return fmt.Sprintf(`.\bin\goginx-admin client-join-command -db %s -client {client}`, shellQuote(dbPath))
+}
+
+func shellQuote(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return "''"
+	}
+	if strings.ContainsAny(value, " \t\r\n'\"") {
+		return "'" + strings.ReplaceAll(value, "'", "''") + "'"
+	}
+	return value
 }
 
 func defaultJoinServiceDefaults() (config.JoinServiceDefaults, error) {

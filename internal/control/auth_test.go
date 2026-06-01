@@ -110,6 +110,8 @@ func (r authUserRepository) SetStatus(context.Context, string, domain.UserStatus
 
 func (r authUserRepository) SetPassword(context.Context, string, string) error { return nil }
 
+func (r authUserRepository) Delete(context.Context, string) error { return nil }
+
 type authClientRepository struct{ client domain.Client }
 
 func (r authClientRepository) Create(context.Context, domain.Client) error { return nil }
@@ -139,6 +141,10 @@ func (authClientEnrollmentRepository) Create(context.Context, domain.ClientEnrol
 }
 
 func (authClientEnrollmentRepository) ByID(context.Context, string) (domain.ClientEnrollment, error) {
+	return domain.ClientEnrollment{}, store.ErrNotFound
+}
+
+func (authClientEnrollmentRepository) LatestReviewableByClientID(context.Context, string, time.Time) (domain.ClientEnrollment, error) {
 	return domain.ClientEnrollment{}, store.ErrNotFound
 }
 
