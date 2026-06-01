@@ -335,6 +335,11 @@ func clientJoinCommand(flags *flag.FlagSet, args []string) error {
 		return err
 	}
 	defer closeStore()
+	joinDefaults, err := defaultJoinServiceDefaults()
+	if err != nil {
+		return err
+	}
+	service.DefaultJoin = joinDefaults
 	result, err := service.ReviewClientJoinToken(context.Background(), *clientID, actorID)
 	if err != nil {
 		return err

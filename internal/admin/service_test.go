@@ -119,10 +119,20 @@ func TestServiceCreatesClientJoinToken(t *testing.T) {
 	}
 }
 
-func TestServiceReviewClientJoinTokenRejectsUnavailableToken(t *testing.T) {
+func TestServiceReviewClientJoinTokenResetsUnavailableTokenFromDefaults(t *testing.T) {
 	ctx := context.Background()
 	db := openTestStore(t)
-	service := Service{Store: db}
+	caFile := filepath.Join(t.TempDir(), "ca.crt")
+	if err := os.WriteFile(caFile, []byte("default-ca-pem"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	service := Service{Store: db, DefaultJoin: config.JoinServiceDefaults{
+		EnrollmentURL:    "http://server.example.com:8080/api/client/enroll",
+		ServerAddress:    "server.example.com:8443",
+		ServerTLSAddress: "server.example.com:9443",
+		ServerName:       "go-ginx-control.test",
+		ServerCAFile:     caFile,
+	}}
 	user, err := service.CreateUser(ctx, CreateUserInput{ID: "user-1", Username: "alice", ActorID: "admin-1"})
 	if err != nil {
 		t.Fatalf("create user: %v", err)
@@ -132,44 +142,94 @@ func TestServiceReviewClientJoinTokenRejectsUnavailableToken(t *testing.T) {
 		t.Fatalf("create client: %v", err)
 	}
 	usedAt := time.Now().UTC()
-	for _, tc := range []struct {
-		name       string
-		enrollment domain.ClientEnrollment
-	}{
-		{
-			name: "used token",
-			enrollment: domain.ClientEnrollment{
-				ID:         "join-used",
-				ClientID:   client.ID,
-				SecretHash: "secret-hash",
-				TokenHash:  "token-hash-used",
-				Token:      "goginx_join_used",
-				ExpiresAt:  time.Now().UTC().Add(time.Hour),
-				UsedAt:     &usedAt,
-			},
-		},
-		{
-			name: "expired token",
-			enrollment: domain.ClientEnrollment{
-				ID:         "join-expired",
-				ClientID:   client.ID,
-				SecretHash: "secret-hash",
-				TokenHash:  "token-hash-expired",
-				Token:      "goginx_join_expired",
-				ExpiresAt:  time.Now().UTC().Add(-time.Hour),
-			},
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			if err := db.ClientEnrollments().Create(ctx, tc.enrollment); err != nil {
-				t.Fatalf("create enrollment: %v", err)
-			}
-			_, err := service.ReviewClientJoinToken(ctx, client.ID, "admin-1")
-			var contractError *contracterr.Error
-			if !errors.As(err, &contractError) || contractError.Code != contracterr.CodeConflict {
-				t.Fatalf("expected conflict, got %v", err)
-			}
-		})
+	if err := db.ClientEnrollments().Create(ctx, domain.ClientEnrollment{
+		ID:         "join-used",
+		ClientID:   client.ID,
+		SecretHash: "secret-hash",
+		TokenHash:  "token-hash-used",
+		Token:      "goginx_join_used",
+		ExpiresAt:  time.Now().UTC().Add(time.Hour),
+		UsedAt:     &usedAt,
+	}); err != nil {
+		t.Fatalf("create enrollment: %v", err)
+	}
+
+	reviewed, err := service.ReviewClientJoinToken(ctx, client.ID, "admin-1")
+	if err != nil {
+		t.Fatalf("review unavailable token: %v", err)
+	}
+	payload, err := enrollment.DecodeToken(reviewed.Token)
+	if err != nil {
+		t.Fatalf("decode reset token: %v", err)
+	}
+	if payload.ClientID != client.ID || payload.EnrollmentURL != service.DefaultJoin.EnrollmentURL || payload.CAPEM != "default-ca-pem" || !reviewed.ExpiresAt.After(time.Now().UTC()) {
+		t.Fatalf("unexpected reset token payload=%+v result=%+v", payload, reviewed)
+	}
+	reloadedClient, err := db.Clients().ByID(ctx, client.ID)
+	if err != nil {
+		t.Fatalf("reload client: %v", err)
+	}
+	if reloadedClient.CredentialHash != domain.HashCredential(payload.Credential) {
+		t.Fatalf("expected client credential to be rotated for reset token")
+	}
+}
+
+func TestServiceReviewClientJoinTokenResetsExpiredToken(t *testing.T) {
+	ctx := context.Background()
+	db := openTestStore(t)
+	service := Service{Store: db}
+	user, err := service.CreateUser(ctx, CreateUserInput{ID: "user-1", Username: "alice", ActorID: "admin-1"})
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	client, err := service.CreateClient(ctx, CreateClientInput{ID: "client-1", UserID: user.ID, Name: "home", Credential: "old-secret", ActorID: "admin-1"})
+	if err != nil {
+		t.Fatalf("create client: %v", err)
+	}
+	createdAt := time.Now().UTC().Add(-2 * time.Hour)
+	expiresAt := time.Now().UTC().Add(-time.Hour)
+	expiredPayload := enrollment.TokenPayload{
+		EnrollmentID:     "join-expired",
+		Secret:           "expired-secret",
+		EnrollmentURL:    "http://127.0.0.1:8080/api/client/enroll",
+		ServerAddress:    "127.0.0.1:8443",
+		ServerTLSAddress: "127.0.0.1:9443",
+		ServerName:       "go-ginx-control.test",
+		CAPEM:            "ca-pem",
+		ClientID:         client.ID,
+		Credential:       "old-secret",
+		AllowedProtocols: []domain.Protocol{domain.ProtocolQUIC, domain.ProtocolTCPTLS},
+		Reconnect:        config.DefaultClient().Reconnect,
+		ExpiresAt:        expiresAt,
+	}
+	expiredToken, err := enrollment.EncodeToken(expiredPayload)
+	if err != nil {
+		t.Fatalf("encode expired token: %v", err)
+	}
+	if err := db.ClientEnrollments().Create(ctx, domain.ClientEnrollment{ID: expiredPayload.EnrollmentID, ClientID: client.ID, SecretHash: enrollment.HashSecret(expiredPayload.Secret), TokenHash: enrollment.HashToken(expiredToken), Token: expiredToken, ExpiresAt: expiresAt, CreatedAt: createdAt, UpdatedAt: createdAt}); err != nil {
+		t.Fatalf("create expired enrollment: %v", err)
+	}
+
+	reviewed, err := service.ReviewClientJoinToken(ctx, client.ID, "admin-1")
+	if err != nil {
+		t.Fatalf("review expired token: %v", err)
+	}
+	if reviewed.Token == expiredToken || !reviewed.ExpiresAt.After(time.Now().UTC()) {
+		t.Fatalf("expected reset token with future expiry, got %+v", reviewed)
+	}
+	resetPayload, err := enrollment.DecodeToken(reviewed.Token)
+	if err != nil {
+		t.Fatalf("decode reset token: %v", err)
+	}
+	if resetPayload.ClientID != client.ID || resetPayload.Credential == "old-secret" || resetPayload.ServerAddress != expiredPayload.ServerAddress || resetPayload.ServerTLSAddress != expiredPayload.ServerTLSAddress {
+		t.Fatalf("unexpected reset token payload: %+v", resetPayload)
+	}
+	reloadedClient, err := db.Clients().ByID(ctx, client.ID)
+	if err != nil {
+		t.Fatalf("reload client: %v", err)
+	}
+	if reloadedClient.CredentialHash != domain.HashCredential(resetPayload.Credential) {
+		t.Fatalf("expected client credential to be rotated for reset token")
 	}
 }
 

@@ -653,8 +653,13 @@ admin-resource-management 基线 MUST 把已确认的 V1 管理员资源管理 s
 - **THEN** 系统再次展示该 token，并提示该 token 仍只能被客户端消费一次
 - **AND** 结果页展示可在管理端终端执行的 `goginx-admin client-join-command -client <id>` 指令，用于获取客户端 join 指令
 
+#### Scenario: Reset unavailable client join token on review
+- **WHEN** 操作者从 TUI 客户端操作菜单选择查看 join token，且该客户端没有可查看的可用 join token
+- **THEN** 系统轮换客户端凭据，生成新的未使用 join token，并展示新 token、过期时间和单次消费提示
+- **AND** 旧的已过期或已使用 join token 仍不可被客户端消费
+
 #### Scenario: Reject reviewing unavailable client join token
-- **WHEN** 操作者尝试查看不存在、已使用、已过期或历史记录缺少明文的客户端 join token
+- **WHEN** 操作者尝试查看 join token，但系统无法使用默认 join 参数生成替代 token
 - **THEN** TUI 展示可操作错误，并引导操作者重新生成 join token
 
 #### Scenario: Create client credential from secondary path
@@ -703,7 +708,8 @@ admin-resource-management 基线 MUST 把已确认的 V1 管理员资源管理 s
 
 #### Scenario: Review selected client join token
 - **WHEN** 操作者从 TUI 客户端列表选择一个客户端并请求查看 join token
-- **THEN** 系统查询该客户端最新可查看 join token，并在结果页展示 token、过期时间和单次消费提示
+- **THEN** 系统查询该客户端最新可查看 join token；若 token 不可用，则重置 join token
+- **AND** 结果页展示 token、过期时间和单次消费提示
 - **AND** 结果页展示可在管理端终端执行的 `goginx-admin client-join-command -client <id>` 指令，用于获取客户端 join 指令
 
 #### Scenario: Delete selected client

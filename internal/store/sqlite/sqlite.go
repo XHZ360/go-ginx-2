@@ -207,6 +207,10 @@ func (r clientEnrollmentRepository) LatestReviewableByClientID(ctx context.Conte
 	return scanClientEnrollment(r.db.QueryRowContext(ctx, `select id, client_id, secret_hash, token_hash, token, expires_at, used_at, created_at, updated_at from client_enrollments where client_id = ? and token <> '' and used_at is null and expires_at > ? order by created_at desc, id desc limit 1`, clientID, now))
 }
 
+func (r clientEnrollmentRepository) LatestUnusedByClientID(ctx context.Context, clientID string) (domain.ClientEnrollment, error) {
+	return scanClientEnrollment(r.db.QueryRowContext(ctx, `select id, client_id, secret_hash, token_hash, token, expires_at, used_at, created_at, updated_at from client_enrollments where client_id = ? and token <> '' and used_at is null order by created_at desc, id desc limit 1`, clientID))
+}
+
 func (r clientEnrollmentRepository) MarkUsed(ctx context.Context, id string, usedAt time.Time) error {
 	result, err := r.db.ExecContext(ctx, `update client_enrollments set used_at = ?, updated_at = ? where id = ? and used_at is null`, usedAt, usedAt, id)
 	return resultError(result, err)

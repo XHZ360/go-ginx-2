@@ -80,6 +80,13 @@ func TestClientEnrollmentRepositoryStoresReviewableToken(t *testing.T) {
 	if latest.ID != "join-1" {
 		t.Fatalf("expected used and empty-token enrollments to be skipped, got %+v", latest)
 	}
+	latestUnused, err := db.ClientEnrollments().LatestUnusedByClientID(ctx, "c1")
+	if err != nil {
+		t.Fatalf("lookup latest unused enrollment: %v", err)
+	}
+	if latestUnused.ID != "join-1" {
+		t.Fatalf("expected latest unused token to skip used and empty-token enrollments, got %+v", latestUnused)
+	}
 }
 
 func TestDuplicateTCPEntryPortIsRejected(t *testing.T) {

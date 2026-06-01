@@ -1157,7 +1157,7 @@ func (m *model) openClientJoinForm() {
 					}
 					m.openResult(resultState{
 						Title: "客户端和 join token 已创建",
-						Body:  fmt.Sprintf("客户端 ID: %s\nToken: %s\n\n使用以下指令获取客户端 join 指令:\n%s\n\n该 token 可在未使用且未过期期间从客户端菜单重复查看，但仍只能被客户端消费一次。", result.Client.ID, result.Token, m.clientJoinCommand(result.Client.ID)),
+						Body:  fmt.Sprintf("客户端 ID: %s\nToken: %s\n\n使用以下指令获取客户端 join 指令:\n%s\n\n该 token 可在未使用期间从客户端菜单重复查看；如果不可用，查看时会自动重置 join token。token 仍只能被客户端消费一次。", result.Client.ID, result.Token, m.clientJoinCommand(result.Client.ID)),
 						Back:  func(m *model) { m.openClientMenu() },
 					})
 					return nil
@@ -1284,7 +1284,7 @@ func (m *model) openClientReviewJoinTokenListMenu() {
 	items = append(items, menuItem{Label: "返回", Desc: "回到客户端菜单", Action: func(m *model) { m.openClientMenu() }})
 	m.setMenu(menuState{
 		Title:    "查看 join token",
-		Subtitle: "选择客户端查看最新未使用、未过期的 join token。",
+		Subtitle: "选择客户端查看 join token；不可用时会自动重置。",
 		Back:     func(m *model) { m.openClientMenu() },
 		Items:    items,
 	})
@@ -1293,7 +1293,7 @@ func (m *model) openClientReviewJoinTokenListMenu() {
 func (m *model) openClientActionMenu(item adminquery.ClientListItem) {
 	items := []menuItem{
 		{Label: "启用/禁用", Desc: "切换客户端状态", Action: func(m *model) { m.openClientToggleConfirm(item, item.Status == domain.ClientDisabled) }},
-		{Label: "查看 join token", Desc: "查看未使用且未过期的 token", Action: func(m *model) { m.openClientJoinTokenResult(item) }},
+		{Label: "查看 join token", Desc: "查看 token，不可用时自动重置", Action: func(m *model) { m.openClientJoinTokenResult(item) }},
 		{Label: "轮换凭据", Desc: "生成新的客户端 credential", Action: func(m *model) { m.openClientRotateConfirm(item) }},
 		{Label: "删除", Desc: "受保护删除，需要强确认", Action: func(m *model) { m.openClientDeleteConfirm(item) }},
 	}
@@ -1316,7 +1316,7 @@ func (m *model) openClientJoinTokenResult(item adminquery.ClientListItem) {
 	m.openResult(resultState{
 		Title: "join token",
 		Body: fmt.Sprintf(
-			"客户端 ID: %s\n过期时间: %s\nToken: %s\n\n使用以下指令获取客户端 join 指令:\n%s\n\n该 token 可在未使用且未过期期间重复查看，但仍只能被客户端消费一次。",
+			"客户端 ID: %s\n过期时间: %s\nToken: %s\n\n使用以下指令获取客户端 join 指令:\n%s\n\n该 token 可在未使用期间重复查看；如果不可用，查看时会自动重置 join token。token 仍只能被客户端消费一次。",
 			result.Client.ID,
 			result.ExpiresAt.Format(time.RFC3339),
 			result.Token,

@@ -80,6 +80,7 @@ type ClientEnrollmentRepository interface {
 	Create(ctx context.Context, enrollment domain.ClientEnrollment) error
 	ByID(ctx context.Context, id string) (domain.ClientEnrollment, error)
 	LatestReviewableByClientID(ctx context.Context, clientID string, now time.Time) (domain.ClientEnrollment, error)
+	LatestUnusedByClientID(ctx context.Context, clientID string) (domain.ClientEnrollment, error)
 	MarkUsed(ctx context.Context, id string, usedAt time.Time) error
 }
 

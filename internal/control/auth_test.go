@@ -148,6 +148,10 @@ func (authClientEnrollmentRepository) LatestReviewableByClientID(context.Context
 	return domain.ClientEnrollment{}, store.ErrNotFound
 }
 
+func (authClientEnrollmentRepository) LatestUnusedByClientID(context.Context, string) (domain.ClientEnrollment, error) {
+	return domain.ClientEnrollment{}, store.ErrNotFound
+}
+
 func (authClientEnrollmentRepository) MarkUsed(context.Context, string, time.Time) error { return nil }
 
 type authProxyRepository struct{ proxies []domain.Proxy }

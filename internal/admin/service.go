@@ -351,7 +351,7 @@ func (service Service) ReviewClientJoinToken(ctx context.Context, clientID strin
 	now := time.Now().UTC()
 	enrollment, err := service.Store.ClientEnrollments().LatestReviewableByClientID(ctx, clientID, now)
 	if errors.Is(err, store.ErrNotFound) {
-		return ReviewClientJoinTokenResult{}, contracterr.Conflict("join token is not available; generate a new join token", nil)
+		return service.resetClientJoinToken(ctx, client, actorID, now)
 	}
 	if err != nil {
 		return ReviewClientJoinTokenResult{}, err
@@ -360,6 +360,97 @@ func (service Service) ReviewClientJoinToken(ctx context.Context, clientID strin
 		return ReviewClientJoinTokenResult{}, err
 	}
 	return ReviewClientJoinTokenResult{Client: client, Token: enrollment.Token, ExpiresAt: enrollment.ExpiresAt}, nil
+}
+
+func (service Service) resetClientJoinToken(ctx context.Context, client domain.Client, actorID string, now time.Time) (ReviewClientJoinTokenResult, error) {
+	var basePayload enrollment.TokenPayload
+	ttl := time.Hour
+	latest, err := service.Store.ClientEnrollments().LatestUnusedByClientID(ctx, client.ID)
+	if err != nil && !errors.Is(err, store.ErrNotFound) {
+		return ReviewClientJoinTokenResult{}, err
+	}
+	if err == nil && latest.ExpiresAt.After(now) {
+		return ReviewClientJoinTokenResult{}, unavailableJoinTokenError()
+	}
+	if err == nil {
+		if decoded, decodeErr := enrollment.DecodeToken(latest.Token); decodeErr == nil && decoded.ClientID == client.ID {
+			basePayload = decoded
+		}
+		ttl = latest.ExpiresAt.Sub(latest.CreatedAt)
+		if ttl <= 0 {
+			ttl = time.Hour
+		}
+	}
+	if basePayload.EnrollmentURL == "" {
+		defaultPayload, err := service.defaultJoinTokenPayload()
+		if err != nil {
+			return ReviewClientJoinTokenResult{}, err
+		}
+		basePayload = defaultPayload
+	}
+	credential := newCredential()
+	secret := newCredential()
+	enrollmentID := newID("join")
+	expiresAt := now.Add(ttl)
+	payload := basePayload
+	payload.EnrollmentID = enrollmentID
+	payload.Secret = secret
+	payload.ClientID = client.ID
+	payload.Credential = credential
+	payload.ExpiresAt = expiresAt
+	token, err := enrollment.EncodeToken(payload)
+	if err != nil {
+		return ReviewClientJoinTokenResult{}, err
+	}
+	if err := service.Store.Clients().RotateCredential(ctx, client.ID, domain.HashCredential(credential)); err != nil {
+		return ReviewClientJoinTokenResult{}, err
+	}
+	record := domain.ClientEnrollment{ID: enrollmentID, ClientID: client.ID, SecretHash: enrollment.HashSecret(secret), TokenHash: enrollment.HashToken(token), Token: token, ExpiresAt: expiresAt}
+	if err := service.Store.ClientEnrollments().Create(ctx, record); err != nil {
+		return ReviewClientJoinTokenResult{}, err
+	}
+	if err := service.audit(ctx, actorID, "client", client.ID, "reset_client_join_token"); err != nil {
+		return ReviewClientJoinTokenResult{}, err
+	}
+	client.CredentialHash = ""
+	return ReviewClientJoinTokenResult{Client: client, Token: token, ExpiresAt: expiresAt}, nil
+}
+
+func (service Service) defaultJoinTokenPayload() (enrollment.TokenPayload, error) {
+	if strings.TrimSpace(service.DefaultJoin.EnrollmentURL) == "" {
+		return enrollment.TokenPayload{}, contracterr.Validation("validation failed", map[string]string{"enrollmentUrl": "enrollment url is required"})
+	}
+	if strings.TrimSpace(service.DefaultJoin.ServerAddress) == "" {
+		return enrollment.TokenPayload{}, contracterr.Validation("validation failed", map[string]string{"serverAddress": "server address is required"})
+	}
+	if strings.TrimSpace(service.DefaultJoin.ServerName) == "" {
+		return enrollment.TokenPayload{}, contracterr.Validation("validation failed", map[string]string{"serverName": "server name is required"})
+	}
+	serverCAFile := service.DefaultJoin.ServerCAFile
+	if strings.TrimSpace(serverCAFile) == "" {
+		serverCAFile = config.DefaultServer().ControlTLSCAFile
+	}
+	caPEM, err := os.ReadFile(serverCAFile)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return enrollment.TokenPayload{}, contracterr.Validation("validation failed", map[string]string{"serverCAFile": "server CA file was not found"})
+		}
+		return enrollment.TokenPayload{}, err
+	}
+	defaultClient := config.DefaultClient()
+	return enrollment.TokenPayload{
+		EnrollmentURL:    service.DefaultJoin.EnrollmentURL,
+		ServerAddress:    service.DefaultJoin.ServerAddress,
+		ServerTLSAddress: service.DefaultJoin.ServerTLSAddress,
+		ServerName:       service.DefaultJoin.ServerName,
+		CAPEM:            string(caPEM),
+		AllowedProtocols: append([]domain.Protocol(nil), defaultClient.AllowedProtocols...),
+		Reconnect:        defaultClient.Reconnect,
+	}, nil
+}
+
+func unavailableJoinTokenError() error {
+	return contracterr.Conflict("join token is not available; generate a new join token", nil)
 }
 
 func (service Service) CreateProxy(ctx context.Context, input CreateProxyInput) (domain.Proxy, error) {
