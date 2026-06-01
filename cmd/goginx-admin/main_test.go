@@ -213,6 +213,34 @@ func TestRunClientJoinCommandOutputsClientCommand(t *testing.T) {
 	}
 }
 
+func TestAdminClientJoinCommandTemplateUsesAbsoluteExecutable(t *testing.T) {
+	deploymentRoot := t.TempDir()
+	executable := filepath.Join(deploymentRoot, "bin", adminBinaryName(runtime.GOOS))
+	previousExecutablePath := executablePath
+	executablePath = func() (string, error) {
+		return executable, nil
+	}
+	t.Cleanup(func() {
+		executablePath = previousExecutablePath
+	})
+	dbPath := filepath.Join(deploymentRoot, "data", "go-ginx.db")
+
+	template := adminClientJoinCommandTemplate(dbPath)
+
+	if !strings.Contains(template, shellQuote(executable)) {
+		t.Fatalf("expected absolute admin executable %q in template %q", executable, template)
+	}
+	if !strings.Contains(template, "-db "+shellQuote(dbPath)) {
+		t.Fatalf("expected absolute db path %q in template %q", dbPath, template)
+	}
+	if strings.Contains(template, `.\bin\goginx-admin`) {
+		t.Fatalf("expected no relative admin path in template %q", template)
+	}
+	if runtime.GOOS == "windows" && !strings.Contains(template, "goginx-admin.exe") {
+		t.Fatalf("expected windows executable suffix in template %q", template)
+	}
+}
+
 func TestRunCreateClientJoinDefaultsCAFileFromDeploymentRoot(t *testing.T) {
 	deploymentRoot := t.TempDir()
 	stateDir := t.TempDir()

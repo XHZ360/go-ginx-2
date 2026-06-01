@@ -353,7 +353,32 @@ func clientJoinRunCommand(token string) string {
 }
 
 func adminClientJoinCommandTemplate(dbPath string) string {
-	return fmt.Sprintf(`.\bin\goginx-admin client-join-command -db %s -client {client}`, shellQuote(dbPath))
+	return fmt.Sprintf("%s client-join-command -db %s -client {client}", shellQuote(adminExecutableCommandPath()), shellQuote(dbPath))
+}
+
+func adminExecutableCommandPath() string {
+	executable, err := executablePath()
+	if err == nil {
+		absolute, absErr := filepath.Abs(executable)
+		if absErr == nil {
+			if resolved, resolveErr := filepath.EvalSymlinks(absolute); resolveErr == nil {
+				return resolved
+			}
+			return absolute
+		}
+	}
+	root, err := deploymentRoot()
+	if err == nil {
+		return filepath.Join(root, deploypath.DefaultBinaryDir, adminBinaryName(runtime.GOOS))
+	}
+	return adminBinaryName(runtime.GOOS)
+}
+
+func adminBinaryName(goos string) string {
+	if goos == "windows" {
+		return "goginx-admin.exe"
+	}
+	return "goginx-admin"
 }
 
 func shellQuote(value string) string {

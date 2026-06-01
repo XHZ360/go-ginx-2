@@ -104,7 +104,7 @@
 
 #### Scenario: Joined client starts from managed state
 - **WHEN** 自动化验证完成客户端 join/enrollment 流程
-- **THEN** 它证明打包后的 client 把受管 `data/client-state.json` 和 `data/certs/server-ca.crt` 写入由 `goginx-client` 二进制位置推导出的部署根目录，并且可以在后续无 `-config`、进程工作目录不同于部署根目录时通过控制通道认证并接收代理快照
+- **THEN** 它证明打包后的 client 把受管 `data/client-state.json`、显式配置 `config/client.json` 和 `data/certs/server-ca.crt` 写入由 `goginx-client` 二进制位置推导出的部署根目录，并且可以在后续无 `-config`、进程工作目录不同于部署根目录时通过控制通道认证并接收代理快照
 
 #### Scenario: Packaged runtime supports explicit override layout
 - **WHEN** 自动化验证针对显式配置覆盖路径运行

@@ -19,8 +19,9 @@ import (
 )
 
 const (
-	DefaultClientStatePath = "data/client-state.json"
-	DefaultClientCAFile    = "data/certs/server-ca.crt"
+	DefaultClientStatePath  = "data/client-state.json"
+	DefaultClientConfigPath = "config/client.json"
+	DefaultClientCAFile     = "data/certs/server-ca.crt"
 )
 
 func LoadManagedServer() (Server, error) {

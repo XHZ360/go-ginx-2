@@ -111,11 +111,12 @@ token="$(./bin/goginx-admin create-client-join \
 `join` 会写入：
 
 - `data/client-state.json`
+- `config/client.json`
 - `data/certs/server-ca.crt`
 
-后续客户端直接运行 `./bin/goginx-client` 即可读取托管状态。
+后续客户端直接运行 `./bin/goginx-client` 即可读取托管状态；需要显式配置启动时也可以使用 `./bin/goginx-client -config config/client.json`。
 
-默认 state/CA 路径按 `goginx-client` 二进制所在的部署根目录解析；如果二进制位于 `bin/`，部署根目录就是 `bin/` 的上一级，因此从 `bin/` 或其他目录启动都仍会使用同一个 `data/client-state.json`。
+默认 state/config/CA 路径按 `goginx-client` 二进制所在的部署根目录解析；如果二进制位于 `bin/`，部署根目录就是 `bin/` 的上一级，因此从 `bin/` 或其他目录启动都仍会使用同一个 `data/client-state.json` 和 `config/client.json`。
 
 5. 打开管理后台：
 
@@ -185,6 +186,7 @@ HTTPS 静态证书终止示例：
 客户端默认写入：
 
 - `data/client-state.json`
+- `config/client.json`
 - `data/certs/server-ca.crt`
 
 这些是应用生成的运行时状态，不需要手写。
@@ -269,7 +271,7 @@ HTTPS 静态证书终止示例：
 
 `time.Duration` 字段在 JSON 中使用纳秒数。认证失败会立即退出；临时拨号失败或运行时故障会按 `reconnect` 退避重试。
 
-Release 包生成的 `config/client.json` 与 join 流程保持同一套文件名：客户端信任文件为 `data/certs/server-ca.crt`。该文件由 `./bin/goginx-client join <token>` 写入；如果跳过 join 而手写 `client.json`，需要把服务端的 `data/certs/control-ca.crt` 分发到客户端并保存为 `data/certs/server-ca.crt`。
+Release 包生成的 `config/client.json` 会由 join 流程更新，客户端信任文件为 `data/certs/server-ca.crt`。该文件由 `./bin/goginx-client join <token>` 写入；如果跳过 join 而手写 `client.json`，需要把服务端的 `data/certs/control-ca.crt` 分发到客户端并保存为 `data/certs/server-ca.crt`。
 
 ## 托管 HTTPS 证书
 
@@ -416,12 +418,13 @@ sudo tar -xzf <release-bundle>.tar.gz -C /opt/go-ginx --strip-components=1
 cd /opt/go-ginx
 sudo ./bin/goginx-client join "$token"
 test -f data/client-state.json
+test -f config/client.json
 sudo cp systemd/goginx-client.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now goginx-client
 ```
 
-`goginx-client` 服务默认读取部署根目录下的 `data/client-state.json`，这个文件只会由 `./bin/goginx-client join <token>` 生成。若先启动服务，会看到 `load client config: ... data/client-state.json ... cannot find the path specified`；处理方式是在客户端机器上先执行 join，然后再启动服务。若使用自定义路径，启动和 join 都需要显式传入对应 `-config`、`-state` 或 `-ca-file`。
+`goginx-client` 服务默认读取部署根目录下的 `data/client-state.json`，同时 `./bin/goginx-client join <token>` 也会更新 `config/client.json` 供显式 `-config` 启动使用。若先启动服务，会看到 `load client config: ... data/client-state.json ... cannot find the path specified`；处理方式是在客户端机器上先执行 join，然后再启动服务。若使用自定义路径，启动和 join 都需要显式传入对应 `-config`、`-state` 或 `-ca-file`。
 
 如果不是 `systemd` 环境，也可以直接在 Release 包根目录运行 `./bin/goginx-server` 或 `./bin/goginx-client`，并由外部进程管理器负责守护进程生命周期。
 

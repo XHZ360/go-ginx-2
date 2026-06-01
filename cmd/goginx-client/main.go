@@ -68,6 +68,7 @@ func loadClientConfig(configPath string) (config.Client, error) {
 func runJoin(args []string) error {
 	flags := flag.NewFlagSet("join", flag.ContinueOnError)
 	statePath := flags.String("state", defaultClientStatePath(), "managed client state path")
+	configPath := flags.String("config", defaultClientConfigPath(), "client config path to update")
 	caFile := flags.String("ca-file", defaultClientCAFile(), "managed server CA path")
 	if err := flags.Parse(args); err != nil {
 		return err
@@ -82,13 +83,17 @@ func runJoin(args []string) error {
 	root, err := deploymentRoot()
 	if err == nil {
 		*statePath = deploypath.Resolve(root, *statePath)
+		*configPath = deploypath.Resolve(root, *configPath)
 		*caFile = deploypath.Resolve(root, *caFile)
 	}
 	if err := config.WriteClientCA(caPEM, *caFile); err != nil {
 		return err
 	}
 	cfg.ServerCAFile = *caFile
-	return config.SaveManagedClient(cfg, *statePath)
+	if err := config.SaveManagedClient(cfg, *statePath); err != nil {
+		return err
+	}
+	return config.SaveManagedClient(cfg, *configPath)
 }
 
 func defaultClientStatePath() string {
@@ -105,6 +110,14 @@ func defaultClientCAFile() string {
 		return config.DefaultClientCAFile
 	}
 	return deploypath.Resolve(root, config.DefaultClientCAFile)
+}
+
+func defaultClientConfigPath() string {
+	root, err := deploymentRoot()
+	if err != nil {
+		return config.DefaultClientConfigPath
+	}
+	return deploypath.Resolve(root, config.DefaultClientConfigPath)
 }
 
 func deploymentRoot() (string, error) {

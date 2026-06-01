@@ -25,8 +25,9 @@ func TestRunJoinWritesManagedState(t *testing.T) {
 		t.Fatal(err)
 	}
 	statePath := filepath.Join(t.TempDir(), "client-state.json")
+	configPath := filepath.Join(t.TempDir(), "client.json")
 	caFile := filepath.Join(t.TempDir(), "server-ca.crt")
-	if err := runJoin([]string{"-state", statePath, "-ca-file", caFile, token}); err != nil {
+	if err := runJoin([]string{"-state", statePath, "-config", configPath, "-ca-file", caFile, token}); err != nil {
 		t.Fatalf("run join: %v", err)
 	}
 	if content, err := os.ReadFile(caFile); err != nil || string(content) != "ca-pem" {
@@ -38,6 +39,13 @@ func TestRunJoinWritesManagedState(t *testing.T) {
 	}
 	if cfg.ClientID != "client-1" || cfg.Credential != "secret" || cfg.ServerCAFile != caFile {
 		t.Fatalf("unexpected managed client config: %+v", cfg)
+	}
+	writtenConfig, err := config.LoadClient(configPath)
+	if err != nil {
+		t.Fatalf("load client config: %v", err)
+	}
+	if writtenConfig.ClientID != "client-1" || writtenConfig.Credential != "secret" || writtenConfig.ServerCAFile != caFile {
+		t.Fatalf("unexpected client config: %+v", writtenConfig)
 	}
 }
 
@@ -60,9 +68,13 @@ func TestRunJoinWritesManagedStateUnderDeploymentRoot(t *testing.T) {
 	}
 
 	statePath := filepath.Join(deploymentRoot, "data", "client-state.json")
+	configPath := filepath.Join(deploymentRoot, "config", "client.json")
 	caFile := filepath.Join(deploymentRoot, "data", "certs", "server-ca.crt")
 	if _, err := os.Stat(statePath); err != nil {
 		t.Fatalf("expected deployment-root client state: %v", err)
+	}
+	if _, err := os.Stat(configPath); err != nil {
+		t.Fatalf("expected deployment-root client config: %v", err)
 	}
 	if content, err := os.ReadFile(caFile); err != nil || string(content) != "ca-pem" {
 		t.Fatalf("unexpected ca file content=%q err=%v", string(content), err)
@@ -76,6 +88,13 @@ func TestRunJoinWritesManagedStateUnderDeploymentRoot(t *testing.T) {
 	}
 	if cfg.ClientID != "client-1" || cfg.ServerCAFile != caFile {
 		t.Fatalf("unexpected managed client config: %+v", cfg)
+	}
+	writtenConfig, err := config.LoadClient(configPath)
+	if err != nil {
+		t.Fatalf("load written client config: %v", err)
+	}
+	if writtenConfig.ClientID != "client-1" || writtenConfig.ServerCAFile != caFile {
+		t.Fatalf("unexpected written client config: %+v", writtenConfig)
 	}
 }
 
