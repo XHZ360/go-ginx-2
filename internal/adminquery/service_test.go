@@ -47,6 +47,40 @@ func TestServiceBuildsDashboardSummary(t *testing.T) {
 	}
 }
 
+func TestServiceProjectsRuntimeSessionAsOnlineClientStatus(t *testing.T) {
+	ctx := context.Background()
+	db := openQueryTestStore(t)
+	seedQueryTestData(t, ctx, db)
+	if err := db.Clients().SetStatus(ctx, "client-1", domain.ClientOffline); err != nil {
+		t.Fatalf("set client offline: %v", err)
+	}
+	sessions := session.NewManager()
+	registered, _, err := sessions.Register(session.RegisterInput{SessionID: "session-1", ClientID: "client-1", UserID: "user-1", Protocol: domain.ProtocolQUIC, ConfigVersion: 2})
+	if err != nil {
+		t.Fatalf("register session: %v", err)
+	}
+	if _, err := sessions.Heartbeat(session.HeartbeatInput{SessionID: registered.ID, ConfigVersion: 2, Stats: session.HeartbeatStats{ActiveProxies: 1, ActiveStreams: 2}}); err != nil {
+		t.Fatalf("heartbeat session: %v", err)
+	}
+	service := Service{Store: db, Sessions: sessions}
+
+	page, err := service.ListClients(ctx, ClientListInput{Filter: ClientFilter{Status: string(domain.ClientOnline)}})
+	if err != nil {
+		t.Fatalf("list clients: %v", err)
+	}
+	if len(page.Items) != 1 || page.Items[0].Status != domain.ClientOnline || !page.Items[0].Runtime.Online {
+		t.Fatalf("expected runtime online list item, got %+v", page.Items)
+	}
+
+	detail, err := service.ClientDetail(ctx, "client-1")
+	if err != nil {
+		t.Fatalf("client detail: %v", err)
+	}
+	if detail.Status != domain.ClientOnline || !detail.Runtime.Online {
+		t.Fatalf("expected runtime online detail, got %+v", detail)
+	}
+}
+
 func TestServiceListsRecentAuditEvents(t *testing.T) {
 	ctx := context.Background()
 	db := openQueryTestStore(t)

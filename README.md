@@ -189,6 +189,11 @@ HTTPS 静态证书终止示例：
 - `config/client.json`
 - `data/certs/server-ca.crt`
 
+运行日志默认写入：
+
+- `logs/server.log`
+- `logs/client.log`
+
 这些是应用生成的运行时状态，不需要手写。
 
 ### 环境变量覆盖
@@ -393,7 +398,7 @@ Linux `systemd` Release 包核心内容：
 - `admin-ui/`：管理前端构建产物，默认由管理监听器同源服务
 - `config/`：示例配置和环境文件
 - `data/`：SQLite 与证书目录
-- `logs/`：日志目录
+- `logs/`：运行日志目录，默认包含 `server.log` 和 `client.log`
 - `systemd/`：渲染后的 `goginx-server.service` 和 `goginx-client.service`
 
 服务器部署流程示例：

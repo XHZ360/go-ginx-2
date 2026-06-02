@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"slices"
@@ -240,6 +241,22 @@ func (listener *Listener) handleControl(ctx context.Context, stream io.ReadWrite
 }
 
 func (server Server) handleControl(ctx context.Context, stream io.ReadWriteCloser, opener session.StreamOpener) {
+	registeredSessionID := ""
+	markedOnline := false
+	defer func() {
+		if registeredSessionID == "" {
+			return
+		}
+		closed, latest, err := server.Sessions.Close(registeredSessionID)
+		if err != nil {
+			log.Printf("control session close failed: session_id=%s error=%v", registeredSessionID, err)
+			return
+		}
+		if markedOnline && latest {
+			server.setClientRuntimeStatus(context.Background(), closed.ClientID, domain.ClientOffline)
+		}
+	}()
+
 	envelope, err := ReadMessage(stream)
 	if err != nil || envelope.Type != MessageAuthRequest {
 		_ = WriteMessage(stream, MessageAuthResponse, AuthResponse{Accepted: false, Reason: "invalid auth request"})
@@ -253,6 +270,7 @@ func (server Server) handleControl(ctx context.Context, stream io.ReadWriteClose
 
 	result, err := server.Authenticator.Authenticate(ctx, request)
 	if err != nil {
+		log.Printf("control authentication rejected: client_id=%s error=%v", request.ClientID, err)
 		_ = WriteMessage(stream, MessageAuthResponse, AuthResponse{Accepted: false, Reason: err.Error()})
 		return
 	}
@@ -276,6 +294,7 @@ func (server Server) handleControl(ctx context.Context, stream io.ReadWriteClose
 			_ = WriteMessage(stream, MessageAuthResponse, AuthResponse{Accepted: false, Reason: err.Error()})
 			return
 		}
+		registeredSessionID = registered.ID
 	}
 	muxReady := false
 	if mux, ok := opener.(*tcpTLSMux); ok {
@@ -289,7 +308,9 @@ func (server Server) handleControl(ctx context.Context, stream io.ReadWriteClose
 	if err := WriteMessage(stream, MessageAuthResponse, AuthResponse{Accepted: true, SessionID: registered.ID, SelectedProtocol: result.SelectedProtocol, HeartbeatInterval: result.HeartbeatInterval, ConfigVersion: result.ConfigVersion}); err != nil {
 		return
 	}
+	log.Printf("control client authenticated: client_id=%s user_id=%s protocol=%s session_id=%s config_version=%d", result.Client.ID, result.User.ID, result.SelectedProtocol, registered.ID, result.ConfigVersion)
 	if err := server.sendProxySnapshot(ctx, stream, result.Client.ID, result.ConfigVersion); err != nil {
+		log.Printf("control proxy snapshot failed: client_id=%s session_id=%s error=%v", result.Client.ID, registered.ID, err)
 		return
 	}
 	if conn, ok := stream.(interface{ SetDeadline(time.Time) error }); ok {
@@ -299,12 +320,39 @@ func (server Server) handleControl(ctx context.Context, stream io.ReadWriteClose
 		mux.Start()
 		registered, _, err = server.Sessions.Register(registerInput)
 		if err != nil {
+			log.Printf("control tcp tls session register failed: client_id=%s session_id=%s error=%v", result.Client.ID, sessionID, err)
 			return
 		}
+		registeredSessionID = registered.ID
 		muxReady = true
 		stream = mux.ControlStream()
 	}
+	if server.setClientRuntimeStatus(ctx, result.Client.ID, domain.ClientOnline) {
+		markedOnline = true
+	}
 	server.handleHeartbeats(stream)
+}
+
+func (server Server) setClientRuntimeStatus(ctx context.Context, clientID string, status domain.ClientStatus) bool {
+	if server.Authenticator.Store == nil || server.Authenticator.Store.Clients() == nil {
+		return false
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	client, err := server.Authenticator.Store.Clients().ByID(ctx, clientID)
+	if err != nil {
+		log.Printf("control client status lookup failed: client_id=%s status=%s error=%v", clientID, status, err)
+		return false
+	}
+	if client.Status == domain.ClientDisabled {
+		return false
+	}
+	if err := server.Authenticator.Store.Clients().SetStatus(ctx, clientID, status); err != nil {
+		log.Printf("control client status update failed: client_id=%s status=%s error=%v", clientID, status, err)
+		return false
+	}
+	return true
 }
 
 func (server Server) sendProxySnapshot(ctx context.Context, stream io.Writer, clientID string, version int64) error {

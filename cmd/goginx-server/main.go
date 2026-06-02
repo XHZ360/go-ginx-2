@@ -3,9 +3,11 @@ package main
 import (
 	"context"
 	"flag"
+	"io"
 	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 
 	"github.com/simp-frp/go-ginx-2/internal/config"
@@ -16,6 +18,8 @@ import (
 var executablePath = os.Executable
 
 func main() {
+	closeLog := setupLogOutput("server.log")
+	defer closeLog()
 	configPath := flag.String("config", "", "server config path; when omitted, managed defaults are used")
 	flag.Parse()
 
@@ -72,4 +76,23 @@ func resolveExistingDeploymentPath(root string, path string) string {
 		return path
 	}
 	return deploypath.Resolve(root, path)
+}
+
+func setupLogOutput(name string) func() {
+	root, err := deploypath.Root(executablePath)
+	if err != nil {
+		root = "."
+	}
+	logDir := filepath.Join(root, "logs")
+	if err := os.MkdirAll(logDir, 0o755); err != nil {
+		log.Printf("create log directory %s: %v", logDir, err)
+		return func() {}
+	}
+	file, err := os.OpenFile(filepath.Join(logDir, name), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		log.Printf("open log file %s: %v", filepath.Join(logDir, name), err)
+		return func() {}
+	}
+	log.SetOutput(io.MultiWriter(os.Stderr, file))
+	return func() { _ = file.Close() }
 }

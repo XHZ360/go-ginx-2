@@ -134,6 +134,29 @@ func (manager *Manager) Heartbeat(input HeartbeatInput) (Session, error) {
 	return session, nil
 }
 
+func (manager *Manager) Close(sessionID string) (Session, bool, error) {
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+
+	session, ok := manager.byID[sessionID]
+	if !ok {
+		return Session{}, false, ErrSessionNotFound
+	}
+	if session.ReplacedAt != nil {
+		return session, false, nil
+	}
+	if session.ClosedAt == nil {
+		now := manager.now()
+		session.ClosedAt = &now
+		manager.byID[sessionID] = session
+	}
+	isLatest := manager.latestByClient[session.ClientID] == sessionID
+	if isLatest {
+		delete(manager.latestByClient, session.ClientID)
+	}
+	return session, isLatest, nil
+}
+
 func (manager *Manager) Latest(clientID string) (Session, bool) {
 	manager.mu.RLock()
 	defer manager.mu.RUnlock()

@@ -328,7 +328,7 @@ func TestServerSessionGraphQLAndCanonicalQueries(t *testing.T) {
 		t.Fatalf("unexpected users page: %+v", users)
 	}
 	clients := data["clients"].(map[string]any)["items"].([]any)
-	if len(clients) != 1 || !clients[0].(map[string]any)["runtime"].(map[string]any)["online"].(bool) {
+	if len(clients) != 1 || clients[0].(map[string]any)["status"].(string) != string(domain.ClientOnline) || !clients[0].(map[string]any)["runtime"].(map[string]any)["online"].(bool) {
 		t.Fatalf("unexpected clients page: %+v", clients)
 	}
 	certificates := data["certificates"].(map[string]any)
@@ -699,7 +699,7 @@ func adminAPITestRuntime(t *testing.T) (*sqlite.Store, *session.Manager, *stats.
 	t.Cleanup(func() { _ = db.Close() })
 	ctx := context.Background()
 	user := domain.User{ID: "user-1", Username: "alice", Role: domain.RoleUser, Status: domain.UserEnabled}
-	client := domain.Client{ID: "client-1", UserID: user.ID, Name: "home", Status: domain.ClientOnline, CredentialHash: domain.HashCredential("secret")}
+	client := domain.Client{ID: "client-1", UserID: user.ID, Name: "home", Status: domain.ClientOffline, CredentialHash: domain.HashCredential("secret")}
 	proxy := domain.Proxy{ID: "proxy-1", UserID: user.ID, ClientID: client.ID, Name: "web", Type: domain.ProxyHTTP, Status: domain.ProxyEnabled, EntryHost: "app.example.com", TargetHost: "127.0.0.1", TargetPort: 8080}
 	if err := db.Users().Create(ctx, user); err != nil {
 		t.Fatalf("create user: %v", err)

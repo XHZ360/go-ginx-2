@@ -6,6 +6,7 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"slices"
 	"time"
@@ -42,8 +43,10 @@ func RunClient(ctx context.Context, cfg config.Client) error {
 		}
 		var permanent permanentClientError
 		if errors.As(err, &permanent) {
+			log.Printf("client session stopped permanently: client_id=%s error=%v", cfg.ClientID, err)
 			return permanent
 		}
+		log.Printf("client session failed: client_id=%s connected=%t error=%v retry_in=%s", cfg.ClientID, connected, err, delay)
 		if err := waitReconnect(ctx, delay); err != nil {
 			return nil
 		}
@@ -64,6 +67,7 @@ func runClientSession(ctx context.Context, cfg config.Client, tlsConfig *tls.Con
 	if err != nil {
 		return true, fmt.Errorf("read proxy snapshot: %w", err)
 	}
+	log.Printf("client control session established: client_id=%s protocol=%s session_id=%s config_version=%d proxies=%d heartbeat_interval=%s", cfg.ClientID, response.SelectedProtocol, response.SessionID, response.ConfigVersion, len(snapshot.Proxies), response.HeartbeatInterval)
 	heartbeatDone := make(chan error, 1)
 	go func() { heartbeatDone <- sendHeartbeats(ctx, client, response, cfg.ClientID, len(snapshot.Proxies)) }()
 	serveDone := make(chan error, 1)
@@ -77,12 +81,14 @@ func runClientSession(ctx context.Context, cfg config.Client, tlsConfig *tls.Con
 		if errors.Is(err, context.Canceled) {
 			return true, nil
 		}
+		log.Printf("client heartbeat loop stopped: client_id=%s error=%v", cfg.ClientID, err)
 		return true, err
 	case err := <-serveDone:
 		_ = client.Close()
 		if errors.Is(err, context.Canceled) {
 			return true, nil
 		}
+		log.Printf("client proxy stream loop stopped: client_id=%s error=%v", cfg.ClientID, err)
 		return true, err
 	}
 }

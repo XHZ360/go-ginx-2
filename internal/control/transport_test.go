@@ -44,6 +44,36 @@ func TestQUICHandshakeRegistersSession(t *testing.T) {
 	}
 }
 
+func TestQUICHandshakePersistsClientOnlineAndOffline(t *testing.T) {
+	now := time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC)
+	statusLog := make([]domain.ClientStatus, 0)
+	authStore := newAuthStore(domain.UserEnabled, domain.ClientOffline, domain.HashCredential("secret"))
+	authStore.clientStatusLog = &statusLog
+	listener, _ := startTestListener(t, Authenticator{
+		Store:             authStore,
+		AllowedProtocols:  []domain.Protocol{domain.ProtocolQUIC},
+		HeartbeatInterval: 10 * time.Second,
+		Now:               func() time.Time { return now },
+	})
+
+	client, response, err := DialAndAuthenticate(context.Background(), listener.Addr().String(), testClientTLSConfig(t), nil, AuthRequest{ClientID: "client-1", Credential: "secret", Timestamp: now, Protocols: []domain.Protocol{domain.ProtocolQUIC}})
+	if err != nil {
+		t.Fatalf("dial authenticate: %v", err)
+	}
+	if !response.Accepted {
+		t.Fatalf("unexpected auth response: %+v", response)
+	}
+	if _, err := client.ReadProxySnapshot(); err != nil {
+		t.Fatalf("read proxy snapshot: %v", err)
+	}
+	waitForClientStatusLog(t, &statusLog, []domain.ClientStatus{domain.ClientOnline})
+
+	if err := client.Close(); err != nil {
+		t.Fatalf("close client: %v", err)
+	}
+	waitForClientStatusLog(t, &statusLog, []domain.ClientStatus{domain.ClientOnline, domain.ClientOffline})
+}
+
 func TestQUICHandshakeSendsProxySnapshot(t *testing.T) {
 	now := time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC)
 	authStore := newAuthStore(domain.UserEnabled, domain.ClientOffline, domain.HashCredential("secret"))
@@ -413,6 +443,30 @@ func startEchoTarget(t *testing.T) net.Listener {
 		}
 	}()
 	return listener
+}
+
+func waitForClientStatusLog(t *testing.T, got *[]domain.ClientStatus, want []domain.ClientStatus) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if clientStatusLogMatches(*got, want) {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("client status log did not reach %+v, got %+v", want, *got)
+}
+
+func clientStatusLogMatches(got []domain.ClientStatus, want []domain.ClientStatus) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func parseTestPort(port string) (int, bool) {

@@ -133,11 +133,11 @@ type UserDetail struct {
 }
 
 type UserPage struct {
-	Items     []UserListItem
+	Items      []UserListItem
 	TotalCount int
-	PageInfo  PageInfo
-	Filter    UserFilter
-	Sort      SortInput
+	PageInfo   PageInfo
+	Filter     UserFilter
+	Sort       SortInput
 }
 
 type ClientRuntime struct {
@@ -573,6 +573,9 @@ func clientListItemFromDomain(client domain.Client, runtimeSession session.Sessi
 	item := ClientListItem{ID: client.ID, UserID: client.UserID, Name: client.Name, Status: client.Status, Version: client.Version, LastOnlineAt: client.LastOnlineAt, LastOfflineAt: client.LastOfflineAt, CreatedAt: client.CreatedAt, UpdatedAt: client.UpdatedAt}
 	if runtimeSession.ID == "" {
 		return item
+	}
+	if item.Status != domain.ClientDisabled {
+		item.Status = domain.ClientOnline
 	}
 	item.Runtime = ClientRuntime{Online: true, Protocol: runtimeSession.Protocol, ConnectedAt: &runtimeSession.ConnectedAt, LastHeartbeat: &runtimeSession.LastHeartbeat, ConfigVersion: runtimeSession.ConfigVersion, ActiveProxies: runtimeSession.Stats.ActiveProxies, ActiveStreams: runtimeSession.Stats.ActiveStreams, UploadBytes: runtimeSession.Stats.UploadBytes, DownloadBytes: runtimeSession.Stats.DownloadBytes, ErrorSummary: runtimeSession.Stats.ErrorSummary}
 	return item

@@ -165,7 +165,19 @@ func (r clientRepository) List(ctx context.Context) ([]domain.Client, error) {
 }
 
 func (r clientRepository) SetStatus(ctx context.Context, id string, status domain.ClientStatus) error {
-	result, err := r.db.ExecContext(ctx, `update clients set status = ?, updated_at = ? where id = ?`, status, time.Now().UTC(), id)
+	now := time.Now().UTC()
+	result, err := r.db.ExecContext(ctx, `
+update clients
+set status = ?,
+    last_online_at = case when ? = ? then ? else last_online_at end,
+    last_offline_at = case when ? in (?, ?) then ? else last_offline_at end,
+    updated_at = ?
+where id = ?`,
+		status,
+		status, domain.ClientOnline, now,
+		status, domain.ClientOffline, domain.ClientDisconnected, now,
+		now,
+		id)
 	return resultError(result, err)
 }
 

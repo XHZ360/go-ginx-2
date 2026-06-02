@@ -39,6 +39,34 @@ func TestUserClientProxyRepositories(t *testing.T) {
 	}
 }
 
+func TestClientSetStatusMaintainsOnlineOfflineTimestamps(t *testing.T) {
+	ctx := context.Background()
+	db := openTestStore(t)
+	seedUserAndClient(t, ctx, db)
+
+	if err := db.Clients().SetStatus(ctx, "c1", domain.ClientOnline); err != nil {
+		t.Fatalf("set online: %v", err)
+	}
+	online, err := db.Clients().ByID(ctx, "c1")
+	if err != nil {
+		t.Fatalf("lookup online client: %v", err)
+	}
+	if online.Status != domain.ClientOnline || online.LastOnlineAt == nil || online.LastOfflineAt != nil {
+		t.Fatalf("unexpected online client timestamps: %+v", online)
+	}
+
+	if err := db.Clients().SetStatus(ctx, "c1", domain.ClientOffline); err != nil {
+		t.Fatalf("set offline: %v", err)
+	}
+	offline, err := db.Clients().ByID(ctx, "c1")
+	if err != nil {
+		t.Fatalf("lookup offline client: %v", err)
+	}
+	if offline.Status != domain.ClientOffline || offline.LastOnlineAt == nil || offline.LastOfflineAt == nil {
+		t.Fatalf("unexpected offline client timestamps: %+v", offline)
+	}
+}
+
 func TestClientEnrollmentRepositoryStoresReviewableToken(t *testing.T) {
 	ctx := context.Background()
 	db := openTestStore(t)

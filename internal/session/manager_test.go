@@ -53,6 +53,43 @@ func TestHeartbeatUpdatesSessionStats(t *testing.T) {
 	}
 }
 
+func TestCloseRemovesOnlyLatestSession(t *testing.T) {
+	now := time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC)
+	manager := NewManager()
+	manager.now = func() time.Time { return now }
+	first, _, err := manager.Register(RegisterInput{SessionID: "s1", ClientID: "c1", UserID: "u1", Protocol: domain.ProtocolQUIC})
+	if err != nil {
+		t.Fatalf("register first: %v", err)
+	}
+	second, _, err := manager.Register(RegisterInput{SessionID: "s2", ClientID: "c1", UserID: "u1", Protocol: domain.ProtocolQUIC})
+	if err != nil {
+		t.Fatalf("register second: %v", err)
+	}
+
+	closed, latest, err := manager.Close(first.ID)
+	if err != nil {
+		t.Fatalf("close first: %v", err)
+	}
+	if latest || closed.ClosedAt != nil {
+		t.Fatalf("replaced session should not close latest state: latest=%v closed=%+v", latest, closed)
+	}
+	if found, ok := manager.Latest("c1"); !ok || found.ID != second.ID {
+		t.Fatalf("expected second session to remain latest, got %+v", found)
+	}
+
+	now = now.Add(time.Second)
+	closed, latest, err = manager.Close(second.ID)
+	if err != nil {
+		t.Fatalf("close second: %v", err)
+	}
+	if !latest || closed.ClosedAt == nil {
+		t.Fatalf("expected latest session to close, latest=%v closed=%+v", latest, closed)
+	}
+	if _, ok := manager.Latest("c1"); ok {
+		t.Fatal("expected latest session to be removed")
+	}
+}
+
 func TestMarkExpiredClosesStaleSessions(t *testing.T) {
 	now := time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC)
 	manager := NewManager()

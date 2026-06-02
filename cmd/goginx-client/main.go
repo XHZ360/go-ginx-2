@@ -5,9 +5,11 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 
 	"github.com/simp-frp/go-ginx-2/internal/clientjoin"
@@ -19,6 +21,8 @@ import (
 var executablePath = os.Executable
 
 func main() {
+	closeLog := setupLogOutput("client.log")
+	defer closeLog()
 	if len(os.Args) > 1 && os.Args[1] == "join" {
 		if err := runJoin(os.Args[2:]); err != nil {
 			log.Fatalf("join client: %v", err)
@@ -36,9 +40,11 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	log.Printf("go-ginx client starting: client_id=%s server_address=%s server_tls_address=%s server_name=%s ca_file=%s", cfg.ClientID, cfg.ServerAddress, cfg.ServerTLSAddress, cfg.ServerName, cfg.ServerCAFile)
 	if err := daemon.RunClient(ctx, cfg); err != nil {
 		log.Fatalf("run client: %v", err)
 	}
+	log.Printf("go-ginx client stopped")
 }
 
 func loadClientConfig(configPath string) (config.Client, error) {
@@ -129,4 +135,23 @@ func resolveExistingDeploymentPath(root string, path string) string {
 		return path
 	}
 	return deploypath.Resolve(root, path)
+}
+
+func setupLogOutput(name string) func() {
+	root, err := deploymentRoot()
+	if err != nil {
+		root = "."
+	}
+	logDir := filepath.Join(root, "logs")
+	if err := os.MkdirAll(logDir, 0o755); err != nil {
+		log.Printf("create log directory %s: %v", logDir, err)
+		return func() {}
+	}
+	file, err := os.OpenFile(filepath.Join(logDir, name), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		log.Printf("open log file %s: %v", filepath.Join(logDir, name), err)
+		return func() {}
+	}
+	log.SetOutput(io.MultiWriter(os.Stderr, file))
+	return func() { _ = file.Close() }
 }

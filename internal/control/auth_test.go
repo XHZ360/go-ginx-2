@@ -57,9 +57,10 @@ func TestAuthenticatorRejectsUnsupportedProtocol(t *testing.T) {
 }
 
 type authStore struct {
-	user    domain.User
-	client  domain.Client
-	proxies []domain.Proxy
+	user            domain.User
+	client          domain.Client
+	proxies         []domain.Proxy
+	clientStatusLog *[]domain.ClientStatus
 }
 
 func newAuthStore(userStatus domain.UserStatus, clientStatus domain.ClientStatus, credentialHash string) authStore {
@@ -71,7 +72,9 @@ func newAuthStore(userStatus domain.UserStatus, clientStatus domain.ClientStatus
 
 func (s authStore) Users() store.UserRepository { return authUserRepository{s.user} }
 
-func (s authStore) Clients() store.ClientRepository { return authClientRepository{s.client} }
+func (s authStore) Clients() store.ClientRepository {
+	return authClientRepository{client: s.client, statusLog: s.clientStatusLog}
+}
 
 func (s authStore) ClientEnrollments() store.ClientEnrollmentRepository {
 	return authClientEnrollmentRepository{}
@@ -112,7 +115,10 @@ func (r authUserRepository) SetPassword(context.Context, string, string) error {
 
 func (r authUserRepository) Delete(context.Context, string) error { return nil }
 
-type authClientRepository struct{ client domain.Client }
+type authClientRepository struct {
+	client    domain.Client
+	statusLog *[]domain.ClientStatus
+}
 
 func (r authClientRepository) Create(context.Context, domain.Client) error { return nil }
 
@@ -127,7 +133,10 @@ func (r authClientRepository) List(context.Context) ([]domain.Client, error) {
 	return []domain.Client{r.client}, nil
 }
 
-func (r authClientRepository) SetStatus(context.Context, string, domain.ClientStatus) error {
+func (r authClientRepository) SetStatus(_ context.Context, _ string, status domain.ClientStatus) error {
+	if r.statusLog != nil {
+		*r.statusLog = append(*r.statusLog, status)
+	}
 	return nil
 }
 
