@@ -31,6 +31,7 @@ import (
 
 	"github.com/simp-frp/go-ginx-2/internal/deploy"
 	"github.com/simp-frp/go-ginx-2/internal/domain"
+	"github.com/simp-frp/go-ginx-2/internal/enrollment"
 	"github.com/simp-frp/go-ginx-2/internal/store/sqlite"
 )
 
@@ -55,17 +56,19 @@ func TestExternalProcessesProxyTCP(t *testing.T) {
 	dbPath := filepath.Join(workDir, "go-ginx.db")
 	seedSQLite(t, dbPath, domain.Proxy{ID: "tcp-1", UserID: "user-1", ClientID: "client-1", Name: "echo", Type: domain.ProxyTCP, Status: domain.ProxyEnabled, EntryPort: tcpEntryPort, TargetHost: echoHost, TargetPort: echoPort})
 	serverConfig := writeJSON(t, filepath.Join(workDir, "server.json"), map[string]any{
-		"admin_listen":          "127.0.0.1:0",
-		"control_quic_listen":   net.JoinHostPort("127.0.0.1", strconv.Itoa(controlPort)),
-		"control_tls_cert_file": certFile,
-		"control_tls_key_file":  keyFile,
-		"tcp_entry_host":        "127.0.0.1",
-		"http_entry_listen":     net.JoinHostPort("127.0.0.1", strconv.Itoa(httpEntryPort)),
-		"sqlite_path":           dbPath,
-		"data_dir":              filepath.Join(workDir, "data"),
-		"certificate_dir":       filepath.Join(workDir, "certs"),
-		"heartbeat_timeout":     int64(time.Second),
-		"log_retention_days":    1,
+		"admin_listen":             "127.0.0.1:0",
+		"client_enrollment_listen": "127.0.0.1:0",
+		"control_quic_listen":      net.JoinHostPort("127.0.0.1", strconv.Itoa(controlPort)),
+		"control_tls_cert_file":    certFile,
+		"control_tls_key_file":     keyFile,
+		"tcp_entry_host":           "127.0.0.1",
+		"http_entry_listen":        net.JoinHostPort("127.0.0.1", strconv.Itoa(httpEntryPort)),
+		"https_entry_listen":       "127.0.0.1:0",
+		"sqlite_path":              dbPath,
+		"data_dir":                 filepath.Join(workDir, "data"),
+		"certificate_dir":          filepath.Join(workDir, "certs"),
+		"heartbeat_timeout":        int64(time.Second),
+		"log_retention_days":       1,
 	})
 	clientConfig := writeJSON(t, filepath.Join(workDir, "client.json"), map[string]any{
 		"server_address":    net.JoinHostPort("127.0.0.1", strconv.Itoa(controlPort)),
@@ -128,17 +131,19 @@ func TestExternalProcessesProxyHTTP(t *testing.T) {
 	dbPath := filepath.Join(workDir, "go-ginx.db")
 	seedSQLite(t, dbPath, domain.Proxy{ID: "http-1", UserID: "user-1", ClientID: "client-1", Name: "web", Type: domain.ProxyHTTP, Status: domain.ProxyEnabled, EntryHost: "app.example.com", TargetHost: originHost, TargetPort: originPort})
 	serverConfig := writeJSON(t, filepath.Join(workDir, "server.json"), map[string]any{
-		"admin_listen":          "127.0.0.1:0",
-		"control_quic_listen":   net.JoinHostPort("127.0.0.1", strconv.Itoa(controlPort)),
-		"control_tls_cert_file": certFile,
-		"control_tls_key_file":  keyFile,
-		"tcp_entry_host":        "127.0.0.1",
-		"http_entry_listen":     net.JoinHostPort("127.0.0.1", strconv.Itoa(httpEntryPort)),
-		"sqlite_path":           dbPath,
-		"data_dir":              filepath.Join(workDir, "data"),
-		"certificate_dir":       filepath.Join(workDir, "certs"),
-		"heartbeat_timeout":     int64(time.Second),
-		"log_retention_days":    1,
+		"admin_listen":             "127.0.0.1:0",
+		"client_enrollment_listen": "127.0.0.1:0",
+		"control_quic_listen":      net.JoinHostPort("127.0.0.1", strconv.Itoa(controlPort)),
+		"control_tls_cert_file":    certFile,
+		"control_tls_key_file":     keyFile,
+		"tcp_entry_host":           "127.0.0.1",
+		"http_entry_listen":        net.JoinHostPort("127.0.0.1", strconv.Itoa(httpEntryPort)),
+		"https_entry_listen":       "127.0.0.1:0",
+		"sqlite_path":              dbPath,
+		"data_dir":                 filepath.Join(workDir, "data"),
+		"certificate_dir":          filepath.Join(workDir, "certs"),
+		"heartbeat_timeout":        int64(time.Second),
+		"log_retention_days":       1,
 	})
 	clientConfig := writeJSON(t, filepath.Join(workDir, "client.json"), map[string]any{
 		"server_address":    net.JoinHostPort("127.0.0.1", strconv.Itoa(controlPort)),
@@ -193,18 +198,19 @@ func TestExternalProcessesProxyHTTPS(t *testing.T) {
 	dbPath := filepath.Join(workDir, "go-ginx.db")
 	seedSQLite(t, dbPath, domain.Proxy{ID: "https-1", UserID: "user-1", ClientID: "client-1", Name: "secure", Type: domain.ProxyHTTPS, Status: domain.ProxyEnabled, EntryHost: "secure.example.com", TargetHost: originHost, TargetPort: originPort})
 	serverConfig := writeJSON(t, filepath.Join(workDir, "server.json"), map[string]any{
-		"admin_listen":          "127.0.0.1:0",
-		"control_quic_listen":   net.JoinHostPort("127.0.0.1", strconv.Itoa(controlPort)),
-		"control_tls_cert_file": certFile,
-		"control_tls_key_file":  keyFile,
-		"tcp_entry_host":        "127.0.0.1",
-		"http_entry_listen":     net.JoinHostPort("127.0.0.1", strconv.Itoa(httpEntryPort)),
-		"https_entry_listen":    net.JoinHostPort("127.0.0.1", strconv.Itoa(httpsEntryPort)),
-		"sqlite_path":           dbPath,
-		"data_dir":              filepath.Join(workDir, "data"),
-		"certificate_dir":       filepath.Join(workDir, "certs"),
-		"heartbeat_timeout":     int64(time.Second),
-		"log_retention_days":    1,
+		"admin_listen":             "127.0.0.1:0",
+		"client_enrollment_listen": "127.0.0.1:0",
+		"control_quic_listen":      net.JoinHostPort("127.0.0.1", strconv.Itoa(controlPort)),
+		"control_tls_cert_file":    certFile,
+		"control_tls_key_file":     keyFile,
+		"tcp_entry_host":           "127.0.0.1",
+		"http_entry_listen":        net.JoinHostPort("127.0.0.1", strconv.Itoa(httpEntryPort)),
+		"https_entry_listen":       net.JoinHostPort("127.0.0.1", strconv.Itoa(httpsEntryPort)),
+		"sqlite_path":              dbPath,
+		"data_dir":                 filepath.Join(workDir, "data"),
+		"certificate_dir":          filepath.Join(workDir, "certs"),
+		"heartbeat_timeout":        int64(time.Second),
+		"log_retention_days":       1,
 	})
 	clientConfig := writeJSON(t, filepath.Join(workDir, "client.json"), map[string]any{
 		"server_address":    net.JoinHostPort("127.0.0.1", strconv.Itoa(controlPort)),
@@ -250,17 +256,19 @@ func TestExternalProcessesProxyUDP(t *testing.T) {
 	dbPath := filepath.Join(workDir, "go-ginx.db")
 	seedSQLite(t, dbPath, domain.Proxy{ID: "udp-1", UserID: "user-1", ClientID: "client-1", Name: "dns", Type: domain.ProxyUDP, Status: domain.ProxyEnabled, EntryPort: udpEntryPort, TargetHost: echoHost, TargetPort: echoPort})
 	serverConfig := writeJSON(t, filepath.Join(workDir, "server.json"), map[string]any{
-		"admin_listen":          "127.0.0.1:0",
-		"control_quic_listen":   net.JoinHostPort("127.0.0.1", strconv.Itoa(controlPort)),
-		"control_tls_cert_file": certFile,
-		"control_tls_key_file":  keyFile,
-		"tcp_entry_host":        "127.0.0.1",
-		"http_entry_listen":     net.JoinHostPort("127.0.0.1", strconv.Itoa(httpEntryPort)),
-		"sqlite_path":           dbPath,
-		"data_dir":              filepath.Join(workDir, "data"),
-		"certificate_dir":       filepath.Join(workDir, "certs"),
-		"heartbeat_timeout":     int64(time.Second),
-		"log_retention_days":    1,
+		"admin_listen":             "127.0.0.1:0",
+		"client_enrollment_listen": "127.0.0.1:0",
+		"control_quic_listen":      net.JoinHostPort("127.0.0.1", strconv.Itoa(controlPort)),
+		"control_tls_cert_file":    certFile,
+		"control_tls_key_file":     keyFile,
+		"tcp_entry_host":           "127.0.0.1",
+		"http_entry_listen":        net.JoinHostPort("127.0.0.1", strconv.Itoa(httpEntryPort)),
+		"https_entry_listen":       "127.0.0.1:0",
+		"sqlite_path":              dbPath,
+		"data_dir":                 filepath.Join(workDir, "data"),
+		"certificate_dir":          filepath.Join(workDir, "certs"),
+		"heartbeat_timeout":        int64(time.Second),
+		"log_retention_days":       1,
 	})
 	clientConfig := writeJSON(t, filepath.Join(workDir, "client.json"), map[string]any{
 		"server_address":    net.JoinHostPort("127.0.0.1", strconv.Itoa(controlPort)),
@@ -297,26 +305,32 @@ func TestExternalProcessesAdminAPIUI(t *testing.T) {
 	smokeCtx, cancelSmoke := context.WithTimeout(context.Background(), 20*time.Second)
 	t.Cleanup(cancelSmoke)
 	controlPort := reservePort(t)
+	controlTLSPort := reservePort(t)
 	httpEntryPort := reservePort(t)
+	httpsEntryPort := reservePort(t)
 	adminPort := reservePort(t)
+	enrollmentPort := reservePort(t)
 	certFile, keyFile, caFile := writeTLSFiles(t, workDir)
 	adminCredsFile := writeAdminCredentialsFile(t, workDir, "admin", "secret")
 	dbPath := filepath.Join(workDir, "go-ginx.db")
 	seedSQLite(t, dbPath, domain.Proxy{ID: "http-1", UserID: "user-1", ClientID: "client-1", Name: "web", Type: domain.ProxyHTTP, Status: domain.ProxyEnabled, EntryHost: "app.example.com", TargetHost: "127.0.0.1", TargetPort: 8080})
 	serverConfig := writeJSON(t, filepath.Join(workDir, "server.json"), map[string]any{
-		"admin_listen":           net.JoinHostPort("127.0.0.1", strconv.Itoa(adminPort)),
-		"admin_credentials_file": adminCredsFile,
-		"admin_frontend_dir":     frontendDir,
-		"control_quic_listen":    net.JoinHostPort("127.0.0.1", strconv.Itoa(controlPort)),
-		"control_tls_cert_file":  certFile,
-		"control_tls_key_file":   keyFile,
-		"tcp_entry_host":         "127.0.0.1",
-		"http_entry_listen":      net.JoinHostPort("127.0.0.1", strconv.Itoa(httpEntryPort)),
-		"sqlite_path":            dbPath,
-		"data_dir":               filepath.Join(workDir, "data"),
-		"certificate_dir":        filepath.Join(workDir, "certs"),
-		"heartbeat_timeout":      int64(time.Second),
-		"log_retention_days":     1,
+		"admin_listen":             net.JoinHostPort("127.0.0.1", strconv.Itoa(adminPort)),
+		"admin_credentials_file":   adminCredsFile,
+		"admin_frontend_dir":       frontendDir,
+		"client_enrollment_listen": net.JoinHostPort("127.0.0.1", strconv.Itoa(enrollmentPort)),
+		"control_quic_listen":      net.JoinHostPort("127.0.0.1", strconv.Itoa(controlPort)),
+		"control_tls_listen":       net.JoinHostPort("127.0.0.1", strconv.Itoa(controlTLSPort)),
+		"control_tls_cert_file":    certFile,
+		"control_tls_key_file":     keyFile,
+		"tcp_entry_host":           "127.0.0.1",
+		"http_entry_listen":        net.JoinHostPort("127.0.0.1", strconv.Itoa(httpEntryPort)),
+		"https_entry_listen":       net.JoinHostPort("127.0.0.1", strconv.Itoa(httpsEntryPort)),
+		"sqlite_path":              dbPath,
+		"data_dir":                 filepath.Join(workDir, "data"),
+		"certificate_dir":          filepath.Join(workDir, "certs"),
+		"heartbeat_timeout":        int64(time.Second),
+		"log_retention_days":       1,
 	})
 	clientConfig := writeJSON(t, filepath.Join(workDir, "client.json"), map[string]any{
 		"server_address":    net.JoinHostPort("127.0.0.1", strconv.Itoa(controlPort)),
@@ -332,7 +346,7 @@ func TestExternalProcessesAdminAPIUI(t *testing.T) {
 	})
 
 	server := startProcess(t, root, serverBin, "-config", serverConfig)
-	waitForTCPAccept(t, smokeCtx, net.JoinHostPort("127.0.0.1", strconv.Itoa(adminPort)))
+	waitForTCPAcceptWithProcess(t, smokeCtx, net.JoinHostPort("127.0.0.1", strconv.Itoa(adminPort)), server)
 	client := startProcess(t, root, clientBin, "-config", clientConfig)
 	if err := waitForAdminFrontendRoute(smokeCtx, net.JoinHostPort("127.0.0.1", strconv.Itoa(adminPort))); err != nil {
 		t.Fatalf("admin frontend route smoke failed: %v\nserver output:\n%s\nclient output:\n%s", err, server.Output(), client.Output())
@@ -368,18 +382,20 @@ func TestDeployBundleRuntimeRestartRecovery(t *testing.T) {
 	dbPath := filepath.Join(bundleDir, "data", "go-ginx.db")
 	seedSQLite(t, dbPath, domain.Proxy{ID: "tcp-1", UserID: "user-1", ClientID: "client-1", Name: "echo", Type: domain.ProxyTCP, Status: domain.ProxyEnabled, EntryPort: tcpEntryPort, TargetHost: echoHost, TargetPort: echoPort})
 	serverConfig := writeJSON(t, filepath.Join(bundleDir, "config", "server.json"), map[string]any{
-		"admin_listen":          "127.0.0.1:0",
-		"control_quic_listen":   "127.0.0.1:0",
-		"control_tls_listen":    net.JoinHostPort("127.0.0.1", strconv.Itoa(controlTLSPort)),
-		"control_tls_cert_file": filepath.ToSlash(filepath.Join("data", "certs", filepath.Base(certFile))),
-		"control_tls_key_file":  filepath.ToSlash(filepath.Join("data", "certs", filepath.Base(keyFile))),
-		"tcp_entry_host":        "127.0.0.1",
-		"http_entry_listen":     net.JoinHostPort("127.0.0.1", strconv.Itoa(httpEntryPort)),
-		"sqlite_path":           filepath.ToSlash(filepath.Join("data", filepath.Base(dbPath))),
-		"data_dir":              "data",
-		"certificate_dir":       filepath.ToSlash(filepath.Join("data", "certs")),
-		"heartbeat_timeout":     int64(time.Second),
-		"log_retention_days":    1,
+		"admin_listen":             "127.0.0.1:0",
+		"client_enrollment_listen": "127.0.0.1:0",
+		"control_quic_listen":      "127.0.0.1:0",
+		"control_tls_listen":       net.JoinHostPort("127.0.0.1", strconv.Itoa(controlTLSPort)),
+		"control_tls_cert_file":    filepath.ToSlash(filepath.Join("data", "certs", filepath.Base(certFile))),
+		"control_tls_key_file":     filepath.ToSlash(filepath.Join("data", "certs", filepath.Base(keyFile))),
+		"tcp_entry_host":           "127.0.0.1",
+		"http_entry_listen":        net.JoinHostPort("127.0.0.1", strconv.Itoa(httpEntryPort)),
+		"https_entry_listen":       "127.0.0.1:0",
+		"sqlite_path":              filepath.ToSlash(filepath.Join("data", filepath.Base(dbPath))),
+		"data_dir":                 "data",
+		"certificate_dir":          filepath.ToSlash(filepath.Join("data", "certs")),
+		"heartbeat_timeout":        int64(time.Second),
+		"log_retention_days":       1,
 	})
 	clientConfig := writeJSON(t, filepath.Join(bundleDir, "config", "client.json"), map[string]any{
 		"server_address":     "127.0.0.1:1",
@@ -438,25 +454,34 @@ func TestExternalProcessesConfiglessServerAndClientJoin(t *testing.T) {
 	smokeCtx, cancelSmoke := context.WithTimeout(context.Background(), 25*time.Second)
 	t.Cleanup(cancelSmoke)
 	adminAddress := net.JoinHostPort("127.0.0.1", strconv.Itoa(reservePort(t)))
+	enrollmentAddress := net.JoinHostPort("127.0.0.1", strconv.Itoa(reservePort(t)))
 	controlQUICAddress := net.JoinHostPort("127.0.0.1", strconv.Itoa(reserveUDPPort(t)))
 	controlTLSAddress := net.JoinHostPort("127.0.0.1", strconv.Itoa(reservePort(t)))
 	httpEntryAddress := net.JoinHostPort("127.0.0.1", strconv.Itoa(reservePort(t)))
+	httpsEntryAddress := net.JoinHostPort("127.0.0.1", strconv.Itoa(reservePort(t)))
 	writeAdminFrontendFixtureAt(t, filepath.Join(deployDir, "admin-ui"))
 	deployDataDir := filepath.Join(deployDir, "data")
 	deployCertDir := filepath.Join(deployDataDir, "certs")
-	server := startProcessEnv(t, stateDir, map[string]string{
-		"GOGINX_ADMIN_LISTEN":          adminAddress,
-		"GOGINX_CONTROL_QUIC_LISTEN":   controlQUICAddress,
-		"GOGINX_CONTROL_TLS_LISTEN":    controlTLSAddress,
-		"GOGINX_CONTROL_TLS_CA_FILE":   filepath.Join(deployCertDir, "control-ca.crt"),
-		"GOGINX_CONTROL_TLS_CERT_FILE": filepath.Join(deployCertDir, "control.crt"),
-		"GOGINX_CONTROL_TLS_KEY_FILE":  filepath.Join(deployCertDir, "control.key"),
-		"GOGINX_HTTP_ENTRY_LISTEN":     httpEntryAddress,
-		"GOGINX_SQLITE_PATH":           filepath.Join(deployDataDir, "go-ginx.db"),
-		"GOGINX_DATA_DIR":              deployDataDir,
-		"GOGINX_CERTIFICATE_DIR":       deployCertDir,
-	}, serverBin)
+	serverEnv := map[string]string{
+		"GOGINX_ADMIN_LISTEN":             adminAddress,
+		"GOGINX_CLIENT_ENROLLMENT_LISTEN": enrollmentAddress,
+		"GOGINX_CONTROL_QUIC_LISTEN":      controlQUICAddress,
+		"GOGINX_CONTROL_TLS_LISTEN":       controlTLSAddress,
+		"GOGINX_CONTROL_TLS_CA_FILE":      filepath.Join(deployCertDir, "control-ca.crt"),
+		"GOGINX_CONTROL_TLS_CERT_FILE":    filepath.Join(deployCertDir, "control.crt"),
+		"GOGINX_CONTROL_TLS_KEY_FILE":     filepath.Join(deployCertDir, "control.key"),
+		"GOGINX_HTTP_ENTRY_LISTEN":        httpEntryAddress,
+		"GOGINX_HTTPS_ENTRY_LISTEN":       httpsEntryAddress,
+		"GOGINX_SQLITE_PATH":              filepath.Join(deployDataDir, "go-ginx.db"),
+		"GOGINX_DATA_DIR":                 deployDataDir,
+		"GOGINX_CERTIFICATE_DIR":          deployCertDir,
+	}
+	for name, value := range serverEnv {
+		t.Setenv(name, value)
+	}
+	server := startProcessEnv(t, stateDir, serverEnv, serverBin)
 	waitForTCPAccept(t, smokeCtx, adminAddress)
+	waitForTCPAccept(t, smokeCtx, enrollmentAddress)
 	waitForFile(t, smokeCtx, filepath.Join(deployCertDir, "control-ca.crt"))
 	waitForFile(t, smokeCtx, filepath.Join(deployDataDir, "go-ginx.db"))
 	if err := waitForAdminFrontendRoute(smokeCtx, adminAddress); err != nil {
@@ -467,9 +492,16 @@ func TestExternalProcessesConfiglessServerAndClientJoin(t *testing.T) {
 	if err := waitForAdminDashboard(smokeCtx, adminAddress, "admin", "secret", 0); err != nil {
 		t.Fatalf("configless admin login failed: %v\nserver output:\n%s", err, server.Output())
 	}
-	token := strings.TrimSpace(runCommand(t, smokeCtx, stateDir, adminBin, "create-client-join", "-id", "client-1", "-user", "admin-1", "-name", "home", "-server-ca-file", filepath.Join(deployCertDir, "control-ca.crt"), "-server-name", "go-ginx-control.local", "-server-address", controlQUICAddress, "-server-tls-address", controlTLSAddress, "-enrollment-url", "http://"+adminAddress+"/api/client/enroll"))
+	token := strings.TrimSpace(runCommand(t, smokeCtx, stateDir, adminBin, "create-client-join", "-id", "client-1", "-user", "admin-1", "-name", "home", "-server-ca-file", filepath.Join(deployCertDir, "control-ca.crt"), "-server-name", "go-ginx-control.local", "-server-address", controlQUICAddress, "-server-tls-address", controlTLSAddress))
 	if token == "" {
 		t.Fatal("expected join token")
+	}
+	payload, err := enrollment.DecodeToken(token)
+	if err != nil {
+		t.Fatalf("decode join token: %v", err)
+	}
+	if payload.EnrollmentURL != "http://"+enrollmentAddress+"/api/client/enroll" {
+		t.Fatalf("expected dedicated enrollment URL, got %q", payload.EnrollmentURL)
 	}
 	runCommand(t, smokeCtx, stateDir, clientBin, "join", token)
 	waitForFile(t, smokeCtx, filepath.Join(deployDir, "data", "client-state.json"))
@@ -585,20 +617,33 @@ func (buffer *safeBuffer) String() string {
 
 func waitForTCPAccept(t *testing.T, ctx context.Context, address string) {
 	t.Helper()
+	if err := waitForTCPAcceptErr(ctx, address); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func waitForTCPAcceptWithProcess(t *testing.T, ctx context.Context, address string, process *runningProcess) {
+	t.Helper()
+	if err := waitForTCPAcceptErr(ctx, address); err != nil {
+		t.Fatalf("%v\nserver output:\n%s", err, process.Output())
+	}
+}
+
+func waitForTCPAcceptErr(ctx context.Context, address string) error {
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		conn, err := net.DialTimeout("tcp", address, 100*time.Millisecond)
 		if err == nil {
 			_ = conn.Close()
-			return
+			return nil
 		}
 		select {
 		case <-ctx.Done():
-			t.Fatalf("wait for TCP listener: %v", ctx.Err())
+			return fmt.Errorf("wait for TCP listener: %w", ctx.Err())
 		case <-time.After(50 * time.Millisecond):
 		}
 	}
-	t.Fatalf("TCP listener %s did not accept connections", address)
+	return fmt.Errorf("TCP listener %s did not accept connections", address)
 }
 
 func waitForFile(t *testing.T, ctx context.Context, path string) {
@@ -1171,7 +1216,7 @@ func reservePort(t *testing.T) int {
 
 func requireDefaultConfiglessPorts(t *testing.T) {
 	t.Helper()
-	for _, address := range []string{"127.0.0.1:8080", "127.0.0.1:8081", "127.0.0.1:9443"} {
+	for _, address := range []string{"127.0.0.1:80", "127.0.0.1:443", "127.0.0.1:8080", "127.0.0.1:8081", "127.0.0.1:9443"} {
 		listener, err := net.Listen("tcp", address)
 		if err != nil {
 			t.Skipf("default configless TCP port unavailable %s: %v", address, err)

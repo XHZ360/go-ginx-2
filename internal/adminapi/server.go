@@ -189,7 +189,6 @@ func Listen(entry Entry) (*Server, error) {
 	mux.HandleFunc(adminAPIPrefix+"/session", server.sessionHandler)
 	mux.HandleFunc(adminAPIPrefix+"/logout", server.logoutHandler)
 	mux.HandleFunc(adminAPIPrefix+"/graphql", server.graphqlHandler)
-	mux.HandleFunc(clientEnrollmentPrefix+"/enroll", server.enrollHandler)
 	server.httpServer = &http.Server{Handler: server.routeHandler(mux)}
 	return server, nil
 }

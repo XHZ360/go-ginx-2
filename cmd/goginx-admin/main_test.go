@@ -224,7 +224,7 @@ func TestRunCreateClientJoinDefaultsFromDeploymentServerConfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decode join token: %v", err)
 	}
-	if payload.ServerAddress != "server.example.com:18443" || payload.ServerTLSAddress != "server.example.com:19443" || payload.EnrollmentURL != "http://server.example.com:18080/api/client/enroll" {
+	if payload.ServerAddress != "server.example.com:18443" || payload.ServerTLSAddress != "server.example.com:19443" || payload.EnrollmentURL != "http://server.example.com:8081/api/client/enroll" {
 		t.Fatalf("expected deployment server config defaults, got %+v", payload)
 	}
 	if payload.CAPEM != "ca-pem" {
@@ -241,6 +241,7 @@ func TestRunCreateClientJoinDefaultsFromEnvironment(t *testing.T) {
 	t.Setenv("GOGINX_CONTROL_QUIC_LISTEN", ":28443")
 	t.Setenv("GOGINX_CONTROL_TLS_LISTEN", ":29443")
 	t.Setenv("GOGINX_ADMIN_LISTEN", ":28080")
+	t.Setenv("GOGINX_CLIENT_ENROLLMENT_LISTEN", ":28081")
 	if err := os.MkdirAll(filepath.Join(deploymentRoot, "data", "certs"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -261,7 +262,7 @@ func TestRunCreateClientJoinDefaultsFromEnvironment(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decode join token: %v", err)
 	}
-	if payload.ServerAddress != "env.example.com:28443" || payload.ServerTLSAddress != "env.example.com:29443" || payload.EnrollmentURL != "http://env.example.com:28080/api/client/enroll" {
+	if payload.ServerAddress != "env.example.com:28443" || payload.ServerTLSAddress != "env.example.com:29443" || payload.EnrollmentURL != "http://env.example.com:28081/api/client/enroll" {
 		t.Fatalf("expected environment defaults, got %+v", payload)
 	}
 }
@@ -296,7 +297,7 @@ func TestRunClientJoinCommandResetsTokenFromDeploymentServerConfig(t *testing.T)
 	if err != nil {
 		t.Fatalf("decode reset join token: %v", err)
 	}
-	if payload.ServerAddress != "reset.example.com:38443" || payload.ServerTLSAddress != "reset.example.com:39443" || payload.EnrollmentURL != "http://reset.example.com:38080/api/client/enroll" {
+	if payload.ServerAddress != "reset.example.com:38443" || payload.ServerTLSAddress != "reset.example.com:39443" || payload.EnrollmentURL != "http://reset.example.com:8081/api/client/enroll" {
 		t.Fatalf("expected reset token defaults from deployment config, got %+v", payload)
 	}
 }
@@ -454,7 +455,7 @@ func TestRunTUIUsesDefaultDBFromDeploymentRoot(t *testing.T) {
 		t.Fatalf("expected local backend, got %T", got.Backend)
 	}
 	backend := got.Backend.(admintui.LocalBackend)
-	if backend.JoinDefaultsValue.ServerAddress != "tui.example.com:48443" || backend.JoinDefaultsValue.ServerTLSAddress != "tui.example.com:49443" || backend.JoinDefaultsValue.EnrollmentURL != "http://tui.example.com:48080/api/client/enroll" {
+	if backend.JoinDefaultsValue.ServerAddress != "tui.example.com:48443" || backend.JoinDefaultsValue.ServerTLSAddress != "tui.example.com:49443" || backend.JoinDefaultsValue.EnrollmentURL != "http://tui.example.com:8081/api/client/enroll" {
 		t.Fatalf("expected TUI join defaults from deployment config, got %+v", backend.JoinDefaultsValue)
 	}
 	if _, err := os.Stat(filepath.Join(deploymentRoot, "data", "go-ginx.db")); err != nil {

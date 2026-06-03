@@ -37,6 +37,57 @@ func TestServerValidateRequiresHTTPEntryListen(t *testing.T) {
 	}
 }
 
+func TestServerValidateRequiresClientEnrollmentListen(t *testing.T) {
+	cfg := DefaultServer()
+	cfg.ClientEnrollmentListen = ""
+
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected missing client enrollment listen validation error")
+	}
+}
+
+func TestDefaultServerUsesSeparatedEnrollmentAndWebEntryPorts(t *testing.T) {
+	cfg := DefaultServer()
+
+	if cfg.ClientEnrollmentListen != ":8081" || cfg.HTTPEntryListen != ":80" || cfg.HTTPSEntryListen != ":443" {
+		t.Fatalf("unexpected default listener ports: %+v", cfg)
+	}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("validate default server: %v", err)
+	}
+}
+
+func TestRuntimeListenerClaimsIncludeEnrollmentAndDefaultWebEntries(t *testing.T) {
+	claims, err := DefaultServer().RuntimeListenerClaims(true)
+	if err != nil {
+		t.Fatalf("runtime listener claims: %v", err)
+	}
+	bySource := make(map[string]domainClaim)
+	byEndpoint := make(map[domainClaim]string)
+	for _, claim := range claims {
+		endpoint := domainClaim{network: claim.Network, port: claim.Port}
+		if previous, ok := byEndpoint[endpoint]; ok {
+			t.Fatalf("duplicate listener claim endpoint %+v from %s and %s", endpoint, previous, claim.Source)
+		}
+		byEndpoint[endpoint] = claim.Source
+		bySource[claim.Source] = endpoint
+	}
+	for source, expected := range map[string]domainClaim{
+		"client_enrollment_listen": {network: "tcp", port: 8081},
+		"http_entry_listen":        {network: "tcp", port: 80},
+		"https_entry_listen":       {network: "tcp", port: 443},
+	} {
+		if bySource[source] != expected {
+			t.Fatalf("unexpected claim for %s: got %+v want %+v from %+v", source, bySource[source], expected, claims)
+		}
+	}
+}
+
+type domainClaim struct {
+	network string
+	port    int
+}
+
 func TestServerValidateRequiresACMEFieldsWhenEnabled(t *testing.T) {
 	cfg := DefaultServer()
 	cfg.ACMEEnabled = true
@@ -61,7 +112,7 @@ func TestServerValidateAcceptsConfiguredACME(t *testing.T) {
 
 func TestLoadServerAcceptsAdminFrontendDir(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "server.json")
-	content := `{"admin_listen":"127.0.0.1:8080","admin_credentials_file":"admins.json","admin_frontend_dir":"web/admin","control_quic_listen":"127.0.0.1:8443","control_tls_listen":"127.0.0.1:9443","control_tls_cert_file":"control.crt","control_tls_key_file":"control.key","join_service_host":"server.example.com","tcp_entry_host":"127.0.0.1","http_entry_listen":"127.0.0.1:8081","sqlite_path":"data/go-ginx.db","data_dir":"data","certificate_dir":"data/certs","heartbeat_timeout":1000000000,"log_retention_days":7}`
+	content := `{"admin_listen":"127.0.0.1:8080","admin_credentials_file":"admins.json","admin_frontend_dir":"web/admin","client_enrollment_listen":"127.0.0.1:18081","control_quic_listen":"127.0.0.1:8443","control_tls_listen":"127.0.0.1:9443","control_tls_cert_file":"control.crt","control_tls_key_file":"control.key","join_service_host":"server.example.com","tcp_entry_host":"127.0.0.1","http_entry_listen":"127.0.0.1:8081","sqlite_path":"data/go-ginx.db","data_dir":"data","certificate_dir":"data/certs","heartbeat_timeout":1000000000,"log_retention_days":7}`
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -75,6 +126,9 @@ func TestLoadServerAcceptsAdminFrontendDir(t *testing.T) {
 	}
 	if cfg.JoinServiceHost != "server.example.com" {
 		t.Fatalf("unexpected join service host %q", cfg.JoinServiceHost)
+	}
+	if cfg.ClientEnrollmentListen != "127.0.0.1:18081" {
+		t.Fatalf("unexpected client enrollment listen %q", cfg.ClientEnrollmentListen)
 	}
 }
 
@@ -92,7 +146,7 @@ func TestConfirmJoinServiceDefaultsUsesExplicitHost(t *testing.T) {
 	if defaults.ServerAddress != "server.example.com:8443" || defaults.ServerTLSAddress != "server.example.com:9443" {
 		t.Fatalf("unexpected join addresses: %+v", defaults)
 	}
-	if defaults.EnrollmentURL != "http://server.example.com:8080/api/client/enroll" {
+	if defaults.EnrollmentURL != "http://server.example.com:8081/api/client/enroll" {
 		t.Fatalf("unexpected enrollment url %q", defaults.EnrollmentURL)
 	}
 }
@@ -132,6 +186,7 @@ func TestLoadJoinServiceDefaultsUsesExplicitServerConfig(t *testing.T) {
 	cfg.ControlQUICListen = ":18443"
 	cfg.ControlTLSListen = ":19443"
 	cfg.AdminListen = ":18080"
+	cfg.ClientEnrollmentListen = ":18081"
 	cfg.ControlTLSServerName = "control.example.test"
 	cfg.ControlTLSCAFile = "data/certs/custom-ca.crt"
 	writeServerConfig(t, configPath, cfg)
@@ -146,7 +201,7 @@ func TestLoadJoinServiceDefaultsUsesExplicitServerConfig(t *testing.T) {
 	if result.Defaults.ServerAddress != "server.example.com:18443" || result.Defaults.ServerTLSAddress != "server.example.com:19443" {
 		t.Fatalf("unexpected join defaults: %+v", result.Defaults)
 	}
-	if result.Defaults.EnrollmentURL != "http://server.example.com:18080/api/client/enroll" || result.Defaults.ServerName != "control.example.test" {
+	if result.Defaults.EnrollmentURL != "http://server.example.com:18081/api/client/enroll" || result.Defaults.ServerName != "control.example.test" {
 		t.Fatalf("unexpected enrollment or server name: %+v", result.Defaults)
 	}
 	if result.Defaults.ServerCAFile != filepath.Join(root, "data", "certs", "custom-ca.crt") || result.Server.SQLitePath != filepath.Join(root, "data", "go-ginx.db") {
@@ -162,6 +217,7 @@ func TestLoadJoinServiceDefaultsUsesDeploymentServerConfig(t *testing.T) {
 	cfg.ControlQUICListen = ":28443"
 	cfg.ControlTLSListen = ":29443"
 	cfg.AdminListen = ":28080"
+	cfg.ClientEnrollmentListen = ":28081"
 	writeServerConfig(t, configPath, cfg)
 
 	result, err := LoadJoinServiceDefaults(JoinServiceDefaultsOptions{Root: root})
@@ -171,7 +227,7 @@ func TestLoadJoinServiceDefaultsUsesDeploymentServerConfig(t *testing.T) {
 	if result.Source != "deployment_server_config" || result.ConfigPath != configPath {
 		t.Fatalf("unexpected source: %+v", result)
 	}
-	if result.Defaults.ServerAddress != "deploy.example.com:28443" || result.Defaults.ServerTLSAddress != "deploy.example.com:29443" || result.Defaults.EnrollmentURL != "http://deploy.example.com:28080/api/client/enroll" {
+	if result.Defaults.ServerAddress != "deploy.example.com:28443" || result.Defaults.ServerTLSAddress != "deploy.example.com:29443" || result.Defaults.EnrollmentURL != "http://deploy.example.com:28081/api/client/enroll" {
 		t.Fatalf("unexpected deployment defaults: %+v", result.Defaults)
 	}
 }
@@ -180,6 +236,7 @@ func TestLoadJoinServiceDefaultsUsesEnvironmentOverrides(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("GOGINX_JOIN_SERVICE_HOST", "join.example.com")
 	t.Setenv("GOGINX_ADMIN_LISTEN", ":38080")
+	t.Setenv("GOGINX_CLIENT_ENROLLMENT_LISTEN", ":38081")
 	t.Setenv("GOGINX_CONTROL_QUIC_LISTEN", ":38443")
 	t.Setenv("GOGINX_CONTROL_TLS_LISTEN", ":39443")
 	t.Setenv("GOGINX_CONTROL_TLS_SERVER_NAME", "join-control.example.com")
@@ -193,7 +250,7 @@ func TestLoadJoinServiceDefaultsUsesEnvironmentOverrides(t *testing.T) {
 	if result.Source != "managed_defaults" {
 		t.Fatalf("unexpected source: %+v", result)
 	}
-	if result.Defaults.ServerAddress != "join.example.com:38443" || result.Defaults.ServerTLSAddress != "join.example.com:39443" || result.Defaults.EnrollmentURL != "http://join.example.com:38080/api/client/enroll" {
+	if result.Defaults.ServerAddress != "join.example.com:38443" || result.Defaults.ServerTLSAddress != "join.example.com:39443" || result.Defaults.EnrollmentURL != "http://join.example.com:38081/api/client/enroll" {
 		t.Fatalf("unexpected env defaults: %+v", result.Defaults)
 	}
 	if result.Defaults.ServerName != "join-control.example.com" || result.Defaults.ServerCAFile != filepath.Join(root, "data", "certs", "env-ca.crt") || result.Server.SQLitePath != filepath.Join(root, "data", "custom.db") {
@@ -214,12 +271,13 @@ func TestLoadJoinServiceDefaultsKeepsLocalFallback(t *testing.T) {
 	t.Setenv("GOGINX_CONTROL_QUIC_LISTEN", "127.0.0.1:18443")
 	t.Setenv("GOGINX_CONTROL_TLS_LISTEN", "")
 	t.Setenv("GOGINX_ADMIN_LISTEN", "127.0.0.1:18080")
+	t.Setenv("GOGINX_CLIENT_ENROLLMENT_LISTEN", "127.0.0.1:18081")
 
 	result, err := LoadJoinServiceDefaults(JoinServiceDefaultsOptions{Root: root})
 	if err != nil {
 		t.Fatalf("load local join defaults: %v", err)
 	}
-	if result.Defaults.Source != "control_quic_listen" || result.Defaults.ServerAddress != "127.0.0.1:18443" || result.Defaults.EnrollmentURL != "http://127.0.0.1:18080/api/client/enroll" {
+	if result.Defaults.Source != "control_quic_listen" || result.Defaults.ServerAddress != "127.0.0.1:18443" || result.Defaults.EnrollmentURL != "http://127.0.0.1:18081/api/client/enroll" {
 		t.Fatalf("unexpected local defaults: %+v", result.Defaults)
 	}
 }
@@ -267,7 +325,9 @@ func TestManagedServerCreatesRuntimeDirectoriesAndControlTLS(t *testing.T) {
 	cfg.AdminListen = "127.0.0.1:0"
 	cfg.ControlQUICListen = "127.0.0.1:0"
 	cfg.ControlTLSListen = "127.0.0.1:0"
+	cfg.ClientEnrollmentListen = "127.0.0.1:0"
 	cfg.HTTPEntryListen = "127.0.0.1:0"
+	cfg.HTTPSEntryListen = "127.0.0.1:0"
 	cfg.DataDir = filepath.Join(root, "data")
 	cfg.CertificateDir = filepath.Join(root, "data", "certs")
 	cfg.SQLitePath = filepath.Join(root, "data", "go-ginx.db")
@@ -344,6 +404,7 @@ func TestManagedClientStateRoundTrip(t *testing.T) {
 func TestLoadManagedServerAppliesEnvironmentOverrides(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("GOGINX_ADMIN_LISTEN", "127.0.0.1:18080")
+	t.Setenv("GOGINX_CLIENT_ENROLLMENT_LISTEN", "127.0.0.1:18082")
 	t.Setenv("GOGINX_CONTROL_QUIC_LISTEN", "127.0.0.1:18443")
 	t.Setenv("GOGINX_CONTROL_TLS_LISTEN", "127.0.0.1:19443")
 	t.Setenv("GOGINX_HTTP_ENTRY_LISTEN", "127.0.0.1:18081")
@@ -361,6 +422,9 @@ func TestLoadManagedServerAppliesEnvironmentOverrides(t *testing.T) {
 	}
 	if !cfg.AdminEnabled || cfg.AdminListen != "127.0.0.1:18080" || cfg.ControlQUICListen != "127.0.0.1:18443" || cfg.ControlTLSListen != "127.0.0.1:19443" {
 		t.Fatalf("environment overrides were not applied: %+v", cfg)
+	}
+	if cfg.ClientEnrollmentListen != "127.0.0.1:18082" || cfg.HTTPEntryListen != "127.0.0.1:18081" {
+		t.Fatalf("listener environment overrides were not applied: %+v", cfg)
 	}
 	if cfg.JoinServiceHost != "join.example.com" {
 		t.Fatalf("join service environment override was not applied: %+v", cfg)

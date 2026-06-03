@@ -43,11 +43,15 @@ func main() {
 	if runtime.ControlTLSListener != nil {
 		controlTLSAddress = runtime.ControlTLSListener.Addr().String()
 	}
+	enrollmentAddress := "disabled"
+	if runtime.EnrollmentServer != nil {
+		enrollmentAddress = runtime.EnrollmentServer.Addr().String()
+	}
 	httpsAddress := "disabled"
 	if runtime.HTTPSListener != nil {
 		httpsAddress = runtime.HTTPSListener.Addr().String()
 	}
-	log.Printf("go-ginx server started: admin=%s control_quic=%s control_tls=%s http=%s https=%s join_service_host=%s join_service_source=%s join_server_address=%s join_server_tls_address=%s tcp_entries=%d udp_entries=%d", adminAddress, runtime.ControlListener.Addr(), controlTLSAddress, runtime.HTTPServer.Addr(), httpsAddress, runtime.JoinService.Host, runtime.JoinService.Source, runtime.JoinService.ServerAddress, runtime.JoinService.ServerTLSAddress, len(runtime.TCPListeners), len(runtime.UDPListeners))
+	log.Printf("go-ginx server started: admin=%s enrollment=%s control_quic=%s control_tls=%s http=%s https=%s join_service_host=%s join_service_source=%s join_server_address=%s join_server_tls_address=%s join_enrollment_url=%s tcp_entries=%d udp_entries=%d", adminAddress, enrollmentAddress, runtime.ControlListener.Addr(), controlTLSAddress, runtime.HTTPServer.Addr(), httpsAddress, runtime.JoinService.Host, runtime.JoinService.Source, runtime.JoinService.ServerAddress, runtime.JoinService.ServerTLSAddress, runtime.JoinService.EnrollmentURL, len(runtime.TCPListeners), len(runtime.UDPListeners))
 	<-ctx.Done()
 }
 

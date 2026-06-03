@@ -36,7 +36,7 @@ func TestStartServerWiresRuntimeListeners(t *testing.T) {
 	udpPort := reserveUDPPort(t)
 	seedDatabase(t, dbPath, []domain.Proxy{{ID: "tcp-1", UserID: "user-1", ClientID: "client-1", Name: "ssh", Type: domain.ProxyTCP, Status: domain.ProxyEnabled, EntryPort: tcpPort, TargetHost: "127.0.0.1", TargetPort: 22}, {ID: "udp-1", UserID: "user-1", ClientID: "client-1", Name: "dns", Type: domain.ProxyUDP, Status: domain.ProxyEnabled, EntryPort: udpPort, TargetHost: "127.0.0.1", TargetPort: 53}, {ID: "https-1", UserID: "user-1", ClientID: "client-1", Name: "secure", Type: domain.ProxyHTTPS, Status: domain.ProxyEnabled, EntryHost: "secure.example.com", TargetHost: "127.0.0.1", TargetPort: 8443}})
 
-	runtime, err := StartServer(ctx, config.Server{AdminListen: "127.0.0.1:0", ControlQUICListen: "127.0.0.1:0", ControlTLSListen: "127.0.0.1:0", ControlTLSCertFile: serverCert, ControlTLSKeyFile: serverKey, TCPEntryHost: "127.0.0.1", HTTPEntryListen: "127.0.0.1:0", HTTPSEntryListen: "127.0.0.1:0", SQLitePath: dbPath, DataDir: t.TempDir(), CertificateDir: t.TempDir(), HeartbeatTimeout: time.Second, LogRetentionDays: 1})
+	runtime, err := StartServer(ctx, config.Server{AdminListen: "127.0.0.1:0", ClientEnrollmentListen: "127.0.0.1:0", ControlQUICListen: "127.0.0.1:0", ControlTLSListen: "127.0.0.1:0", ControlTLSCertFile: serverCert, ControlTLSKeyFile: serverKey, TCPEntryHost: "127.0.0.1", HTTPEntryListen: "127.0.0.1:0", HTTPSEntryListen: "127.0.0.1:0", SQLitePath: dbPath, DataDir: t.TempDir(), CertificateDir: t.TempDir(), HeartbeatTimeout: time.Second, LogRetentionDays: 1})
 	if err != nil {
 		t.Fatalf("start server: %v", err)
 	}
@@ -47,6 +47,9 @@ func TestStartServerWiresRuntimeListeners(t *testing.T) {
 	}
 	if runtime.ControlTLSListener == nil || runtime.ControlTLSListener.Addr() == nil {
 		t.Fatal("expected control tcp+tls listener")
+	}
+	if runtime.EnrollmentServer == nil || runtime.EnrollmentServer.Addr() == nil {
+		t.Fatal("expected client enrollment server")
 	}
 	if len(runtime.TCPListeners) != 1 || runtime.TCPListeners[0].Addr() == nil {
 		t.Fatalf("expected one TCP listener, got %d", len(runtime.TCPListeners))
@@ -88,10 +91,11 @@ func TestStartServerServesConfiguredAdminFrontend(t *testing.T) {
 	frontendDir := writeDaemonAdminFrontendFixture(t)
 	adminCredentialsFile := writeDaemonAdminCredentials(t)
 	adminPort := reservePort(t)
+	enrollmentPort := reservePort(t)
 	controlQUICPort := reserveUDPPort(t)
 	httpEntryPort := reservePort(t)
 
-	runtime, err := StartServer(ctx, config.Server{AdminListen: net.JoinHostPort("127.0.0.1", strconv.Itoa(adminPort)), AdminCredentialsFile: adminCredentialsFile, AdminFrontendDir: frontendDir, ControlQUICListen: net.JoinHostPort("127.0.0.1", strconv.Itoa(controlQUICPort)), ControlTLSCertFile: serverCert, ControlTLSKeyFile: serverKey, TCPEntryHost: "127.0.0.1", HTTPEntryListen: net.JoinHostPort("127.0.0.1", strconv.Itoa(httpEntryPort)), SQLitePath: dbPath, DataDir: t.TempDir(), CertificateDir: t.TempDir(), HeartbeatTimeout: time.Second, LogRetentionDays: 1})
+	runtime, err := StartServer(ctx, config.Server{AdminListen: net.JoinHostPort("127.0.0.1", strconv.Itoa(adminPort)), AdminCredentialsFile: adminCredentialsFile, AdminFrontendDir: frontendDir, ClientEnrollmentListen: net.JoinHostPort("127.0.0.1", strconv.Itoa(enrollmentPort)), ControlQUICListen: net.JoinHostPort("127.0.0.1", strconv.Itoa(controlQUICPort)), ControlTLSCertFile: serverCert, ControlTLSKeyFile: serverKey, TCPEntryHost: "127.0.0.1", HTTPEntryListen: net.JoinHostPort("127.0.0.1", strconv.Itoa(httpEntryPort)), SQLitePath: dbPath, DataDir: t.TempDir(), CertificateDir: t.TempDir(), HeartbeatTimeout: time.Second, LogRetentionDays: 1})
 	if err != nil {
 		t.Fatalf("start server with admin frontend: %v", err)
 	}
@@ -145,7 +149,7 @@ func TestRunClientAuthenticatesAndSendsHeartbeat(t *testing.T) {
 	serverCert, serverKey, caFile := writeTestTLSFiles(t)
 	dbPath := filepath.Join(t.TempDir(), "client.db")
 	seedDatabase(t, dbPath, []domain.Proxy{{ID: "http-1", UserID: "user-1", ClientID: "client-1", Name: "web", Type: domain.ProxyHTTP, Status: domain.ProxyEnabled, EntryHost: "app.example.com", TargetHost: "127.0.0.1", TargetPort: 8080}})
-	runtime, err := StartServer(ctx, config.Server{AdminListen: "127.0.0.1:0", ControlQUICListen: "127.0.0.1:0", ControlTLSCertFile: serverCert, ControlTLSKeyFile: serverKey, TCPEntryHost: "127.0.0.1", HTTPEntryListen: "127.0.0.1:0", SQLitePath: dbPath, DataDir: t.TempDir(), CertificateDir: t.TempDir(), HeartbeatTimeout: time.Second, LogRetentionDays: 1})
+	runtime, err := StartServer(ctx, config.Server{AdminListen: "127.0.0.1:0", ClientEnrollmentListen: "127.0.0.1:0", ControlQUICListen: "127.0.0.1:0", ControlTLSCertFile: serverCert, ControlTLSKeyFile: serverKey, TCPEntryHost: "127.0.0.1", HTTPEntryListen: "127.0.0.1:0", SQLitePath: dbPath, DataDir: t.TempDir(), CertificateDir: t.TempDir(), HeartbeatTimeout: time.Second, LogRetentionDays: 1})
 	if err != nil {
 		t.Fatalf("start server: %v", err)
 	}
@@ -190,7 +194,7 @@ func TestRunClientReconnectsAfterInitialDialFailure(t *testing.T) {
 	case <-time.After(50 * time.Millisecond):
 	}
 
-	runtime, err := StartServer(ctx, config.Server{AdminListen: "127.0.0.1:0", ControlQUICListen: serverAddress, ControlTLSCertFile: serverCert, ControlTLSKeyFile: serverKey, TCPEntryHost: "127.0.0.1", HTTPEntryListen: "127.0.0.1:0", SQLitePath: dbPath, DataDir: t.TempDir(), CertificateDir: t.TempDir(), HeartbeatTimeout: time.Second, LogRetentionDays: 1})
+	runtime, err := StartServer(ctx, config.Server{AdminListen: "127.0.0.1:0", ClientEnrollmentListen: "127.0.0.1:0", ControlQUICListen: serverAddress, ControlTLSCertFile: serverCert, ControlTLSKeyFile: serverKey, TCPEntryHost: "127.0.0.1", HTTPEntryListen: "127.0.0.1:0", SQLitePath: dbPath, DataDir: t.TempDir(), CertificateDir: t.TempDir(), HeartbeatTimeout: time.Second, LogRetentionDays: 1})
 	if err != nil {
 		t.Fatalf("start server: %v", err)
 	}
@@ -223,7 +227,7 @@ func TestRunClientAuthenticationRejectedStops(t *testing.T) {
 	serverCert, serverKey, caFile := writeTestTLSFiles(t)
 	dbPath := filepath.Join(t.TempDir(), "client-auth-reject.db")
 	seedDatabase(t, dbPath, []domain.Proxy{{ID: "http-1", UserID: "user-1", ClientID: "client-1", Name: "web", Type: domain.ProxyHTTP, Status: domain.ProxyEnabled, EntryHost: "app.example.com", TargetHost: "127.0.0.1", TargetPort: 8080}})
-	runtime, err := StartServer(ctx, config.Server{AdminListen: "127.0.0.1:0", ControlQUICListen: "127.0.0.1:0", ControlTLSCertFile: serverCert, ControlTLSKeyFile: serverKey, TCPEntryHost: "127.0.0.1", HTTPEntryListen: "127.0.0.1:0", SQLitePath: dbPath, DataDir: t.TempDir(), CertificateDir: t.TempDir(), HeartbeatTimeout: time.Second, LogRetentionDays: 1})
+	runtime, err := StartServer(ctx, config.Server{AdminListen: "127.0.0.1:0", ClientEnrollmentListen: "127.0.0.1:0", ControlQUICListen: "127.0.0.1:0", ControlTLSCertFile: serverCert, ControlTLSKeyFile: serverKey, TCPEntryHost: "127.0.0.1", HTTPEntryListen: "127.0.0.1:0", SQLitePath: dbPath, DataDir: t.TempDir(), CertificateDir: t.TempDir(), HeartbeatTimeout: time.Second, LogRetentionDays: 1})
 	if err != nil {
 		t.Fatalf("start server: %v", err)
 	}
@@ -256,7 +260,7 @@ func TestRunClientReconnectsAfterServerRestart(t *testing.T) {
 	serverTLSAddress := net.JoinHostPort("127.0.0.1", strconv.Itoa(tlsPort))
 
 	serverCtx1, cancelServer1 := context.WithCancel(context.Background())
-	runtime1, err := StartServer(serverCtx1, config.Server{AdminListen: "127.0.0.1:0", ControlQUICListen: "127.0.0.1:0", ControlTLSListen: serverTLSAddress, ControlTLSCertFile: serverCert, ControlTLSKeyFile: serverKey, TCPEntryHost: "127.0.0.1", HTTPEntryListen: "127.0.0.1:0", SQLitePath: dbPath, DataDir: t.TempDir(), CertificateDir: t.TempDir(), HeartbeatTimeout: time.Second, LogRetentionDays: 1})
+	runtime1, err := StartServer(serverCtx1, config.Server{AdminListen: "127.0.0.1:0", ClientEnrollmentListen: "127.0.0.1:0", ControlQUICListen: "127.0.0.1:0", ControlTLSListen: serverTLSAddress, ControlTLSCertFile: serverCert, ControlTLSKeyFile: serverKey, TCPEntryHost: "127.0.0.1", HTTPEntryListen: "127.0.0.1:0", SQLitePath: dbPath, DataDir: t.TempDir(), CertificateDir: t.TempDir(), HeartbeatTimeout: time.Second, LogRetentionDays: 1})
 	if err != nil {
 		t.Fatalf("start first server: %v", err)
 	}
@@ -307,7 +311,7 @@ func TestRunClientFallsBackToTCPTLSControl(t *testing.T) {
 	serverCert, serverKey, caFile := writeTestTLSFiles(t)
 	dbPath := filepath.Join(t.TempDir(), "client-tls.db")
 	seedDatabase(t, dbPath, []domain.Proxy{{ID: "http-1", UserID: "user-1", ClientID: "client-1", Name: "web", Type: domain.ProxyHTTP, Status: domain.ProxyEnabled, EntryHost: "app.example.com", TargetHost: "127.0.0.1", TargetPort: 8080}})
-	runtime, err := StartServer(ctx, config.Server{AdminListen: "127.0.0.1:0", ControlQUICListen: "127.0.0.1:0", ControlTLSListen: "127.0.0.1:0", ControlTLSCertFile: serverCert, ControlTLSKeyFile: serverKey, TCPEntryHost: "127.0.0.1", HTTPEntryListen: "127.0.0.1:0", SQLitePath: dbPath, DataDir: t.TempDir(), CertificateDir: t.TempDir(), HeartbeatTimeout: time.Second, LogRetentionDays: 1})
+	runtime, err := StartServer(ctx, config.Server{AdminListen: "127.0.0.1:0", ClientEnrollmentListen: "127.0.0.1:0", ControlQUICListen: "127.0.0.1:0", ControlTLSListen: "127.0.0.1:0", ControlTLSCertFile: serverCert, ControlTLSKeyFile: serverKey, TCPEntryHost: "127.0.0.1", HTTPEntryListen: "127.0.0.1:0", SQLitePath: dbPath, DataDir: t.TempDir(), CertificateDir: t.TempDir(), HeartbeatTimeout: time.Second, LogRetentionDays: 1})
 	if err != nil {
 		t.Fatalf("start server: %v", err)
 	}
@@ -342,7 +346,7 @@ func TestRunClientFallsBackToTCPTLSProxyTraffic(t *testing.T) {
 	entryPort := reservePort(t)
 	dbPath := filepath.Join(t.TempDir(), "client-tls-proxy.db")
 	seedDatabase(t, dbPath, []domain.Proxy{{ID: "tcp-1", UserID: "user-1", ClientID: "client-1", Name: "echo", Type: domain.ProxyTCP, Status: domain.ProxyEnabled, EntryPort: entryPort, TargetHost: "127.0.0.1", TargetPort: targetPort}})
-	runtime, err := StartServer(ctx, config.Server{AdminListen: "127.0.0.1:0", ControlQUICListen: "127.0.0.1:0", ControlTLSListen: "127.0.0.1:0", ControlTLSCertFile: serverCert, ControlTLSKeyFile: serverKey, TCPEntryHost: "127.0.0.1", HTTPEntryListen: "127.0.0.1:0", SQLitePath: dbPath, DataDir: t.TempDir(), CertificateDir: t.TempDir(), HeartbeatTimeout: time.Second, LogRetentionDays: 1})
+	runtime, err := StartServer(ctx, config.Server{AdminListen: "127.0.0.1:0", ClientEnrollmentListen: "127.0.0.1:0", ControlQUICListen: "127.0.0.1:0", ControlTLSListen: "127.0.0.1:0", ControlTLSCertFile: serverCert, ControlTLSKeyFile: serverKey, TCPEntryHost: "127.0.0.1", HTTPEntryListen: "127.0.0.1:0", SQLitePath: dbPath, DataDir: t.TempDir(), CertificateDir: t.TempDir(), HeartbeatTimeout: time.Second, LogRetentionDays: 1})
 	if err != nil {
 		t.Fatalf("start server: %v", err)
 	}
@@ -383,7 +387,7 @@ func TestRunClientFallsBackToTCPTLSHTTPProxyTraffic(t *testing.T) {
 	targetPort := portNumber(t, target.Addr())
 	dbPath := filepath.Join(t.TempDir(), "client-tls-http.db")
 	seedDatabase(t, dbPath, []domain.Proxy{{ID: "http-1", UserID: "user-1", ClientID: "client-1", Name: "web", Type: domain.ProxyHTTP, Status: domain.ProxyEnabled, EntryHost: "app.example.com", TargetHost: "127.0.0.1", TargetPort: targetPort}})
-	runtime, err := StartServer(ctx, config.Server{AdminListen: "127.0.0.1:0", ControlQUICListen: "127.0.0.1:0", ControlTLSListen: "127.0.0.1:0", ControlTLSCertFile: serverCert, ControlTLSKeyFile: serverKey, TCPEntryHost: "127.0.0.1", HTTPEntryListen: "127.0.0.1:0", SQLitePath: dbPath, DataDir: t.TempDir(), CertificateDir: t.TempDir(), HeartbeatTimeout: time.Second, LogRetentionDays: 1})
+	runtime, err := StartServer(ctx, config.Server{AdminListen: "127.0.0.1:0", ClientEnrollmentListen: "127.0.0.1:0", ControlQUICListen: "127.0.0.1:0", ControlTLSListen: "127.0.0.1:0", ControlTLSCertFile: serverCert, ControlTLSKeyFile: serverKey, TCPEntryHost: "127.0.0.1", HTTPEntryListen: "127.0.0.1:0", SQLitePath: dbPath, DataDir: t.TempDir(), CertificateDir: t.TempDir(), HeartbeatTimeout: time.Second, LogRetentionDays: 1})
 	if err != nil {
 		t.Fatalf("start server: %v", err)
 	}
@@ -448,7 +452,7 @@ func TestStartServerRenewsManagedCertificates(t *testing.T) {
 		newDaemonDNSProvider = oldProvider
 	})
 
-	runtime, err := StartServer(ctx, config.Server{AdminListen: "127.0.0.1:0", ControlQUICListen: "127.0.0.1:0", ControlTLSCertFile: serverCert, ControlTLSKeyFile: serverKey, TCPEntryHost: "127.0.0.1", HTTPEntryListen: "127.0.0.1:0", SQLitePath: dbPath, DataDir: t.TempDir(), CertificateDir: certificateDir, ACMEEnabled: true, ACMEDirectoryURL: "https://acme.example.test/directory", ACMEAccountEmail: "ops@example.com", ACMETermsAccepted: true, ACMERenewalWindow: time.Hour, ACMECloudflareTokenEnv: "CF_DNS_API_TOKEN", HeartbeatTimeout: time.Second, LogRetentionDays: 1})
+	runtime, err := StartServer(ctx, config.Server{AdminListen: "127.0.0.1:0", ClientEnrollmentListen: "127.0.0.1:0", ControlQUICListen: "127.0.0.1:0", ControlTLSCertFile: serverCert, ControlTLSKeyFile: serverKey, TCPEntryHost: "127.0.0.1", HTTPEntryListen: "127.0.0.1:0", SQLitePath: dbPath, DataDir: t.TempDir(), CertificateDir: certificateDir, ACMEEnabled: true, ACMEDirectoryURL: "https://acme.example.test/directory", ACMEAccountEmail: "ops@example.com", ACMETermsAccepted: true, ACMERenewalWindow: time.Hour, ACMECloudflareTokenEnv: "CF_DNS_API_TOKEN", HeartbeatTimeout: time.Second, LogRetentionDays: 1})
 	if err != nil {
 		t.Fatalf("start server: %v", err)
 	}
@@ -534,7 +538,7 @@ func startServerWithRetry(t *testing.T, serverTLSAddress string, serverCert stri
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
 		serverCtx, cancelServer := context.WithCancel(context.Background())
-		runtime, err := StartServer(serverCtx, config.Server{AdminListen: "127.0.0.1:0", ControlQUICListen: "127.0.0.1:0", ControlTLSListen: serverTLSAddress, ControlTLSCertFile: serverCert, ControlTLSKeyFile: serverKey, TCPEntryHost: "127.0.0.1", HTTPEntryListen: "127.0.0.1:0", SQLitePath: dbPath, DataDir: t.TempDir(), CertificateDir: t.TempDir(), HeartbeatTimeout: time.Second, LogRetentionDays: 1})
+		runtime, err := StartServer(serverCtx, config.Server{AdminListen: "127.0.0.1:0", ClientEnrollmentListen: "127.0.0.1:0", ControlQUICListen: "127.0.0.1:0", ControlTLSListen: serverTLSAddress, ControlTLSCertFile: serverCert, ControlTLSKeyFile: serverKey, TCPEntryHost: "127.0.0.1", HTTPEntryListen: "127.0.0.1:0", SQLitePath: dbPath, DataDir: t.TempDir(), CertificateDir: t.TempDir(), HeartbeatTimeout: time.Second, LogRetentionDays: 1})
 		if err == nil {
 			return runtime, cancelServer
 		}

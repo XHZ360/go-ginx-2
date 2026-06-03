@@ -57,7 +57,7 @@ You can generate it from the admin UI Clients page with `Create join token`, or 
 ./.tmp/goginx-admin.exe create-client-join -id client-1 -user admin-1 -name home
 ```
 
-During server startup, the server confirms a default join service host from `join_service_host`, the control listener host, a local interface address, or a loopback fallback. The startup log prints the confirmed host, source, and default control addresses. Admin API, `goginx-admin create-client-join`, `goginx-admin client-join-command`, and `goginx-admin tui` use the same default join resolution when join fields are not explicitly provided. Set `GOGINX_JOIN_SERVICE_HOST` or `join_service_host` when clients must use a public DNS name or load-balancer address instead of a local fallback.
+During server startup, the server confirms a default join service host from `join_service_host`, the control listener host, a local interface address, or a loopback fallback. The startup log prints the confirmed host, source, default control addresses, enrollment listener, and default enrollment URL. Admin API, `goginx-admin create-client-join`, `goginx-admin client-join-command`, and `goginx-admin tui` use the same default join resolution when join fields are not explicitly provided. Set `GOGINX_JOIN_SERVICE_HOST` or `join_service_host` when clients must use a public DNS name or load-balancer address instead of a local fallback.
 
 For explicit server config deployments, pass the same config to admin join commands:
 
@@ -72,9 +72,9 @@ On the client host:
 ./.tmp/goginx-client.exe
 ```
 
-The join command redeems the token through `/api/client/enroll`, writes `data/client-state.json`, writes `data/certs/server-ca.crt`, and subsequent client runs use that managed state. By default these paths are under the deployment root derived from the `goginx-client` binary location; when the binary is under `bin/`, the deployment root is the parent of `bin/`.
+The join command redeems the token through the dedicated client enrollment listener at `/api/client/enroll`, writes `data/client-state.json`, writes `data/certs/server-ca.crt`, and subsequent client runs use that managed state. The admin listener no longer serves `/api/client/enroll`; old tokens that point at the admin listener must be regenerated. By default these paths are under the deployment root derived from the `goginx-client` binary location; when the binary is under `bin/`, the deployment root is the parent of `bin/`.
 
-Managed startup accepts environment overrides for file-free deployments that need non-default ports, paths, or join defaults, including `GOGINX_ADMIN_LISTEN`, `GOGINX_CONTROL_QUIC_LISTEN`, `GOGINX_CONTROL_TLS_LISTEN`, `GOGINX_JOIN_SERVICE_HOST`, `GOGINX_HTTP_ENTRY_LISTEN`, `GOGINX_SQLITE_PATH`, `GOGINX_DATA_DIR`, and `GOGINX_CERTIFICATE_DIR`. Treat `127.0.0.1` as a local development or last-resort fallback; cross-host joins should use a reachable DNS name or IP through `GOGINX_JOIN_SERVICE_HOST`, `join_service_host`, `-server-config`, or explicit join command flags.
+Managed startup accepts environment overrides for file-free deployments that need non-default ports, paths, or join defaults, including `GOGINX_ADMIN_LISTEN`, `GOGINX_CLIENT_ENROLLMENT_LISTEN`, `GOGINX_CONTROL_QUIC_LISTEN`, `GOGINX_CONTROL_TLS_LISTEN`, `GOGINX_JOIN_SERVICE_HOST`, `GOGINX_HTTP_ENTRY_LISTEN`, `GOGINX_HTTPS_ENTRY_LISTEN`, `GOGINX_SQLITE_PATH`, `GOGINX_DATA_DIR`, and `GOGINX_CERTIFICATE_DIR`. Treat `127.0.0.1` as a local development or last-resort fallback; cross-host joins should use a reachable DNS name or IP through `GOGINX_JOIN_SERVICE_HOST`, `join_service_host`, `-server-config`, or explicit join command flags. Configless defaults use `:8081` for client enrollment, `:80` for HTTP entry traffic, and `:443` for HTTPS entry traffic; binding 80/443 can require root, `CAP_NET_BIND_SERVICE`, service-manager privileges, or explicit non-privileged overrides.
 
 ## Optional Server Config
 
@@ -84,14 +84,15 @@ Explicit JSON config remains supported for advanced deployments. Create `server.
 {
   "admin_listen": "127.0.0.1:8080",
   "admin_frontend_dir": "web/admin",
+  "client_enrollment_listen": "0.0.0.0:8081",
   "control_quic_listen": "127.0.0.1:8443",
   "control_tls_listen": "127.0.0.1:9443",
   "join_service_host": "control.example.com",
   "control_tls_cert_file": "data/certs/control.crt",
   "control_tls_key_file": "data/certs/control.key",
   "tcp_entry_host": "127.0.0.1",
-  "http_entry_listen": "127.0.0.1:8081",
-  "https_entry_listen": "127.0.0.1:8444",
+  "http_entry_listen": "0.0.0.0:80",
+  "https_entry_listen": "0.0.0.0:443",
   "sqlite_path": "data/go-ginx.db",
   "data_dir": "data",
   "certificate_dir": "data/certs",
@@ -248,10 +249,10 @@ $env:CF_DNS_API_TOKEN="<cloudflare-token>"
 15. Upgrade and rollback: replace the bundle contents in the install root, including `admin-ui/`, then restart the units. Roll back by restoring the previous bundle directory contents and restarting the same units.
 16. Administrator management credentials: `admin_credentials_file` must point to a readable JSON file containing administrator usernames and bcrypt password hashes. The file is separate from SQLite users and should be readable only by the service account.
 17. Management transport protection: the admin listener uses session-authenticated same-origin API routes and is expected to run behind TLS. Local loopback access is accepted for development and automated tests; loopback testing may issue non-`Secure` cookies because browsers and HTTP clients do not send `Secure` cookies over plain `http://127.0.0.1` development traffic.
-18. Configless port conflicts: set `GOGINX_ADMIN_LISTEN`, `GOGINX_CONTROL_QUIC_LISTEN`, `GOGINX_CONTROL_TLS_LISTEN`, or `GOGINX_HTTP_ENTRY_LISTEN` to free addresses, or switch to explicit JSON config.
+18. Configless port conflicts: set `GOGINX_ADMIN_LISTEN`, `GOGINX_CLIENT_ENROLLMENT_LISTEN`, `GOGINX_CONTROL_QUIC_LISTEN`, `GOGINX_CONTROL_TLS_LISTEN`, `GOGINX_HTTP_ENTRY_LISTEN`, or `GOGINX_HTTPS_ENTRY_LISTEN` to free addresses, or switch to explicit JSON config. On systems that restrict low ports, either grant permission for the server to bind 80/443 or override the HTTP/HTTPS entry listeners.
 19. Managed control TLS state: if `data/certs/control-ca.crt`, `control.crt`, or `control.key` is missing or corrupted, stop the server and restore the set from backup; deleting the set forces regeneration and breaks existing joined clients until they join again.
 20. Missing administrator bootstrap: configless management login has no default password. Run `goginx-admin init-admin` before logging in. By default the CLI writes to `data/go-ginx.db` under the deployment root derived from the `goginx-admin` binary location; use `-db` when targeting a custom server SQLite path.
-21. Join token failures: expired, already-used, tampered, or revoked join tokens are rejected by `/api/client/enroll`; generate a new token with `goginx-admin create-client-join`.
+21. Join token failures: expired, already-used, tampered, revoked, or admin-listener-era join tokens are rejected by `/api/client/enroll`; generate a new token with `goginx-admin create-client-join`.
 22. Client managed state damage: if `data/client-state.json` or `data/certs/server-ca.crt` is missing on the client host, run `goginx-client join <new-token>` again.
 
 ## Not Implemented

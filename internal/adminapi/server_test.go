@@ -242,7 +242,7 @@ func TestServerAuthenticatesSQLiteAdministrators(t *testing.T) {
 	}
 }
 
-func TestServerRedeemsClientEnrollmentToken(t *testing.T) {
+func TestServerDoesNotRedeemClientEnrollmentToken(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	db, sessions, memory := adminAPITestRuntime(t)
@@ -255,36 +255,29 @@ func TestServerRedeemsClientEnrollmentToken(t *testing.T) {
 	if err := db.ClientEnrollments().Create(context.Background(), domain.ClientEnrollment{ID: payload.EnrollmentID, ClientID: payload.ClientID, SecretHash: enrollment.HashSecret(payload.Secret), TokenHash: enrollment.HashToken(token), Token: token, ExpiresAt: expiresAt}); err != nil {
 		t.Fatal(err)
 	}
-	server, err := Listen(Entry{ListenAddress: "127.0.0.1:0", AdminFrontendDir: writeAdminFrontendFixture(t), Query: adminquery.Service{Store: db, Sessions: sessions, Stats: memory}, Commands: admin.Service{Store: db}, Enrollment: enrollment.Service{Store: db}})
+	server, err := Listen(Entry{ListenAddress: "127.0.0.1:0", AdminFrontendDir: writeAdminFrontendFixture(t), Query: adminquery.Service{Store: db, Sessions: sessions, Stats: memory}, Commands: admin.Service{Store: db}})
 	if err != nil {
-		t.Fatalf("listen enrollment server: %v", err)
+		t.Fatalf("listen admin server: %v", err)
 	}
 	t.Cleanup(func() { _ = server.Close() })
 	go func() { _ = server.Serve(ctx) }()
 
 	response, err := postJSON(http.DefaultClient, "http://"+server.Addr().String()+clientEnrollmentPrefix+"/enroll", enrollment.RedeemRequest{Token: token}, nil)
 	if err != nil {
-		t.Fatalf("post enrollment: %v", err)
+		t.Fatalf("post admin enrollment route: %v", err)
 	}
 	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
+	if response.StatusCode != http.StatusNotFound {
 		body, _ := io.ReadAll(response.Body)
-		t.Fatalf("unexpected enrollment status %d body=%s", response.StatusCode, string(body))
+		t.Fatalf("expected admin enrollment route to be absent, status=%d body=%s", response.StatusCode, string(body))
 	}
-	var decoded enrollment.RedeemResponse
-	if err := json.NewDecoder(response.Body).Decode(&decoded); err != nil {
-		t.Fatal(err)
-	}
-	if decoded.ClientID != "client-1" || decoded.Credential != "secret" {
-		t.Fatalf("unexpected enrollment response: %+v", decoded)
-	}
-
-	duplicate, err := postJSON(http.DefaultClient, "http://"+server.Addr().String()+clientEnrollmentPrefix+"/enroll", enrollment.RedeemRequest{Token: token}, nil)
+	record, err := db.ClientEnrollments().ByID(context.Background(), payload.EnrollmentID)
 	if err != nil {
-		t.Fatalf("post duplicate enrollment: %v", err)
+		t.Fatalf("lookup enrollment: %v", err)
 	}
-	defer duplicate.Body.Close()
-	assertErrorCode(t, duplicate, http.StatusConflict, "UNAUTHENTICATED")
+	if record.UsedAt != nil {
+		t.Fatal("admin listener must not consume enrollment token")
+	}
 }
 
 func TestServerSessionGraphQLAndCanonicalQueries(t *testing.T) {
@@ -472,7 +465,10 @@ func TestServerClientCredentialAndValidationContract(t *testing.T) {
 
 func TestServerProxyEntryConflictAndDeleteAfterDisable(t *testing.T) {
 	server := startAdminTestServer(t, func(entry *Entry) {
-		entry.Commands.StaticListenerClaims = []domain.ListenerClaim{{Network: domain.ListenerNetworkTCP, Port: 10022, Source: "admin_listen", ResourceID: "admin_listen"}}
+		entry.Commands.StaticListenerClaims = []domain.ListenerClaim{
+			{Network: domain.ListenerNetworkTCP, Port: 10022, Source: "admin_listen", ResourceID: "admin_listen"},
+			{Network: domain.ListenerNetworkTCP, Port: 10081, Source: "client_enrollment_listen", ResourceID: "client_enrollment_listen"},
+		}
 		ctx := context.Background()
 		if err := entry.Commands.Store.Proxies().Create(ctx, domain.Proxy{ID: "proxy-update", UserID: "user-1", ClientID: "client-1", Name: "ssh-update", Type: domain.ProxyTCP, Status: domain.ProxyEnabled, EntryPort: 10024, TargetHost: "127.0.0.1", TargetPort: 24}); err != nil {
 			t.Fatalf("seed update proxy: %v", err)
@@ -491,6 +487,15 @@ func TestServerProxyEntryConflictAndDeleteAfterDisable(t *testing.T) {
     name: "ssh"
     type: "tcp"
     config: { entryPort: 10022, targetHost: "127.0.0.1", targetPort: 22 }
+  }) { proxyId }
+}`, bootstrap.CSRFToken, "ENTRY_CONFLICT")
+	assertGraphQLErrorCodeForQuery(t, client, server.Addr().String(), `mutation {
+  createProxy(input: {
+    userId: "user-1"
+    clientId: "client-1"
+    name: "join-port"
+    type: "tcp"
+    config: { entryPort: 10081, targetHost: "127.0.0.1", targetPort: 8081 }
   }) { proxyId }
 }`, bootstrap.CSRFToken, "ENTRY_CONFLICT")
 	assertGraphQLErrorCodeForQuery(t, client, server.Addr().String(), `mutation {
@@ -520,7 +525,7 @@ func TestServerClientJoinDefaultsAndDeleteContract(t *testing.T) {
 	}
 	server := startAdminTestServer(t, func(entry *Entry) {
 		entry.Commands.DefaultJoin = config.JoinServiceDefaults{
-			EnrollmentURL:    "http://server.example.com:8080/api/client/enroll",
+			EnrollmentURL:    "http://server.example.com:8081/api/client/enroll",
 			ServerAddress:    "server.example.com:8443",
 			ServerTLSAddress: "server.example.com:9443",
 			ServerName:       "go-ginx-control.test",
@@ -544,7 +549,7 @@ func TestServerClientJoinDefaultsAndDeleteContract(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decode join token: %v", err)
 	}
-	if tokenPayload.ServerAddress != "server.example.com:8443" || tokenPayload.ServerTLSAddress != "server.example.com:9443" || tokenPayload.EnrollmentURL != "http://server.example.com:8080/api/client/enroll" {
+	if tokenPayload.ServerAddress != "server.example.com:8443" || tokenPayload.ServerTLSAddress != "server.example.com:9443" || tokenPayload.EnrollmentURL != "http://server.example.com:8081/api/client/enroll" {
 		t.Fatalf("join token did not use defaults: %+v", tokenPayload)
 	}
 

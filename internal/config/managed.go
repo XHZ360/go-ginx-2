@@ -119,6 +119,7 @@ func ResolveClientPaths(cfg *Client, root string) {
 
 func applyManagedServerEnv(cfg *Server) {
 	envString("GOGINX_ADMIN_LISTEN", &cfg.AdminListen)
+	envString("GOGINX_CLIENT_ENROLLMENT_LISTEN", &cfg.ClientEnrollmentListen)
 	envString("GOGINX_CONTROL_QUIC_LISTEN", &cfg.ControlQUICListen)
 	envString("GOGINX_CONTROL_TLS_LISTEN", &cfg.ControlTLSListen)
 	envString("GOGINX_CONTROL_TLS_SERVER_NAME", &cfg.ControlTLSServerName)

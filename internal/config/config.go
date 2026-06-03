@@ -19,6 +19,7 @@ type Server struct {
 	AdminListen            string        `json:"admin_listen"`
 	AdminCredentialsFile   string        `json:"admin_credentials_file"`
 	AdminFrontendDir       string        `json:"admin_frontend_dir"`
+	ClientEnrollmentListen string        `json:"client_enrollment_listen"`
 	ControlQUICListen      string        `json:"control_quic_listen"`
 	ControlTLSListen       string        `json:"control_tls_listen"`
 	ControlTLSServerName   string        `json:"control_tls_server_name"`
@@ -74,6 +75,7 @@ func DefaultServer() Server {
 		AdminListen:            "127.0.0.1:8080",
 		AdminCredentialsFile:   "",
 		AdminFrontendDir:       "",
+		ClientEnrollmentListen: ":8081",
 		ControlQUICListen:      ":8443",
 		ControlTLSListen:       ":9443",
 		ControlTLSServerName:   "go-ginx-control.local",
@@ -82,8 +84,8 @@ func DefaultServer() Server {
 		ControlTLSKeyFile:      "data/certs/control.key",
 		JoinServiceHost:        "",
 		TCPEntryHost:           "0.0.0.0",
-		HTTPEntryListen:        ":8081",
-		HTTPSEntryListen:       "",
+		HTTPEntryListen:        ":80",
+		HTTPSEntryListen:       ":443",
 		SQLitePath:             "data/go-ginx.db",
 		DataDir:                "data",
 		CertificateDir:         "data/certs",
@@ -128,6 +130,9 @@ func LoadDefaultServer() (Server, error) {
 
 func (cfg Server) Validate() error {
 	if err := requireAddress("admin_listen", cfg.AdminListen); err != nil {
+		return err
+	}
+	if err := requireAddress("client_enrollment_listen", cfg.ClientEnrollmentListen); err != nil {
 		return err
 	}
 	if err := requireAddress("control_quic_listen", cfg.ControlQUICListen); err != nil {
@@ -213,7 +218,7 @@ func ConfirmJoinServiceDefaults(cfg Server) (JoinServiceDefaults, error) {
 		}
 		tlsAddress = net.JoinHostPort(host, tlsPort)
 	}
-	adminPort, err := addressPort("admin_listen", cfg.AdminListen)
+	enrollmentPort, err := addressPort("client_enrollment_listen", cfg.ClientEnrollmentListen)
 	if err != nil {
 		return JoinServiceDefaults{}, err
 	}
@@ -222,7 +227,7 @@ func ConfirmJoinServiceDefaults(cfg Server) (JoinServiceDefaults, error) {
 		Source:           source,
 		ServerAddress:    net.JoinHostPort(host, quicPort),
 		ServerTLSAddress: tlsAddress,
-		EnrollmentURL:    "http://" + net.JoinHostPort(host, adminPort) + "/api/client/enroll",
+		EnrollmentURL:    "http://" + net.JoinHostPort(host, enrollmentPort) + "/api/client/enroll",
 		ServerName:       cfg.ControlTLSServerName,
 		ServerCAFile:     cfg.ControlTLSCAFile,
 	}, nil
@@ -267,9 +272,10 @@ func (cfg Client) Validate() error {
 }
 
 func (cfg Server) RuntimeListenerClaims(includeAdmin bool) ([]domain.ListenerClaim, error) {
-	claims := make([]domain.ListenerClaim, 0, 5)
+	claims := make([]domain.ListenerClaim, 0, 6)
 	claims = append(claims, listenerClaimFromAddress("control_quic_listen", domain.ListenerNetworkUDP, cfg.ControlQUICListen)...)
 	claims = append(claims, listenerClaimFromAddress("control_tls_listen", domain.ListenerNetworkTCP, cfg.ControlTLSListen)...)
+	claims = append(claims, listenerClaimFromAddress("client_enrollment_listen", domain.ListenerNetworkTCP, cfg.ClientEnrollmentListen)...)
 	if includeAdmin {
 		claims = append(claims, listenerClaimFromAddress("admin_listen", domain.ListenerNetworkTCP, cfg.AdminListen)...)
 	}

@@ -524,12 +524,16 @@ func TestServiceListenerAdmissionRejectsStaticListenerConflicts(t *testing.T) {
 	db := openTestStore(t)
 	service := Service{Store: db, StaticListenerClaims: []domain.ListenerClaim{
 		{Network: domain.ListenerNetworkTCP, Port: 10022, Source: "admin_listen", ResourceID: "admin_listen"},
+		{Network: domain.ListenerNetworkTCP, Port: 10081, Source: "client_enrollment_listen", ResourceID: "client_enrollment_listen"},
 		{Network: domain.ListenerNetworkUDP, Port: 10053, Source: "control_quic_listen", ResourceID: "control_quic_listen"},
 	}}
 	user, client := createAdminTestOwnership(ctx, t, service)
 
 	if _, err := service.CreateProxy(ctx, CreateProxyInput{ID: "tcp-static-conflict", UserID: user.ID, ClientID: client.ID, Name: "ssh", Type: domain.ProxyTCP, EntryPort: 10022, TargetHost: "127.0.0.1", TargetPort: 22, ActorID: "admin-1"}); !errors.Is(err, domain.ErrEntryConflict) {
 		t.Fatalf("expected tcp static listener conflict, got %v", err)
+	}
+	if _, err := service.CreateProxy(ctx, CreateProxyInput{ID: "tcp-enrollment-conflict", UserID: user.ID, ClientID: client.ID, Name: "join-port", Type: domain.ProxyTCP, EntryPort: 10081, TargetHost: "127.0.0.1", TargetPort: 8081, ActorID: "admin-1"}); !errors.Is(err, domain.ErrEntryConflict) {
+		t.Fatalf("expected enrollment static listener conflict, got %v", err)
 	}
 	if _, err := service.CreateProxy(ctx, CreateProxyInput{ID: "udp-static-conflict", UserID: user.ID, ClientID: client.ID, Name: "dns", Type: domain.ProxyUDP, EntryPort: 10053, TargetHost: "127.0.0.1", TargetPort: 53, ActorID: "admin-1"}); !errors.Is(err, domain.ErrEntryConflict) {
 		t.Fatalf("expected udp static listener conflict, got %v", err)

@@ -66,10 +66,13 @@ $env:CGO_ENABLED="0"
 默认监听：
 
 - 管理后台：`127.0.0.1:8080`
+- 客户端 enrollment：`:8081`，仅服务 `/api/client/enroll`
 - 控制通道 QUIC：`:8443`
 - 控制通道 TCP+TLS：`:9443`
-- HTTP 入口：`:8081`
-- HTTPS 入口：默认关闭，需通过环境变量或配置启用
+- HTTP 入口：`:80`
+- HTTPS 入口：`:443`
+
+HTTP/HTTPS 入口使用标准低端口；在 Linux/Unix 上可能需要 root、`CAP_NET_BIND_SERVICE`、服务管理器授权，或通过环境变量/JSON 显式改用非特权端口。
 
 2. 在另一个终端初始化第一个管理员：
 
@@ -85,7 +88,9 @@ $env:CGO_ENABLED="0"
 token="$(./bin/goginx-admin create-client-join -id client-1 -user admin-1 -name home)"
 ```
 
-服务端启动时会确认一个默认 join 服务域名或 IP，并在日志中显示 `join_service_host`、来源和默认控制通道地址。未显式填写地址时，管理 API、`goginx-admin create-client-join`、`goginx-admin client-join-command` 和 TUI 都会使用同一套默认 join 参数解析规则：显式 `-server-config`、部署根 `config/server.json`、`GOGINX_JOIN_SERVICE_HOST` 等环境覆盖、managed 默认值和本地兜底。远程客户端场景推荐配置 `join_service_host` 或 `GOGINX_JOIN_SERVICE_HOST`，不要把本地兜底地址当作公网默认值。
+服务端启动时会确认一个默认 join 服务域名或 IP，并在日志中显示 `join_service_host`、来源、默认控制通道地址和默认 enrollment URL。未显式填写地址时，管理 API、`goginx-admin create-client-join`、`goginx-admin client-join-command` 和 TUI 都会使用同一套默认 join 参数解析规则：显式 `-server-config`、部署根 `config/server.json`、`GOGINX_JOIN_SERVICE_HOST`、`GOGINX_CLIENT_ENROLLMENT_LISTEN` 等环境覆盖、managed 默认值和本地兜底。远程客户端场景推荐配置 `join_service_host` 或 `GOGINX_JOIN_SERVICE_HOST`，不要把本地兜底地址当作公网默认值。
+
+客户端 join token 默认通过专用 enrollment listener 兑换，而不是 admin listener。旧的、指向 `admin_listen` 上 `/api/client/enroll` 的 token 不再可用；重新生成 token 后使用新的 enrollment URL。
 
 如果客户端不在本机，可以先配置默认服务地址：
 
@@ -100,7 +105,7 @@ token="$(./bin/goginx-admin create-client-join \
   -id client-1 \
   -user admin-1 \
   -name home \
-  -enrollment-url "https://admin.example.com/api/client/enroll" \
+  -enrollment-url "https://join.example.com/api/client/enroll" \
   -server-address "control.example.com:8443" \
   -server-tls-address "control.example.com:9443" \
   -server-name "go-ginx-control.local"
@@ -218,6 +223,7 @@ HTTPS 静态证书终止示例：
 无配置启动仍可通过环境变量调整端口和路径：
 
 - `GOGINX_ADMIN_LISTEN`
+- `GOGINX_CLIENT_ENROLLMENT_LISTEN`
 - `GOGINX_CONTROL_QUIC_LISTEN`
 - `GOGINX_CONTROL_TLS_LISTEN`
 - `GOGINX_CONTROL_TLS_SERVER_NAME`
@@ -241,6 +247,7 @@ HTTPS 静态证书终止示例：
   "admin_enabled": true,
   "admin_listen": "127.0.0.1:8080",
   "admin_frontend_dir": "",
+  "client_enrollment_listen": "0.0.0.0:8081",
   "control_quic_listen": "127.0.0.1:8443",
   "control_tls_listen": "127.0.0.1:9443",
   "control_tls_server_name": "go-ginx-control.local",
@@ -249,8 +256,8 @@ HTTPS 静态证书终止示例：
   "control_tls_key_file": "data/certs/control.key",
   "join_service_host": "control.example.com",
   "tcp_entry_host": "0.0.0.0",
-  "http_entry_listen": "0.0.0.0:8081",
-  "https_entry_listen": "0.0.0.0:8444",
+  "http_entry_listen": "0.0.0.0:80",
+  "https_entry_listen": "0.0.0.0:443",
   "sqlite_path": "data/go-ginx.db",
   "data_dir": "data",
   "certificate_dir": "data/certs",
@@ -330,7 +337,7 @@ export CF_DNS_API_TOKEN="<cloudflare-token>"
 - `POST /api/admin/logout`
 - `POST /api/admin/graphql`
 
-客户端加入接口：
+客户端加入接口仅由专用 enrollment listener 提供，不由 admin listener 提供：
 
 - `POST /api/client/enroll`
 

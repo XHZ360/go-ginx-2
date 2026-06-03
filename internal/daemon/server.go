@@ -16,6 +16,7 @@ import (
 	"github.com/simp-frp/go-ginx-2/internal/control"
 	"github.com/simp-frp/go-ginx-2/internal/domain"
 	"github.com/simp-frp/go-ginx-2/internal/enrollment"
+	"github.com/simp-frp/go-ginx-2/internal/enrollmentapi"
 	httpproxy "github.com/simp-frp/go-ginx-2/internal/proxy/http"
 	httpsproxy "github.com/simp-frp/go-ginx-2/internal/proxy/https"
 	tcpproxy "github.com/simp-frp/go-ginx-2/internal/proxy/tcp"
@@ -45,6 +46,7 @@ type ServerRuntime struct {
 	ControlListener    *control.Listener
 	ControlTLSListener *control.TLSListener
 	AdminServer        *adminapi.Server
+	EnrollmentServer   *enrollmentapi.Server
 	TCPListeners       []*tcpproxy.Listener
 	UDPListeners       []*udpproxy.Listener
 	HTTPServer         *httpproxy.Server
@@ -99,6 +101,13 @@ func startServerWithStore(parent context.Context, cfg config.Server, db store.St
 	}
 	runtime := &ServerRuntime{Store: db, Sessions: sessions, Stats: memoryStats, persistentStats: persistentStats, ControlListener: controlListener, JoinService: joinDefaults, cancel: cancel}
 	go func() { _ = controlListener.Serve(runtimeCtx) }()
+	enrollmentServer, err := enrollmentapi.Listen(enrollmentapi.Entry{ListenAddress: cfg.ClientEnrollmentListen, Enrollment: enrollment.Service{Store: db}})
+	if err != nil {
+		_ = runtime.Close()
+		return nil, fmt.Errorf("listen client enrollment: %w", err)
+	}
+	runtime.EnrollmentServer = enrollmentServer
+	go func() { _ = enrollmentServer.Serve(runtimeCtx) }()
 	if cfg.AdminEnabled || cfg.AdminCredentialsFile != "" {
 		staticListenerClaims, err := cfg.RuntimeListenerClaims(true)
 		if err != nil {
@@ -251,6 +260,9 @@ func (runtime *ServerRuntime) Close() error {
 		}
 		if runtime.ControlTLSListener != nil {
 			closeErr = errors.Join(closeErr, runtime.ControlTLSListener.Close())
+		}
+		if runtime.EnrollmentServer != nil {
+			closeErr = errors.Join(closeErr, runtime.EnrollmentServer.Close())
 		}
 		if runtime.AdminServer != nil {
 			closeErr = errors.Join(closeErr, runtime.AdminServer.Close())
