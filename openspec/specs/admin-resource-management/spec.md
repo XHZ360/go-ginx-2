@@ -641,7 +641,7 @@ admin-resource-management 基线 MUST 把已确认的 V1 管理员资源管理 s
 - **THEN** TUI 在执行删除前要求摘要确认和资源 ID 级别的强确认
 
 ### Requirement: Local admin TUI client setup
-系统 MUST 通过 TUI 支持快速配置客户端，并优先通过用户选择、生成凭据和默认 join 参数减少手动输入。
+系统 MUST 通过 TUI 支持快速配置客户端，并优先通过用户选择、生成凭据和统一解析的默认 join 参数减少手动输入。TUI 展示和提交的默认 join 参数 MUST 来自与 admin CLI/server 配置兼容的默认 join 解析结果。
 
 #### Scenario: Quick create client join token with selected owner
 - **WHEN** 操作者在 TUI 默认客户端快速向导中从现有用户列表选择所属用户，输入有效客户端名称，并确认加入令牌参数
@@ -655,7 +655,7 @@ admin-resource-management 基线 MUST 把已确认的 V1 管理员资源管理 s
 
 #### Scenario: Reset unavailable client join token on review
 - **WHEN** 操作者从 TUI 客户端操作菜单选择查看 join token，且该客户端没有可查看的可用 join token
-- **THEN** 系统轮换客户端凭据，生成新的未使用 join token，并展示新 token、过期时间和单次消费提示
+- **THEN** 系统使用统一解析的默认 join 参数轮换客户端凭据，生成新的未使用 join token，并展示新 token、过期时间和单次消费提示
 - **AND** 旧的已过期或已使用 join token 仍不可被客户端消费
 
 #### Scenario: Reject reviewing unavailable client join token
@@ -676,7 +676,7 @@ admin-resource-management 基线 MUST 把已确认的 V1 管理员资源管理 s
 
 #### Scenario: Join token defaults are reviewable before submit
 - **WHEN** 操作者创建客户端加入令牌
-- **THEN** TUI 展示 enrollment URL、控制通道地址、TLS 地址、server name、CA 文件和 TTL 的默认值，并要求操作者在提交前确认或编辑
+- **THEN** TUI 展示从 server 配置、环境覆盖或 managed 默认配置统一解析出的 enrollment URL、控制通道地址、TLS 地址、server name、CA 文件和 TTL 默认值，并要求操作者在提交前确认或编辑
 
 #### Scenario: Reject client setup when no owner exists
 - **WHEN** SQLite 中不存在可作为客户端所属者的用户，且操作者进入客户端配置
@@ -692,7 +692,7 @@ admin-resource-management 基线 MUST 把已确认的 V1 管理员资源管理 s
 - **AND** join token 在未使用且未过期期间可以由管理员重复查看
 
 ### Requirement: Local admin TUI client maintenance
-系统 MUST 通过 TUI 支持客户端启用、禁用、凭据轮换、join token 查看和受保护删除。
+系统 MUST 通过 TUI 支持客户端启用、禁用、凭据轮换、join token 查看和受保护删除。TUI 重置不可用 join token 时 MUST 使用统一解析的默认 join 参数。
 
 #### Scenario: Disable selected client
 - **WHEN** 操作者从 TUI 客户端列表选择一个客户端并确认禁用
@@ -708,7 +708,7 @@ admin-resource-management 基线 MUST 把已确认的 V1 管理员资源管理 s
 
 #### Scenario: Review selected client join token
 - **WHEN** 操作者从 TUI 客户端列表选择一个客户端并请求查看 join token
-- **THEN** 系统查询该客户端最新可查看 join token；若 token 不可用，则重置 join token
+- **THEN** 系统查询该客户端最新可查看 join token；若 token 不可用，则使用统一解析的默认 join 参数重置 join token
 - **AND** 结果页展示 token、过期时间和单次消费提示
 - **AND** 结果页展示可在管理端终端执行的 `goginx-admin client-join-command -client <id>` 指令，用于获取客户端 join 指令
 

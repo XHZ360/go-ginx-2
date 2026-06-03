@@ -20,7 +20,9 @@ import (
 
 	"github.com/simp-frp/go-ginx-2/internal/admintui"
 	"github.com/simp-frp/go-ginx-2/internal/certmanager"
+	"github.com/simp-frp/go-ginx-2/internal/config"
 	"github.com/simp-frp/go-ginx-2/internal/domain"
+	"github.com/simp-frp/go-ginx-2/internal/enrollment"
 	"github.com/simp-frp/go-ginx-2/internal/store/sqlite"
 )
 
@@ -170,6 +172,17 @@ func TestRunCreatesClientJoinToken(t *testing.T) {
 	if _, err := db.Clients().ByID(context.Background(), "client-1"); err != nil {
 		t.Fatalf("lookup client: %v", err)
 	}
+	enrollmentRecord, err := db.ClientEnrollments().LatestReviewableByClientID(context.Background(), "client-1", time.Now().UTC())
+	if err != nil {
+		t.Fatalf("lookup client enrollment: %v", err)
+	}
+	payload, err := enrollment.DecodeToken(enrollmentRecord.Token)
+	if err != nil {
+		t.Fatalf("decode join token: %v", err)
+	}
+	if payload.ServerAddress != "127.0.0.1:8443" || payload.EnrollmentURL != "http://127.0.0.1:8080/api/client/enroll" || payload.ServerName != "go-ginx-control.test" {
+		t.Fatalf("explicit join parameters were not preserved: %+v", payload)
+	}
 	events, err := db.AuditEvents().ListRecent(context.Background(), 10)
 	if err != nil {
 		t.Fatalf("list audit events: %v", err)
@@ -182,6 +195,109 @@ func TestRunCreatesClientJoinToken(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("expected create_client_join audit event, got %+v", events)
+	}
+}
+
+func TestRunCreateClientJoinDefaultsFromDeploymentServerConfig(t *testing.T) {
+	deploymentRoot := t.TempDir()
+	stateDir := t.TempDir()
+	setAdminExecutable(t, deploymentRoot)
+	t.Chdir(stateDir)
+	writeAdminServerConfig(t, deploymentRoot, "server.example.com", ":18443", ":19443", ":18080")
+	if err := os.MkdirAll(filepath.Join(deploymentRoot, "data", "certs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(deploymentRoot, "data", "certs", "control-ca.crt"), []byte("ca-pem"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := run([]string{"create-user", "-id", "user-1", "-username", "alice"}); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+
+	output, err := captureStdout(func() error {
+		return run([]string{"create-client-join", "-id", "client-1", "-user", "user-1", "-name", "home"})
+	})
+	if err != nil {
+		t.Fatalf("create client join: %v", err)
+	}
+	payload, err := enrollment.DecodeToken(strings.TrimSpace(output))
+	if err != nil {
+		t.Fatalf("decode join token: %v", err)
+	}
+	if payload.ServerAddress != "server.example.com:18443" || payload.ServerTLSAddress != "server.example.com:19443" || payload.EnrollmentURL != "http://server.example.com:18080/api/client/enroll" {
+		t.Fatalf("expected deployment server config defaults, got %+v", payload)
+	}
+	if payload.CAPEM != "ca-pem" {
+		t.Fatalf("expected deployment-root CA PEM, got %q", payload.CAPEM)
+	}
+}
+
+func TestRunCreateClientJoinDefaultsFromEnvironment(t *testing.T) {
+	deploymentRoot := t.TempDir()
+	stateDir := t.TempDir()
+	setAdminExecutable(t, deploymentRoot)
+	t.Chdir(stateDir)
+	t.Setenv("GOGINX_JOIN_SERVICE_HOST", "env.example.com")
+	t.Setenv("GOGINX_CONTROL_QUIC_LISTEN", ":28443")
+	t.Setenv("GOGINX_CONTROL_TLS_LISTEN", ":29443")
+	t.Setenv("GOGINX_ADMIN_LISTEN", ":28080")
+	if err := os.MkdirAll(filepath.Join(deploymentRoot, "data", "certs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(deploymentRoot, "data", "certs", "control-ca.crt"), []byte("ca-pem"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := run([]string{"create-user", "-id", "user-1", "-username", "alice"}); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+
+	output, err := captureStdout(func() error {
+		return run([]string{"create-client-join", "-id", "client-1", "-user", "user-1", "-name", "home"})
+	})
+	if err != nil {
+		t.Fatalf("create client join: %v", err)
+	}
+	payload, err := enrollment.DecodeToken(strings.TrimSpace(output))
+	if err != nil {
+		t.Fatalf("decode join token: %v", err)
+	}
+	if payload.ServerAddress != "env.example.com:28443" || payload.ServerTLSAddress != "env.example.com:29443" || payload.EnrollmentURL != "http://env.example.com:28080/api/client/enroll" {
+		t.Fatalf("expected environment defaults, got %+v", payload)
+	}
+}
+
+func TestRunClientJoinCommandResetsTokenFromDeploymentServerConfig(t *testing.T) {
+	deploymentRoot := t.TempDir()
+	stateDir := t.TempDir()
+	setAdminExecutable(t, deploymentRoot)
+	t.Chdir(stateDir)
+	writeAdminServerConfig(t, deploymentRoot, "reset.example.com", ":38443", ":39443", ":38080")
+	if err := os.MkdirAll(filepath.Join(deploymentRoot, "data", "certs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(deploymentRoot, "data", "certs", "control-ca.crt"), []byte("ca-pem"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := run([]string{"create-user", "-id", "user-1", "-username", "alice"}); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	if err := run([]string{"create-client", "-id", "client-1", "-user", "user-1", "-name", "home", "-credential", "old-secret"}); err != nil {
+		t.Fatalf("create client: %v", err)
+	}
+
+	output, err := captureStdout(func() error {
+		return run([]string{"client-join-command", "-client", "client-1"})
+	})
+	if err != nil {
+		t.Fatalf("client join command: %v", err)
+	}
+	token := strings.TrimPrefix(strings.TrimSpace(output), "goginx-client join ")
+	payload, err := enrollment.DecodeToken(token)
+	if err != nil {
+		t.Fatalf("decode reset join token: %v", err)
+	}
+	if payload.ServerAddress != "reset.example.com:38443" || payload.ServerTLSAddress != "reset.example.com:39443" || payload.EnrollmentURL != "http://reset.example.com:38080/api/client/enroll" {
+		t.Fatalf("expected reset token defaults from deployment config, got %+v", payload)
 	}
 }
 
@@ -225,7 +341,7 @@ func TestAdminClientJoinCommandTemplateUsesAbsoluteExecutable(t *testing.T) {
 	})
 	dbPath := filepath.Join(deploymentRoot, "data", "go-ginx.db")
 
-	template := adminClientJoinCommandTemplate(dbPath)
+	template := adminClientJoinCommandTemplate(dbPath, "")
 
 	if !strings.Contains(template, shellQuote(executable)) {
 		t.Fatalf("expected absolute admin executable %q in template %q", executable, template)
@@ -238,6 +354,26 @@ func TestAdminClientJoinCommandTemplateUsesAbsoluteExecutable(t *testing.T) {
 	}
 	if runtime.GOOS == "windows" && !strings.Contains(template, "goginx-admin.exe") {
 		t.Fatalf("expected windows executable suffix in template %q", template)
+	}
+}
+
+func TestAdminClientJoinCommandTemplateIncludesServerConfig(t *testing.T) {
+	deploymentRoot := t.TempDir()
+	executable := filepath.Join(deploymentRoot, "bin", adminBinaryName(runtime.GOOS))
+	previousExecutablePath := executablePath
+	executablePath = func() (string, error) {
+		return executable, nil
+	}
+	t.Cleanup(func() {
+		executablePath = previousExecutablePath
+	})
+	dbPath := filepath.Join(deploymentRoot, "data", "go-ginx.db")
+	serverConfigPath := filepath.Join(deploymentRoot, "config", "server.json")
+
+	template := adminClientJoinCommandTemplate(dbPath, serverConfigPath)
+
+	if !strings.Contains(template, "-server-config "+shellQuote(serverConfigPath)) {
+		t.Fatalf("expected server config path %q in template %q", serverConfigPath, template)
 	}
 }
 
@@ -295,14 +431,9 @@ func captureStdout(fn func() error) (string, error) {
 func TestRunTUIUsesDefaultDBFromDeploymentRoot(t *testing.T) {
 	deploymentRoot := t.TempDir()
 	stateDir := t.TempDir()
-	previousExecutablePath := executablePath
-	executablePath = func() (string, error) {
-		return filepath.Join(deploymentRoot, "bin", "goginx-admin"), nil
-	}
-	t.Cleanup(func() {
-		executablePath = previousExecutablePath
-	})
+	setAdminExecutable(t, deploymentRoot)
 	t.Chdir(stateDir)
+	writeAdminServerConfig(t, deploymentRoot, "tui.example.com", ":48443", ":49443", ":48080")
 
 	oldRunAdminTUI := runAdminTUI
 	var got admintui.RunOptions
@@ -322,11 +453,39 @@ func TestRunTUIUsesDefaultDBFromDeploymentRoot(t *testing.T) {
 	if _, ok := got.Backend.(admintui.LocalBackend); !ok {
 		t.Fatalf("expected local backend, got %T", got.Backend)
 	}
+	backend := got.Backend.(admintui.LocalBackend)
+	if backend.JoinDefaultsValue.ServerAddress != "tui.example.com:48443" || backend.JoinDefaultsValue.ServerTLSAddress != "tui.example.com:49443" || backend.JoinDefaultsValue.EnrollmentURL != "http://tui.example.com:48080/api/client/enroll" {
+		t.Fatalf("expected TUI join defaults from deployment config, got %+v", backend.JoinDefaultsValue)
+	}
 	if _, err := os.Stat(filepath.Join(deploymentRoot, "data", "go-ginx.db")); err != nil {
 		t.Fatalf("expected deployment-root db: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(stateDir, "data", "go-ginx.db")); !os.IsNotExist(err) {
 		t.Fatalf("expected no cwd-relative db, got err=%v", err)
+	}
+}
+
+func TestRunTUIClientJoinCommandTemplateIncludesExplicitServerConfig(t *testing.T) {
+	deploymentRoot := t.TempDir()
+	stateDir := t.TempDir()
+	setAdminExecutable(t, deploymentRoot)
+	t.Chdir(stateDir)
+	writeAdminServerConfig(t, deploymentRoot, "tui-config.example.com", ":58443", ":59443", ":58080")
+
+	oldRunAdminTUI := runAdminTUI
+	var got admintui.RunOptions
+	runAdminTUI = func(_ context.Context, opts admintui.RunOptions) error {
+		got = opts
+		return nil
+	}
+	t.Cleanup(func() { runAdminTUI = oldRunAdminTUI })
+
+	if err := run([]string{"tui", "-server-config", filepath.Join("config", "server.json")}); err != nil {
+		t.Fatalf("run tui: %v", err)
+	}
+
+	if !strings.Contains(got.ClientJoinCommandTemplate, "-server-config "+shellQuote(filepath.Join(deploymentRoot, "config", "server.json"))) {
+		t.Fatalf("expected explicit server config in client join command template, got %q", got.ClientJoinCommandTemplate)
 	}
 }
 
@@ -671,6 +830,41 @@ func readBundleClientConfig(t *testing.T, path string) bundleClientConfig {
 type bundleClientConfig struct {
 	ServerName   string `json:"server_name"`
 	ServerCAFile string `json:"server_ca_file"`
+}
+
+func setAdminExecutable(t *testing.T, deploymentRoot string) {
+	t.Helper()
+	previousExecutablePath := executablePath
+	executablePath = func() (string, error) {
+		return filepath.Join(deploymentRoot, "bin", adminBinaryName(runtime.GOOS)), nil
+	}
+	t.Cleanup(func() {
+		executablePath = previousExecutablePath
+	})
+}
+
+func writeAdminServerConfig(t *testing.T, deploymentRoot string, joinHost string, quicListen string, tlsListen string, adminListen string) {
+	t.Helper()
+	cfg := config.DefaultServer()
+	cfg.JoinServiceHost = joinHost
+	cfg.ControlQUICListen = quicListen
+	cfg.ControlTLSListen = tlsListen
+	cfg.AdminListen = adminListen
+	cfg.ControlTLSServerName = "go-ginx-control.test"
+	cfg.ControlTLSCAFile = "data/certs/control-ca.crt"
+	cfg.ControlTLSCertFile = "data/certs/control.crt"
+	cfg.ControlTLSKeyFile = "data/certs/control.key"
+	configPath := filepath.Join(deploymentRoot, config.DefaultServerConfigPath)
+	content, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath, content, 0o644); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func adminMainCopyFile(t *testing.T, sourcePath string, destPath string) {

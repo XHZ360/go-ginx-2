@@ -170,7 +170,13 @@ func TestClientJoinFlowValidatesCAFileAndDisplaysTokenOnce(t *testing.T) {
 	}
 	m := newModel(context.Background(), backend, "actor-1")
 	m.openClientJoinForm()
+	if m.form.Fields[2].Input.Value() != "http://127.0.0.1:8080/api/client/enroll" || m.form.Fields[3].Input.Value() != "127.0.0.1:8443" || m.form.Fields[4].Input.Value() != "127.0.0.1:9443" {
+		t.Fatalf("expected join defaults in form, got enrollment=%q server=%q tls=%q", m.form.Fields[2].Input.Value(), m.form.Fields[3].Input.Value(), m.form.Fields[4].Input.Value())
+	}
 	m.form.Fields[1].Input.SetValue("home")
+	m.form.Fields[2].Input.SetValue("http://edited.example.com:8080/api/client/enroll")
+	m.form.Fields[3].Input.SetValue("edited.example.com:8443")
+	m.form.Fields[4].Input.SetValue("edited.example.com:9443")
 
 	updated, _ := m.submitForm()
 	m = updated.(model)
@@ -196,6 +202,9 @@ func TestClientJoinFlowValidatesCAFileAndDisplaysTokenOnce(t *testing.T) {
 	m = updated.(model)
 	if backend.createJoinCalls != 1 {
 		t.Fatalf("expected join create call, got %d", backend.createJoinCalls)
+	}
+	if backend.createJoinInput.EnrollmentURL != "http://edited.example.com:8080/api/client/enroll" || backend.createJoinInput.ServerAddress != "edited.example.com:8443" || backend.createJoinInput.ServerTLSAddress != "edited.example.com:9443" {
+		t.Fatalf("expected edited join defaults to be submitted, got %+v", backend.createJoinInput)
 	}
 	if !strings.Contains(m.result.Body, "join-token") || !strings.Contains(m.result.Body, `.\bin\goginx-admin client-join-command -client client-join-1`) || !strings.Contains(m.result.Body, "重复查看") {
 		t.Fatalf("expected reviewable token result, got %q", m.result.Body)
@@ -241,6 +250,7 @@ type tuiFakeBackend struct {
 	createClientErr    error
 
 	createJoinCalls  int
+	createJoinInput  admin.CreateClientJoinInput
 	createJoinResult admin.CreateClientJoinResult
 	createJoinErr    error
 
@@ -305,8 +315,9 @@ func (b *tuiFakeBackend) CreateClientWithCredential(_ context.Context, input adm
 	return admin.CreateClientResult{Client: domain.Client{ID: "created-client", UserID: input.UserID, Name: input.Name}, Credential: credential}, nil
 }
 
-func (b *tuiFakeBackend) CreateClientJoin(context.Context, admin.CreateClientJoinInput) (admin.CreateClientJoinResult, error) {
+func (b *tuiFakeBackend) CreateClientJoin(_ context.Context, input admin.CreateClientJoinInput) (admin.CreateClientJoinResult, error) {
 	b.createJoinCalls++
+	b.createJoinInput = input
 	if b.createJoinErr != nil {
 		return admin.CreateClientJoinResult{}, b.createJoinErr
 	}

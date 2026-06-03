@@ -57,7 +57,13 @@ You can generate it from the admin UI Clients page with `Create join token`, or 
 ./.tmp/goginx-admin.exe create-client-join -id client-1 -user admin-1 -name home
 ```
 
-During server startup, the server confirms a default join service host from `join_service_host`, the control listener host, a local interface address, or a loopback fallback. The startup log prints the confirmed host, source, and default control addresses. Set `GOGINX_JOIN_SERVICE_HOST` or `join_service_host` when clients must use a public DNS name or load-balancer address instead of the inferred host.
+During server startup, the server confirms a default join service host from `join_service_host`, the control listener host, a local interface address, or a loopback fallback. The startup log prints the confirmed host, source, and default control addresses. Admin API, `goginx-admin create-client-join`, `goginx-admin client-join-command`, and `goginx-admin tui` use the same default join resolution when join fields are not explicitly provided. Set `GOGINX_JOIN_SERVICE_HOST` or `join_service_host` when clients must use a public DNS name or load-balancer address instead of a local fallback.
+
+For explicit server config deployments, pass the same config to admin join commands:
+
+```powershell
+./.tmp/goginx-admin.exe create-client-join -server-config config/server.json -id client-1 -user admin-1 -name home
+```
 
 On the client host:
 
@@ -68,7 +74,7 @@ On the client host:
 
 The join command redeems the token through `/api/client/enroll`, writes `data/client-state.json`, writes `data/certs/server-ca.crt`, and subsequent client runs use that managed state. By default these paths are under the deployment root derived from the `goginx-client` binary location; when the binary is under `bin/`, the deployment root is the parent of `bin/`.
 
-Managed startup accepts environment overrides for file-free deployments that need non-default ports, paths, or join defaults, including `GOGINX_ADMIN_LISTEN`, `GOGINX_CONTROL_QUIC_LISTEN`, `GOGINX_CONTROL_TLS_LISTEN`, `GOGINX_JOIN_SERVICE_HOST`, `GOGINX_HTTP_ENTRY_LISTEN`, `GOGINX_SQLITE_PATH`, `GOGINX_DATA_DIR`, and `GOGINX_CERTIFICATE_DIR`.
+Managed startup accepts environment overrides for file-free deployments that need non-default ports, paths, or join defaults, including `GOGINX_ADMIN_LISTEN`, `GOGINX_CONTROL_QUIC_LISTEN`, `GOGINX_CONTROL_TLS_LISTEN`, `GOGINX_JOIN_SERVICE_HOST`, `GOGINX_HTTP_ENTRY_LISTEN`, `GOGINX_SQLITE_PATH`, `GOGINX_DATA_DIR`, and `GOGINX_CERTIFICATE_DIR`. Treat `127.0.0.1` as a local development or last-resort fallback; cross-host joins should use a reachable DNS name or IP through `GOGINX_JOIN_SERVICE_HOST`, `join_service_host`, `-server-config`, or explicit join command flags.
 
 ## Optional Server Config
 

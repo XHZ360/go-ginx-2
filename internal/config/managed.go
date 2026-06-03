@@ -22,7 +22,20 @@ const (
 	DefaultClientStatePath  = "data/client-state.json"
 	DefaultClientConfigPath = "config/client.json"
 	DefaultClientCAFile     = "data/certs/server-ca.crt"
+	DefaultServerConfigPath = "config/server.json"
 )
+
+type JoinServiceDefaultsOptions struct {
+	Root             string
+	ServerConfigPath string
+}
+
+type JoinServiceDefaultsResult struct {
+	Defaults   JoinServiceDefaults
+	Server     Server
+	ConfigPath string
+	Source     string
+}
 
 func LoadManagedServer() (Server, error) {
 	return LoadManagedServerAtRoot("")
@@ -37,6 +50,50 @@ func LoadManagedServerAtRoot(root string) (Server, error) {
 		return Server{}, err
 	}
 	return cfg, cfg.Validate()
+}
+
+func LoadJoinServiceDefaults(options JoinServiceDefaultsOptions) (JoinServiceDefaultsResult, error) {
+	cfg := DefaultServer()
+	cfg.AdminEnabled = true
+	source := "managed_defaults"
+	configPath := ""
+	if options.ServerConfigPath != "" {
+		resolvedPath := resolveServerConfigPath(options.Root, options.ServerConfigPath)
+		loaded, err := LoadServer(resolvedPath)
+		if err != nil {
+			return JoinServiceDefaultsResult{}, err
+		}
+		cfg = loaded
+		configPath = resolvedPath
+		source = "server_config"
+	} else if options.Root != "" {
+		resolvedPath := deploypath.Resolve(options.Root, DefaultServerConfigPath)
+		if fileExists(resolvedPath) {
+			loaded, err := LoadServer(resolvedPath)
+			if err != nil {
+				return JoinServiceDefaultsResult{}, err
+			}
+			cfg = loaded
+			configPath = resolvedPath
+			source = "deployment_server_config"
+		}
+	}
+	if options.ServerConfigPath == "" {
+		applyManagedServerEnv(&cfg)
+	}
+	ResolveServerPaths(&cfg, options.Root)
+	defaults, err := ConfirmJoinServiceDefaults(cfg)
+	if err != nil {
+		return JoinServiceDefaultsResult{}, err
+	}
+	return JoinServiceDefaultsResult{Defaults: defaults, Server: cfg, ConfigPath: configPath, Source: source}, nil
+}
+
+func resolveServerConfigPath(root string, path string) string {
+	if _, err := os.Stat(path); err == nil {
+		return path
+	}
+	return deploypath.Resolve(root, path)
 }
 
 func ResolveServerPaths(cfg *Server, root string) {

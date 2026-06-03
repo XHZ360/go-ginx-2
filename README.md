@@ -85,9 +85,15 @@ $env:CGO_ENABLED="0"
 token="$(./bin/goginx-admin create-client-join -id client-1 -user admin-1 -name home)"
 ```
 
-服务端启动时会确认一个默认 join 服务域名或 IP，并在日志中显示 `join_service_host`、来源和默认控制通道地址。未显式填写地址时，管理 API 生成的 join token 会使用该默认值；CLI 默认使用本机部署常用的 `127.0.0.1`，远程客户端场景应按下例覆盖。
+服务端启动时会确认一个默认 join 服务域名或 IP，并在日志中显示 `join_service_host`、来源和默认控制通道地址。未显式填写地址时，管理 API、`goginx-admin create-client-join`、`goginx-admin client-join-command` 和 TUI 都会使用同一套默认 join 参数解析规则：显式 `-server-config`、部署根 `config/server.json`、`GOGINX_JOIN_SERVICE_HOST` 等环境覆盖、managed 默认值和本地兜底。远程客户端场景推荐配置 `join_service_host` 或 `GOGINX_JOIN_SERVICE_HOST`，不要把本地兜底地址当作公网默认值。
 
-如果客户端不在本机，需要显式指定外部可访问地址，例如：
+如果客户端不在本机，可以先配置默认服务地址：
+
+```bash
+export GOGINX_JOIN_SERVICE_HOST="control.example.com"
+```
+
+也可以在单次创建 token 时显式指定外部可访问地址，例如：
 
 ```bash
 token="$(./bin/goginx-admin create-client-join \
@@ -98,6 +104,17 @@ token="$(./bin/goginx-admin create-client-join \
   -server-address "control.example.com:8443" \
   -server-tls-address "control.example.com:9443" \
   -server-name "go-ginx-control.local"
+)"
+```
+
+如果使用显式 server 配置文件生成 join token，可把配置路径交给 admin CLI：
+
+```bash
+token="$(./bin/goginx-admin create-client-join \
+  -server-config config/server.json \
+  -id client-1 \
+  -user admin-1 \
+  -name home
 )"
 ```
 

@@ -1,9 +1,7 @@
 ## Purpose
 
 定义客户端/服务端控制通道契约，覆盖安全传输、客户端认证、服务端证书校验、代理快照下发、心跳/会话存活、最新会话路由、TCP+TLS 回退代理子流、客户端重连退避与监听器重启恢复，并显式跟踪事件重放和配置版本协调等剩余恢复缺口。
-
 ## Requirements
-
 ### Requirement: Secure control transport baseline
 系统 MUST 通过 QUIC 和 TCP+TLS 提供已认证、加密的客户端/服务端控制通道。TCP+TLS MUST 支持控制认证、代理快照下发、心跳，以及在回退连接上的分帧代理子流。
 
@@ -82,11 +80,15 @@
 - **THEN** 客户端 join 仍被拒绝
 
 ### Requirement: Join material default service address
-系统 MUST 在生成客户端 join/enrollment 材料时，默认使用服务端配置和启动阶段确认的服务域名或 IP 作为客户端连接服务端的地址来源，并且显式输入 MUST 能覆盖该默认值。
+系统 MUST 在生成客户端 join/enrollment 材料时，默认使用服务端配置、环境覆盖和启动阶段确认的服务域名或 IP 作为客户端连接服务端的地址来源，并且显式输入 MUST 能覆盖该默认值。该默认行为 MUST 覆盖 Admin API、admin CLI 和 TUI 等所有受支持的 join 材料生成入口。
 
 #### Scenario: Join material uses confirmed service address by default
-- **WHEN** 已授权管理员生成客户端 join/enrollment 材料，且请求未显式提供服务端控制通道地址
-- **THEN** 系统把服务端启动时确认的默认服务域名或 IP 组合为 join 材料中的默认 `serverAddress`、相关 TLS 地址和 enrollment URL 地址来源
+- **WHEN** 已授权管理员通过任一受支持入口生成客户端 join/enrollment 材料，且请求未显式提供服务端控制通道地址
+- **THEN** 系统把服务端配置、环境覆盖或启动时确认的默认服务域名或 IP 组合为 join 材料中的默认 `serverAddress`、相关 TLS 地址和 enrollment URL 地址来源
+
+#### Scenario: Admin CLI and TUI use the same default source
+- **WHEN** 操作者通过 `goginx-admin create-client-join`、`goginx-admin client-join-command` 或 `goginx-admin tui` 生成或查看 join 材料，且未显式覆盖 join 参数
+- **THEN** 系统使用与 server 配置加载兼容的默认 join 参数解析结果，而不是固定使用本机回环地址
 
 #### Scenario: Explicit join address overrides confirmed default
 - **WHEN** 已授权管理员生成客户端 join/enrollment 材料，并显式提供服务端地址、TLS 地址、服务端名称或 enrollment URL

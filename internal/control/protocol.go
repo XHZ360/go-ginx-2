@@ -230,29 +230,38 @@ func ReadDatagramFrame(r io.Reader) ([]byte, error) {
 
 func DecodePayload[T any](envelope Envelope) (T, error) {
 	var payload T
-	if len(envelope.Payload) == 0 {
-		return payload, errors.New("message payload is required")
-	}
 	switch target := any(&payload).(type) {
 	case *AuthRequest:
+		if len(envelope.Payload) == 0 {
+			return payload, errors.New("message payload is required")
+		}
 		var message controlpb.AuthRequest
 		if err := proto.Unmarshal(envelope.Payload, &message); err != nil {
 			return payload, err
 		}
 		*target = authRequestFromProto(&message)
 	case *AuthResponse:
+		if len(envelope.Payload) == 0 {
+			return payload, errors.New("message payload is required")
+		}
 		var message controlpb.AuthResponse
 		if err := proto.Unmarshal(envelope.Payload, &message); err != nil {
 			return payload, err
 		}
 		*target = authResponseFromProto(&message)
 	case *Heartbeat:
+		if len(envelope.Payload) == 0 {
+			return payload, errors.New("message payload is required")
+		}
 		var message controlpb.Heartbeat
 		if err := proto.Unmarshal(envelope.Payload, &message); err != nil {
 			return payload, err
 		}
 		*target = heartbeatFromProto(&message)
 	case *OpenStream:
+		if len(envelope.Payload) == 0 {
+			return payload, errors.New("message payload is required")
+		}
 		var message controlpb.OpenStream
 		if err := proto.Unmarshal(envelope.Payload, &message); err != nil {
 			return payload, err

@@ -124,6 +124,24 @@ func TestProxySnapshotRoundTrip(t *testing.T) {
 	}
 }
 
+func TestEmptyProxySnapshotRoundTrip(t *testing.T) {
+	var buffer bytes.Buffer
+	if err := WriteMessage(&buffer, MessageProxySnapshot, ProxySnapshot{}); err != nil {
+		t.Fatalf("write empty snapshot: %v", err)
+	}
+	envelope, err := ReadMessage(&buffer)
+	if err != nil {
+		t.Fatalf("read empty snapshot: %v", err)
+	}
+	decoded, err := DecodePayload[ProxySnapshot](envelope)
+	if err != nil {
+		t.Fatalf("decode empty snapshot: %v", err)
+	}
+	if decoded.Version != 0 || len(decoded.Proxies) != 0 {
+		t.Fatalf("unexpected empty snapshot: %+v", decoded)
+	}
+}
+
 func TestMuxFrameRoundTrip(t *testing.T) {
 	var buffer bytes.Buffer
 	frame := MuxFrame{StreamID: 7, Type: MuxFrameData, Payload: []byte("hello")}

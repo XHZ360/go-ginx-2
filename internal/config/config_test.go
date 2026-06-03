@@ -3,6 +3,7 @@ package config
 import (
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -120,6 +121,106 @@ func TestConfirmJoinServiceDefaultsInfersConfiguredHost(t *testing.T) {
 	}
 	if defaults.ServerAddress != "control.example.com:18443" || defaults.ServerTLSAddress != "control.example.com:19443" {
 		t.Fatalf("unexpected inferred addresses: %+v", defaults)
+	}
+}
+
+func TestLoadJoinServiceDefaultsUsesExplicitServerConfig(t *testing.T) {
+	root := t.TempDir()
+	configPath := filepath.Join(root, DefaultServerConfigPath)
+	cfg := DefaultServer()
+	cfg.JoinServiceHost = "server.example.com"
+	cfg.ControlQUICListen = ":18443"
+	cfg.ControlTLSListen = ":19443"
+	cfg.AdminListen = ":18080"
+	cfg.ControlTLSServerName = "control.example.test"
+	cfg.ControlTLSCAFile = "data/certs/custom-ca.crt"
+	writeServerConfig(t, configPath, cfg)
+
+	result, err := LoadJoinServiceDefaults(JoinServiceDefaultsOptions{Root: root, ServerConfigPath: DefaultServerConfigPath})
+	if err != nil {
+		t.Fatalf("load join defaults from explicit server config: %v", err)
+	}
+	if result.Source != "server_config" || result.ConfigPath != configPath {
+		t.Fatalf("unexpected source: %+v", result)
+	}
+	if result.Defaults.ServerAddress != "server.example.com:18443" || result.Defaults.ServerTLSAddress != "server.example.com:19443" {
+		t.Fatalf("unexpected join defaults: %+v", result.Defaults)
+	}
+	if result.Defaults.EnrollmentURL != "http://server.example.com:18080/api/client/enroll" || result.Defaults.ServerName != "control.example.test" {
+		t.Fatalf("unexpected enrollment or server name: %+v", result.Defaults)
+	}
+	if result.Defaults.ServerCAFile != filepath.Join(root, "data", "certs", "custom-ca.crt") || result.Server.SQLitePath != filepath.Join(root, "data", "go-ginx.db") {
+		t.Fatalf("expected deployment-root paths, got defaults=%+v server=%+v", result.Defaults, result.Server)
+	}
+}
+
+func TestLoadJoinServiceDefaultsUsesDeploymentServerConfig(t *testing.T) {
+	root := t.TempDir()
+	configPath := filepath.Join(root, DefaultServerConfigPath)
+	cfg := DefaultServer()
+	cfg.JoinServiceHost = "deploy.example.com"
+	cfg.ControlQUICListen = ":28443"
+	cfg.ControlTLSListen = ":29443"
+	cfg.AdminListen = ":28080"
+	writeServerConfig(t, configPath, cfg)
+
+	result, err := LoadJoinServiceDefaults(JoinServiceDefaultsOptions{Root: root})
+	if err != nil {
+		t.Fatalf("load join defaults from deployment server config: %v", err)
+	}
+	if result.Source != "deployment_server_config" || result.ConfigPath != configPath {
+		t.Fatalf("unexpected source: %+v", result)
+	}
+	if result.Defaults.ServerAddress != "deploy.example.com:28443" || result.Defaults.ServerTLSAddress != "deploy.example.com:29443" || result.Defaults.EnrollmentURL != "http://deploy.example.com:28080/api/client/enroll" {
+		t.Fatalf("unexpected deployment defaults: %+v", result.Defaults)
+	}
+}
+
+func TestLoadJoinServiceDefaultsUsesEnvironmentOverrides(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("GOGINX_JOIN_SERVICE_HOST", "join.example.com")
+	t.Setenv("GOGINX_ADMIN_LISTEN", ":38080")
+	t.Setenv("GOGINX_CONTROL_QUIC_LISTEN", ":38443")
+	t.Setenv("GOGINX_CONTROL_TLS_LISTEN", ":39443")
+	t.Setenv("GOGINX_CONTROL_TLS_SERVER_NAME", "join-control.example.com")
+	t.Setenv("GOGINX_CONTROL_TLS_CA_FILE", "data/certs/env-ca.crt")
+	t.Setenv("GOGINX_SQLITE_PATH", "data/custom.db")
+
+	result, err := LoadJoinServiceDefaults(JoinServiceDefaultsOptions{Root: root})
+	if err != nil {
+		t.Fatalf("load join defaults from env: %v", err)
+	}
+	if result.Source != "managed_defaults" {
+		t.Fatalf("unexpected source: %+v", result)
+	}
+	if result.Defaults.ServerAddress != "join.example.com:38443" || result.Defaults.ServerTLSAddress != "join.example.com:39443" || result.Defaults.EnrollmentURL != "http://join.example.com:38080/api/client/enroll" {
+		t.Fatalf("unexpected env defaults: %+v", result.Defaults)
+	}
+	if result.Defaults.ServerName != "join-control.example.com" || result.Defaults.ServerCAFile != filepath.Join(root, "data", "certs", "env-ca.crt") || result.Server.SQLitePath != filepath.Join(root, "data", "custom.db") {
+		t.Fatalf("expected env defaults and paths, got defaults=%+v server=%+v", result.Defaults, result.Server)
+	}
+}
+
+func TestLoadJoinServiceDefaultsRejectsInvalidEnvironmentHost(t *testing.T) {
+	t.Setenv("GOGINX_JOIN_SERVICE_HOST", "http://server.example.com:8443/path")
+
+	if _, err := LoadJoinServiceDefaults(JoinServiceDefaultsOptions{Root: t.TempDir()}); err == nil {
+		t.Fatal("expected invalid environment join service host error")
+	}
+}
+
+func TestLoadJoinServiceDefaultsKeepsLocalFallback(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("GOGINX_CONTROL_QUIC_LISTEN", "127.0.0.1:18443")
+	t.Setenv("GOGINX_CONTROL_TLS_LISTEN", "")
+	t.Setenv("GOGINX_ADMIN_LISTEN", "127.0.0.1:18080")
+
+	result, err := LoadJoinServiceDefaults(JoinServiceDefaultsOptions{Root: root})
+	if err != nil {
+		t.Fatalf("load local join defaults: %v", err)
+	}
+	if result.Defaults.Source != "control_quic_listen" || result.Defaults.ServerAddress != "127.0.0.1:18443" || result.Defaults.EnrollmentURL != "http://127.0.0.1:18080/api/client/enroll" {
+		t.Fatalf("unexpected local defaults: %+v", result.Defaults)
 	}
 }
 
@@ -266,5 +367,19 @@ func TestLoadManagedServerAppliesEnvironmentOverrides(t *testing.T) {
 	}
 	if _, err := os.Stat(cfg.ControlTLSCAFile); err != nil {
 		t.Fatalf("expected generated ca file: %v", err)
+	}
+}
+
+func writeServerConfig(t *testing.T, path string, cfg Server) {
+	t.Helper()
+	content, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, content, 0o600); err != nil {
+		t.Fatal(err)
 	}
 }

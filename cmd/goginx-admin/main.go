@@ -162,6 +162,7 @@ func run(args []string) error {
 }
 
 func runTUI(flags *flag.FlagSet, args []string) error {
+	serverConfigPath := flags.String("server-config", "", "server config path for join defaults")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -172,10 +173,11 @@ func runTUI(flags *flag.FlagSet, args []string) error {
 		return err
 	}
 	defer closeStore()
-	joinDefaults, err := defaultJoinServiceDefaults()
+	joinDefaultsResult, err := defaultJoinServiceDefaults(*serverConfigPath)
 	if err != nil {
 		return err
 	}
+	joinDefaults := joinDefaultsResult.Defaults
 	service.DefaultJoin = joinDefaults
 	backend := admintui.LocalBackend{
 		Commands:          service,
@@ -185,7 +187,7 @@ func runTUI(flags *flag.FlagSet, args []string) error {
 	return runAdminTUI(context.Background(), admintui.RunOptions{
 		Backend:                   backend,
 		ActorID:                   actorID,
-		ClientJoinCommandTemplate: adminClientJoinCommandTemplate(dbPath),
+		ClientJoinCommandTemplate: adminClientJoinCommandTemplate(dbPath, explicitServerConfigPathForCommand(*serverConfigPath, joinDefaultsResult.ConfigPath)),
 		RequireTTY:                true,
 	})
 }
@@ -280,22 +282,24 @@ func existingAdminID(ctx context.Context, service admin.Service, id string, user
 }
 
 func createClientJoin(flags *flag.FlagSet, args []string) error {
-	joinDefaults, err := defaultJoinServiceDefaults()
-	if err != nil {
-		return err
-	}
+	serverConfigPath := flags.String("server-config", "", "server config path for join defaults")
 	id := flags.String("id", "", "client ID")
 	userID := flags.String("user", "", "owner user ID")
 	name := flags.String("name", "", "client display name")
-	enrollmentURL := flags.String("enrollment-url", joinDefaults.EnrollmentURL, "client enrollment URL")
-	serverAddress := flags.String("server-address", joinDefaults.ServerAddress, "control QUIC server address")
-	serverTLSAddress := flags.String("server-tls-address", joinDefaults.ServerTLSAddress, "control TCP+TLS server address")
-	serverName := flags.String("server-name", joinDefaults.ServerName, "control TLS server name")
-	serverCAFile := flags.String("server-ca-file", joinDefaults.ServerCAFile, "control TLS CA file")
+	enrollmentURL := flags.String("enrollment-url", "", "client enrollment URL")
+	serverAddress := flags.String("server-address", "", "control QUIC server address")
+	serverTLSAddress := flags.String("server-tls-address", "", "control TCP+TLS server address")
+	serverName := flags.String("server-name", "", "control TLS server name")
+	serverCAFile := flags.String("server-ca-file", "", "control TLS CA file")
 	ttl := flags.Duration("ttl", time.Hour, "join token lifetime")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
+	joinDefaultsResult, err := defaultJoinServiceDefaults(*serverConfigPath)
+	if err != nil {
+		return err
+	}
+	applyJoinDefaults(enrollmentURL, serverAddress, serverTLSAddress, serverName, serverCAFile, joinDefaultsResult.Defaults)
 	dbPath := deploymentRelativePath(flags.Lookup("db").Value.String())
 	actorID := flags.Lookup("actor").Value.String()
 	*serverCAFile = deploymentRelativePath(*serverCAFile)
@@ -324,6 +328,7 @@ func createClientJoin(flags *flag.FlagSet, args []string) error {
 }
 
 func clientJoinCommand(flags *flag.FlagSet, args []string) error {
+	serverConfigPath := flags.String("server-config", "", "server config path for join defaults")
 	clientID := flags.String("client", "", "client ID")
 	if err := flags.Parse(args); err != nil {
 		return err
@@ -335,11 +340,11 @@ func clientJoinCommand(flags *flag.FlagSet, args []string) error {
 		return err
 	}
 	defer closeStore()
-	joinDefaults, err := defaultJoinServiceDefaults()
+	joinDefaultsResult, err := defaultJoinServiceDefaults(*serverConfigPath)
 	if err != nil {
 		return err
 	}
-	service.DefaultJoin = joinDefaults
+	service.DefaultJoin = joinDefaultsResult.Defaults
 	result, err := service.ReviewClientJoinToken(context.Background(), *clientID, actorID)
 	if err != nil {
 		return err
@@ -352,8 +357,13 @@ func clientJoinRunCommand(token string) string {
 	return fmt.Sprintf("goginx-client join %s", token)
 }
 
-func adminClientJoinCommandTemplate(dbPath string) string {
-	return fmt.Sprintf("%s client-join-command -db %s -client {client}", shellQuote(adminExecutableCommandPath()), shellQuote(dbPath))
+func adminClientJoinCommandTemplate(dbPath string, serverConfigPath string) string {
+	parts := []string{shellQuote(adminExecutableCommandPath()), "client-join-command", "-db", shellQuote(dbPath)}
+	if strings.TrimSpace(serverConfigPath) != "" {
+		parts = append(parts, "-server-config", shellQuote(serverConfigPath))
+	}
+	parts = append(parts, "-client", "{client}")
+	return strings.Join(parts, " ")
 }
 
 func adminExecutableCommandPath() string {
@@ -391,15 +401,44 @@ func shellQuote(value string) string {
 	return value
 }
 
-func defaultJoinServiceDefaults() (config.JoinServiceDefaults, error) {
-	cfg := config.DefaultServer()
-	cfg.JoinServiceHost = "127.0.0.1"
-	defaults, err := config.ConfirmJoinServiceDefaults(cfg)
+func defaultJoinServiceDefaults(serverConfigPath string) (config.JoinServiceDefaultsResult, error) {
+	root, err := deploymentRoot()
 	if err != nil {
-		return config.JoinServiceDefaults{}, err
+		root = ""
 	}
-	defaults.ServerCAFile = deploymentRelativePath(defaults.ServerCAFile)
-	return defaults, nil
+	return config.LoadJoinServiceDefaults(config.JoinServiceDefaultsOptions{Root: root, ServerConfigPath: serverConfigPath})
+}
+
+func applyJoinDefaults(enrollmentURL *string, serverAddress *string, serverTLSAddress *string, serverName *string, serverCAFile *string, defaults config.JoinServiceDefaults) {
+	if strings.TrimSpace(*enrollmentURL) == "" {
+		*enrollmentURL = defaults.EnrollmentURL
+	}
+	if strings.TrimSpace(*serverAddress) == "" {
+		*serverAddress = defaults.ServerAddress
+	}
+	if strings.TrimSpace(*serverTLSAddress) == "" {
+		*serverTLSAddress = defaults.ServerTLSAddress
+	}
+	if strings.TrimSpace(*serverName) == "" {
+		*serverName = defaults.ServerName
+	}
+	if strings.TrimSpace(*serverCAFile) == "" {
+		*serverCAFile = defaults.ServerCAFile
+	}
+}
+
+func explicitServerConfigPathForCommand(requestedPath string, resolvedPath string) string {
+	if strings.TrimSpace(requestedPath) == "" {
+		return ""
+	}
+	path := resolvedPath
+	if strings.TrimSpace(path) == "" {
+		path = requestedPath
+	}
+	if absolute, err := filepath.Abs(path); err == nil {
+		return absolute
+	}
+	return path
 }
 
 func manageCertificate(flags *flag.FlagSet, args []string, action string) error {
