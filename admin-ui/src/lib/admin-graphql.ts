@@ -1,8 +1,56 @@
+import adminGraphQLDocument from '../graphql/admin.graphql?raw';
+import type {
+  AuditQuery,
+  AuditQueryVariables,
+  CertificatesQuery,
+  CertificatesQueryVariables,
+  ClientQuery,
+  ClientQueryVariables,
+  ClientsQuery,
+  ClientsQueryVariables,
+  CreateClientJoinMutation,
+  CreateClientJoinMutationVariables,
+  CreateClientMutation,
+  CreateClientMutationVariables,
+  CreateProxyMutation,
+  CreateProxyMutationVariables,
+  CreateUserMutation,
+  CreateUserMutationVariables,
+  DashboardQuery,
+  DeleteClientMutation,
+  DeleteClientMutationVariables,
+  DeleteProxyMutation,
+  DeleteProxyMutationVariables,
+  DisableProxyMutation,
+  DisableProxyMutationVariables,
+  DisableUserMutation,
+  DisableUserMutationVariables,
+  EnableProxyMutation,
+  EnableProxyMutationVariables,
+  IssueManagedCertificateMutation,
+  IssueManagedCertificateMutationVariables,
+  ProxiesQuery,
+  ProxiesQueryVariables,
+  ProxyEntryOptionsQuery,
+  ProxyQuery,
+  ProxyQueryVariables,
+  RenewManagedCertificateMutation,
+  RenewManagedCertificateMutationVariables,
+  RotateClientCredentialMutation,
+  RotateClientCredentialMutationVariables,
+  SetUserPasswordMutation,
+  SetUserPasswordMutationVariables,
+  UpdateProxyMutation,
+  UpdateProxyMutationVariables,
+  UserQuery,
+  UserQueryVariables,
+  UsersQuery,
+  UsersQueryVariables,
+} from '../graphql/generated';
 import { graphqlClient } from './api';
 import type {
   AuditEvent,
   Client,
-  ClientDetail,
   DashboardSummary,
   ManagedCertificate,
   PageInfo,
@@ -53,13 +101,6 @@ export type AuditFilter = {
   result?: string;
 };
 
-type UsersPayload = { users: PageResult<User> };
-type ClientsPayload = { clients: PageResult<Client> };
-type ProxiesPayload = { proxies: PageResult<ProxyRecord> };
-type ProxyEntryOptionsPayload = { proxyEntryOptions: ProxyEntryOptions };
-type CertificatesPayload = { certificates: PageResult<ManagedCertificate> };
-type AuditPayload = { audit: PageResult<AuditEvent> };
-type ClientMutationPayload = { clientId: string; credential?: string | null; token?: string | null; client: ClientDetail };
 type ProxyConfigInput = {
   entryBindHost?: string;
   entryHost?: string;
@@ -69,6 +110,7 @@ type ProxyConfigInput = {
   certFile?: string;
   keyFile?: string;
 };
+
 export type ClientJoinInput = {
   userId: string;
   name: string;
@@ -80,8 +122,27 @@ export type ClientJoinInput = {
   ttlSeconds?: number;
 };
 
-const PAGE_INFO_FRAGMENT = `pageInfo { page pageSize totalCount totalPages hasNext hasPrev }`;
-const PROXY_CONFIG_FRAGMENT = `config { entryBindHost entryHost entryPort targetHost targetPort certFile keyFile }`;
+type RequestOptions<TVariables> = {
+  operationName: string;
+  variables?: TVariables;
+  mutation?: boolean;
+  csrfToken?: string;
+};
+
+function request<TData, TVariables>({
+  operationName,
+  variables,
+  mutation,
+  csrfToken,
+}: RequestOptions<TVariables>) {
+  return graphqlClient.request<TData>({
+    query: adminGraphQLDocument,
+    operationName,
+    variables,
+    mutation,
+    csrfToken,
+  });
+}
 
 function cleanObject<T extends Record<string, unknown>>(value: T): T {
   return Object.fromEntries(
@@ -94,512 +155,128 @@ function normalizePageResult<T>(result: { items: T[]; totalCount: number; pageIn
 }
 
 export async function queryDashboard() {
-  const data = await graphqlClient.request<{ dashboard: DashboardSummary }>({
-    query: `query Dashboard {
-      dashboard {
-        onlineClientCount
-        enabledProxyCount
-        activeTCPConnectionCount
-        cumulativeUploadBytes
-        cumulativeDownloadBytes
-        cumulativeTCPErrorCount
-        cumulativeUDPErrorCount
-        cumulativeHTTPErrorCount
-      }
-    }`,
-  });
-  return data.dashboard;
+  const data = await request<DashboardQuery, undefined>({ operationName: 'Dashboard' });
+  return data.dashboard satisfies DashboardSummary;
 }
 
 export async function queryUsers(input: ListInput<UserFilter>) {
-  const data = await graphqlClient.request<UsersPayload>({
-    query: `query Users($input: AdminUsersInput) {
-      users(input: $input) {
-        totalCount
-        ${PAGE_INFO_FRAGMENT}
-        items {
-          id
-          username
-          role
-          status
-          clientCount
-          proxyCount
-          uploadBytes
-          downloadBytes
-          lastActivityAt
-          hasPasswordHash
-          createdAt
-          updatedAt
-        }
-      }
-    }`,
-    variables: { input: cleanObject(input) },
-  });
-  return normalizePageResult(data.users);
+  const variables = { input: cleanObject(input) } satisfies UsersQueryVariables;
+  const data = await request<UsersQuery, UsersQueryVariables>({ operationName: 'Users', variables });
+  return normalizePageResult<User>(data.users);
 }
 
 export async function queryUser(id: string) {
-  const data = await graphqlClient.request<{ user: User }>({
-    query: `query User($id: String!) {
-      user(id: $id) {
-        id
-        username
-        role
-        status
-        clientCount
-        proxyCount
-        uploadBytes
-        downloadBytes
-        lastActivityAt
-        hasPasswordHash
-        createdAt
-        updatedAt
-      }
-    }`,
-    variables: { id },
-  });
-  return data.user;
+  const variables = { id } satisfies UserQueryVariables;
+  const data = await request<UserQuery, UserQueryVariables>({ operationName: 'User', variables });
+  return data.user satisfies User;
 }
 
 export async function queryClients(input: ListInput<ClientFilter>) {
-  const data = await graphqlClient.request<ClientsPayload>({
-    query: `query Clients($input: AdminClientsInput) {
-      clients(input: $input) {
-        totalCount
-        ${PAGE_INFO_FRAGMENT}
-        items {
-          id
-          userId
-          name
-          status
-          version
-          runtime {
-            online
-            protocol
-            connectedAt
-            lastHeartbeat
-            configVersion
-            activeProxies
-            activeStreams
-            uploadBytes
-            downloadBytes
-            errorSummary
-          }
-          lastOnlineAt
-          lastOfflineAt
-          createdAt
-          updatedAt
-        }
-      }
-    }`,
-    variables: { input: cleanObject(input) },
-  });
-  return normalizePageResult(data.clients);
+  const variables = { input: cleanObject(input) } satisfies ClientsQueryVariables;
+  const data = await request<ClientsQuery, ClientsQueryVariables>({ operationName: 'Clients', variables });
+  return normalizePageResult<Client>(data.clients);
 }
 
 export async function queryClient(id: string) {
-  const data = await graphqlClient.request<{ client: ClientDetail }>({
-    query: `query Client($id: String!) {
-      client(id: $id) {
-        id
-        userId
-        name
-        status
-        version
-        runtime {
-          online
-          protocol
-          connectedAt
-          lastHeartbeat
-          configVersion
-          activeProxies
-          activeStreams
-          uploadBytes
-          downloadBytes
-          errorSummary
-        }
-        lastOnlineAt
-        lastOfflineAt
-        managedProxies {
-          id
-          name
-          type
-          status
-          runtimeStatus
-          entryBindHost
-          entryHost
-          entryPort
-          targetHost
-          targetPort
-          activeTCPConnections
-        }
-        createdAt
-        updatedAt
-      }
-    }`,
-    variables: { id },
-  });
+  const variables = { id } satisfies ClientQueryVariables;
+  const data = await request<ClientQuery, ClientQueryVariables>({ operationName: 'Client', variables });
   return data.client;
 }
 
 export async function queryProxies(input: ListInput<ProxyFilter>) {
-  const data = await graphqlClient.request<ProxiesPayload>({
-    query: `query Proxies($input: AdminProxiesInput) {
-      proxies(input: $input) {
-        totalCount
-        ${PAGE_INFO_FRAGMENT}
-        items {
-          id
-          userId
-          clientId
-          name
-          type
-          status
-          description
-          runtimeStatus
-          activeTCPConnections
-          uploadBytes
-          downloadBytes
-          tcpErrorCount
-          udpErrorCount
-          httpErrorCount
-          ${PROXY_CONFIG_FRAGMENT}
-          certificate {
-            proxyId
-            certificateId
-            host
-            status
-            notAfter
-            lastIssuedAt
-            lastRenewedAt
-            lastError
-          }
-          createdAt
-          updatedAt
-        }
-      }
-    }`,
-    variables: { input: cleanObject(input) },
-  });
-  return normalizePageResult(data.proxies);
+  const variables = { input: cleanObject(input) } satisfies ProxiesQueryVariables;
+  const data = await request<ProxiesQuery, ProxiesQueryVariables>({ operationName: 'Proxies', variables });
+  return normalizePageResult<ProxyRecord>(data.proxies);
 }
 
 export async function queryProxy(id: string) {
-  const data = await graphqlClient.request<{ proxy: ProxyRecord }>({
-    query: `query Proxy($id: String!) {
-      proxy(id: $id) {
-        id
-        userId
-        clientId
-        name
-        type
-        status
-        description
-        runtimeStatus
-        activeTCPConnections
-        uploadBytes
-        downloadBytes
-        tcpErrorCount
-        udpErrorCount
-        httpErrorCount
-        ${PROXY_CONFIG_FRAGMENT}
-        certificate {
-          proxyId
-          certificateId
-          host
-          status
-          notAfter
-          lastIssuedAt
-          lastRenewedAt
-          lastError
-        }
-        createdAt
-        updatedAt
-      }
-    }`,
-    variables: { id },
-  });
-  return data.proxy;
+  const variables = { id } satisfies ProxyQueryVariables;
+  const data = await request<ProxyQuery, ProxyQueryVariables>({ operationName: 'Proxy', variables });
+  return data.proxy satisfies ProxyRecord;
 }
 
 export async function queryProxyEntryOptions() {
-  const data = await graphqlClient.request<ProxyEntryOptionsPayload>({
-    query: `query ProxyEntryOptions {
-      proxyEntryOptions {
-        tcpDefaultBindHost
-        httpDefaultBindHost
-        httpDefaultPort
-        httpsDefaultBindHost
-        httpsDefaultPort
-        hosts { value label isDefault }
-      }
-    }`,
-  });
-  return data.proxyEntryOptions;
+  const data = await request<ProxyEntryOptionsQuery, undefined>({ operationName: 'ProxyEntryOptions' });
+  return data.proxyEntryOptions satisfies ProxyEntryOptions;
 }
 
 export async function queryCertificates(input: ListInput<CertificateFilter>) {
-  const data = await graphqlClient.request<CertificatesPayload>({
-    query: `query Certificates($input: AdminCertificatesInput) {
-      certificates(input: $input) {
-        totalCount
-        ${PAGE_INFO_FRAGMENT}
-        items {
-          proxyId
-          certificateId
-          host
-          status
-          notAfter
-          lastIssuedAt
-          lastRenewedAt
-          lastError
-        }
-      }
-    }`,
-    variables: { input: cleanObject(input) },
-  });
-  return normalizePageResult(data.certificates);
+  const variables = { input: cleanObject(input) } satisfies CertificatesQueryVariables;
+  const data = await request<CertificatesQuery, CertificatesQueryVariables>({ operationName: 'Certificates', variables });
+  return normalizePageResult<ManagedCertificate>(data.certificates);
 }
 
 export async function queryAudit(input: ListInput<AuditFilter>) {
-  const data = await graphqlClient.request<AuditPayload>({
-    query: `query Audit($input: AdminAuditInput) {
-      audit(input: $input) {
-        totalCount
-        ${PAGE_INFO_FRAGMENT}
-        items {
-          id
-          actorType
-          actorId
-          resourceType
-          resourceId
-          action
-          result
-          createdAt
-        }
-      }
-    }`,
-    variables: { input: cleanObject(input) },
-  });
-  return normalizePageResult(data.audit);
+  const variables = { input: cleanObject(input) } satisfies AuditQueryVariables;
+  const data = await request<AuditQuery, AuditQueryVariables>({ operationName: 'Audit', variables });
+  return normalizePageResult<AuditEvent>(data.audit);
 }
 
 export function mutateCreateUser(csrfToken: string, input: { username: string; password: string; role: string }) {
-  return graphqlClient.request<{ createUser: { userId: string; status: string; user: User } }>({
-    query: `mutation CreateUser($input: AdminCreateUserInput!) {
-      createUser(input: $input) {
-        userId
-        status
-        user {
-          id
-          username
-          role
-          status
-          clientCount
-          proxyCount
-          uploadBytes
-          downloadBytes
-          lastActivityAt
-          hasPasswordHash
-          createdAt
-          updatedAt
-        }
-      }
-    }`,
-    variables: { input },
+  const variables = { input } satisfies CreateUserMutationVariables;
+  return request<CreateUserMutation, CreateUserMutationVariables>({
+    operationName: 'CreateUser',
+    variables,
     mutation: true,
     csrfToken,
   });
 }
 
 export function mutateDisableUser(csrfToken: string, id: string) {
-  return graphqlClient.request<{ disableUser: { userId: string; status: string; user: User } }>({
-    query: `mutation DisableUser($input: AdminUserIDInput!) {
-      disableUser(input: $input) {
-        userId
-        status
-        user { id status updatedAt username role clientCount proxyCount uploadBytes downloadBytes lastActivityAt hasPasswordHash createdAt updatedAt }
-      }
-    }`,
-    variables: { input: { id } },
+  const variables = { input: { id } } satisfies DisableUserMutationVariables;
+  return request<DisableUserMutation, DisableUserMutationVariables>({
+    operationName: 'DisableUser',
+    variables,
     mutation: true,
     csrfToken,
   });
 }
 
 export function mutateSetUserPassword(csrfToken: string, input: { id: string; password: string }) {
-  return graphqlClient.request<{ setUserPassword: { userId: string; status: string; user: User } }>({
-    query: `mutation SetUserPassword($input: AdminSetUserPasswordInput!) {
-      setUserPassword(input: $input) {
-        userId
-        status
-        user { id status updatedAt username role clientCount proxyCount uploadBytes downloadBytes lastActivityAt hasPasswordHash createdAt updatedAt }
-      }
-    }`,
-    variables: { input },
+  const variables = { input } satisfies SetUserPasswordMutationVariables;
+  return request<SetUserPasswordMutation, SetUserPasswordMutationVariables>({
+    operationName: 'SetUserPassword',
+    variables,
     mutation: true,
     csrfToken,
   });
 }
 
 export function mutateCreateClient(csrfToken: string, input: { userId: string; name: string; credential?: string }) {
-  return graphqlClient.request<{ createClient: ClientMutationPayload }>({
-    query: `mutation CreateClient($input: AdminCreateClientInput!) {
-      createClient(input: $input) {
-        clientId
-        credential
-        client {
-          id
-          userId
-          name
-          status
-          version
-          runtime {
-            online
-            protocol
-            connectedAt
-            lastHeartbeat
-            configVersion
-            activeProxies
-            activeStreams
-            uploadBytes
-            downloadBytes
-            errorSummary
-          }
-          lastOnlineAt
-          lastOfflineAt
-          managedProxies {
-            id
-            name
-            type
-          status
-          runtimeStatus
-          entryBindHost
-          entryHost
-            entryPort
-            targetHost
-            targetPort
-            activeTCPConnections
-          }
-          createdAt
-          updatedAt
-        }
-      }
-    }`,
-    variables: { input: cleanObject(input) },
+  const variables = { input: cleanObject(input) } satisfies CreateClientMutationVariables;
+  return request<CreateClientMutation, CreateClientMutationVariables>({
+    operationName: 'CreateClient',
+    variables,
     mutation: true,
     csrfToken,
   });
 }
 
 export function mutateCreateClientJoin(csrfToken: string, input: ClientJoinInput) {
-  return graphqlClient.request<{ createClientJoin: ClientMutationPayload }>({
-    query: `mutation CreateClientJoin($input: AdminCreateClientJoinInput!) {
-      createClientJoin(input: $input) {
-        clientId
-        token
-        client {
-          id
-          userId
-          name
-          status
-          version
-          runtime {
-            online
-            protocol
-            connectedAt
-            lastHeartbeat
-            configVersion
-            activeProxies
-            activeStreams
-            uploadBytes
-            downloadBytes
-            errorSummary
-          }
-          lastOnlineAt
-          lastOfflineAt
-          managedProxies {
-            id
-            name
-            type
-          status
-          runtimeStatus
-          entryBindHost
-          entryHost
-            entryPort
-            targetHost
-            targetPort
-            activeTCPConnections
-          }
-          createdAt
-          updatedAt
-        }
-      }
-    }`,
-    variables: { input: cleanObject(input) },
+  const variables = { input: cleanObject(input) } satisfies CreateClientJoinMutationVariables;
+  return request<CreateClientJoinMutation, CreateClientJoinMutationVariables>({
+    operationName: 'CreateClientJoin',
+    variables,
     mutation: true,
     csrfToken,
   });
 }
 
 export function mutateRotateClientCredential(csrfToken: string, id: string) {
-  return graphqlClient.request<{ rotateClientCredential: ClientMutationPayload }>({
-    query: `mutation RotateClientCredential($input: AdminUserIDInput!) {
-      rotateClientCredential(input: $input) {
-        clientId
-        credential
-        client {
-          id
-          userId
-          name
-          status
-          version
-          runtime {
-            online
-            protocol
-            connectedAt
-            lastHeartbeat
-            configVersion
-            activeProxies
-            activeStreams
-            uploadBytes
-            downloadBytes
-            errorSummary
-          }
-          lastOnlineAt
-          lastOfflineAt
-          managedProxies {
-            id
-            name
-            type
-          status
-          runtimeStatus
-          entryBindHost
-          entryHost
-            entryPort
-            targetHost
-            targetPort
-            activeTCPConnections
-          }
-          createdAt
-          updatedAt
-        }
-      }
-    }`,
-    variables: { input: { id } },
+  const variables = { input: { id } } satisfies RotateClientCredentialMutationVariables;
+  return request<RotateClientCredentialMutation, RotateClientCredentialMutationVariables>({
+    operationName: 'RotateClientCredential',
+    variables,
     mutation: true,
     csrfToken,
   });
 }
 
 export function mutateDeleteClient(csrfToken: string, id: string) {
-  return graphqlClient.request<{ deleteClient: { clientId: string; client?: ClientDetail | null } }>({
-    query: `mutation DeleteClient($input: AdminUserIDInput!) {
-      deleteClient(input: $input) {
-        clientId
-      }
-    }`,
-    variables: { input: { id } },
+  const variables = { input: { id } } satisfies DeleteClientMutationVariables;
+  return request<DeleteClientMutation, DeleteClientMutationVariables>({
+    operationName: 'DeleteClient',
+    variables,
     mutation: true,
     csrfToken,
   });
@@ -616,15 +293,10 @@ export function mutateCreateProxy(
     config: ProxyConfigInput;
   },
 ) {
-  return graphqlClient.request<{ createProxy: { proxyId: string; status: string; proxy: ProxyRecord } }>({
-    query: `mutation CreateProxy($input: AdminCreateProxyInput!) {
-      createProxy(input: $input) {
-        proxyId
-        status
-        proxy { id name type status runtimeStatus userId clientId description activeTCPConnections uploadBytes downloadBytes tcpErrorCount udpErrorCount httpErrorCount ${PROXY_CONFIG_FRAGMENT} certificate { proxyId certificateId host status notAfter lastIssuedAt lastRenewedAt lastError } createdAt updatedAt }
-      }
-    }`,
-    variables: { input },
+  const variables = { input } satisfies CreateProxyMutationVariables;
+  return request<CreateProxyMutation, CreateProxyMutationVariables>({
+    operationName: 'CreateProxy',
+    variables,
     mutation: true,
     csrfToken,
   });
@@ -640,107 +312,60 @@ export function mutateUpdateProxy(
     config: ProxyConfigInput;
   },
 ) {
-  return graphqlClient.request<{ updateProxy: { proxyId: string; status: string; proxy: ProxyRecord } }>({
-    query: `mutation UpdateProxy($input: AdminUpdateProxyInput!) {
-      updateProxy(input: $input) {
-        proxyId
-        status
-        proxy { id name type status runtimeStatus userId clientId description activeTCPConnections uploadBytes downloadBytes tcpErrorCount udpErrorCount httpErrorCount ${PROXY_CONFIG_FRAGMENT} certificate { proxyId certificateId host status notAfter lastIssuedAt lastRenewedAt lastError } createdAt updatedAt }
-      }
-    }`,
-    variables: { input },
+  const variables = { input } satisfies UpdateProxyMutationVariables;
+  return request<UpdateProxyMutation, UpdateProxyMutationVariables>({
+    operationName: 'UpdateProxy',
+    variables,
     mutation: true,
     csrfToken,
   });
 }
 
 export function mutateEnableProxy(csrfToken: string, id: string) {
-  return graphqlClient.request<{ enableProxy: { proxyId: string; status: string; proxy: ProxyRecord } }>({
-    query: `mutation EnableProxy($input: AdminUserIDInput!) {
-      enableProxy(input: $input) {
-        proxyId
-        status
-        proxy { id status runtimeStatus name type userId clientId description activeTCPConnections uploadBytes downloadBytes tcpErrorCount udpErrorCount httpErrorCount ${PROXY_CONFIG_FRAGMENT} certificate { proxyId certificateId host status notAfter lastIssuedAt lastRenewedAt lastError } createdAt updatedAt }
-      }
-    }`,
-    variables: { input: { id } },
+  const variables = { input: { id } } satisfies EnableProxyMutationVariables;
+  return request<EnableProxyMutation, EnableProxyMutationVariables>({
+    operationName: 'EnableProxy',
+    variables,
     mutation: true,
     csrfToken,
   });
 }
 
 export function mutateDisableProxy(csrfToken: string, id: string) {
-  return graphqlClient.request<{ disableProxy: { proxyId: string; status: string; proxy: ProxyRecord } }>({
-    query: `mutation DisableProxy($input: AdminUserIDInput!) {
-      disableProxy(input: $input) {
-        proxyId
-        status
-        proxy { id status runtimeStatus name type userId clientId description activeTCPConnections uploadBytes downloadBytes tcpErrorCount udpErrorCount httpErrorCount ${PROXY_CONFIG_FRAGMENT} certificate { proxyId certificateId host status notAfter lastIssuedAt lastRenewedAt lastError } createdAt updatedAt }
-      }
-    }`,
-    variables: { input: { id } },
+  const variables = { input: { id } } satisfies DisableProxyMutationVariables;
+  return request<DisableProxyMutation, DisableProxyMutationVariables>({
+    operationName: 'DisableProxy',
+    variables,
     mutation: true,
     csrfToken,
   });
 }
 
 export function mutateDeleteProxy(csrfToken: string, id: string) {
-  return graphqlClient.request<{ deleteProxy: { proxyId: string; status: string } }>({
-    query: `mutation DeleteProxy($input: AdminUserIDInput!) {
-      deleteProxy(input: $input) {
-        proxyId
-        status
-      }
-    }`,
-    variables: { input: { id } },
+  const variables = { input: { id } } satisfies DeleteProxyMutationVariables;
+  return request<DeleteProxyMutation, DeleteProxyMutationVariables>({
+    operationName: 'DeleteProxy',
+    variables,
     mutation: true,
     csrfToken,
   });
 }
 
 export function mutateIssueCertificate(csrfToken: string, proxyId: string) {
-  return graphqlClient.request<{ issueManagedCertificate: { proxyId: string; status: string; certificate: ManagedCertificate } }>({
-    query: `mutation IssueManagedCertificate($input: AdminCertificateMutationInput!) {
-      issueManagedCertificate(input: $input) {
-        proxyId
-        status
-        certificate {
-          proxyId
-          certificateId
-          host
-          status
-          notAfter
-          lastIssuedAt
-          lastRenewedAt
-          lastError
-        }
-      }
-    }`,
-    variables: { input: { proxyId } },
+  const variables = { input: { proxyId } } satisfies IssueManagedCertificateMutationVariables;
+  return request<IssueManagedCertificateMutation, IssueManagedCertificateMutationVariables>({
+    operationName: 'IssueManagedCertificate',
+    variables,
     mutation: true,
     csrfToken,
   });
 }
 
 export function mutateRenewCertificate(csrfToken: string, proxyId: string) {
-  return graphqlClient.request<{ renewManagedCertificate: { proxyId: string; status: string; certificate: ManagedCertificate } }>({
-    query: `mutation RenewManagedCertificate($input: AdminCertificateMutationInput!) {
-      renewManagedCertificate(input: $input) {
-        proxyId
-        status
-        certificate {
-          proxyId
-          certificateId
-          host
-          status
-          notAfter
-          lastIssuedAt
-          lastRenewedAt
-          lastError
-        }
-      }
-    }`,
-    variables: { input: { proxyId } },
+  const variables = { input: { proxyId } } satisfies RenewManagedCertificateMutationVariables;
+  return request<RenewManagedCertificateMutation, RenewManagedCertificateMutationVariables>({
+    operationName: 'RenewManagedCertificate',
+    variables,
     mutation: true,
     csrfToken,
   });

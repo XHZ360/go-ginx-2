@@ -120,26 +120,27 @@ function createFetchMock(options?: { createValidationFailure?: boolean; rotateFa
 
     const body = JSON.parse(String(init?.body ?? '{}')) as {
       query?: string;
+      operationName?: string;
       variables?: { input?: { filter?: { userId?: string }; id?: string; userId?: string; clientId?: string; name?: string; serverAddress?: string } };
     };
-    const query = body.query ?? '';
+    const operationName = body.operationName ?? '';
     const variables = body.variables ?? {};
 
-    if (query.includes('query Users')) {
+    if (operationName === 'Users') {
       return graphQL({ data: { users: { items: users, totalCount: users.length, pageInfo: { ...pageInfo, totalCount: users.length } } } });
     }
-    if (query.includes('query User(')) {
+    if (operationName === 'User') {
       return graphQL({ data: { user: options?.userDetailNullID ? { ...users[0], id: null } : users[0] } });
     }
-    if (query.includes('query Clients')) {
+    if (operationName === 'Clients') {
       const userId = variables.input?.filter?.userId ?? '';
       const items = clientsByUser[userId] ?? [];
       return graphQL({ data: { clients: { items, totalCount: items.length, pageInfo: { ...pageInfo, totalCount: items.length } } } });
     }
-    if (query.includes('query Client(')) {
+    if (operationName === 'Client') {
       return graphQL({ data: { client: client('client-1', 'user-1', 'home-node') } });
     }
-    if (query.includes('query ProxyEntryOptions')) {
+    if (operationName === 'ProxyEntryOptions') {
       return graphQL({
         data: {
           proxyEntryOptions: {
@@ -157,10 +158,10 @@ function createFetchMock(options?: { createValidationFailure?: boolean; rotateFa
         },
       });
     }
-    if (query.includes('query Proxies')) {
+    if (operationName === 'Proxies') {
       return graphQL({ data: { proxies: { items: [], totalCount: 0, pageInfo } } });
     }
-    if (query.includes('mutation CreateClientJoin')) {
+    if (operationName === 'CreateClientJoin') {
       return graphQL({
         data: {
           createClientJoin: {
@@ -171,7 +172,7 @@ function createFetchMock(options?: { createValidationFailure?: boolean; rotateFa
         },
       });
     }
-    if (query.includes('mutation CreateClient')) {
+    if (operationName === 'CreateClient') {
       if (options?.createValidationFailure) {
         return graphQL({
           errors: [{
@@ -190,7 +191,7 @@ function createFetchMock(options?: { createValidationFailure?: boolean; rotateFa
         },
       });
     }
-    if (query.includes('mutation RotateClientCredential')) {
+    if (operationName === 'RotateClientCredential') {
       if (options?.rotateFailure) {
         return graphQL({
           errors: [{ message: 'client not found', extensions: { code: 'NOT_FOUND' } }],
@@ -206,10 +207,10 @@ function createFetchMock(options?: { createValidationFailure?: boolean; rotateFa
         },
       });
     }
-    if (query.includes('mutation DeleteClient')) {
+    if (operationName === 'DeleteClient') {
       return graphQL({ data: { deleteClient: { clientId: variables.input?.id ?? 'client-1' } } });
     }
-    if (query.includes('mutation CreateProxy')) {
+    if (operationName === 'CreateProxy') {
       return graphQL({
         data: {
           createProxy: {

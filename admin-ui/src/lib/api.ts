@@ -101,7 +101,7 @@ export const sessionClient = {
 export const graphqlClient = {
   async request<TData>(options: {
     query: string;
-    variables?: Record<string, unknown>;
+    variables?: unknown;
     operationName?: string;
     mutation?: boolean;
     csrfToken?: string;

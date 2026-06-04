@@ -1,0 +1,364 @@
+fragment PageInfoFields on AdminPageInfo {
+  page
+  pageSize
+  totalCount
+  totalPages
+  hasNext
+  hasPrev
+}
+
+fragment UserFields on AdminUser {
+  id
+  username
+  role
+  status
+  clientCount
+  proxyCount
+  uploadBytes
+  downloadBytes
+  lastActivityAt
+  hasPasswordHash
+  createdAt
+  updatedAt
+}
+
+fragment ClientRuntimeFields on AdminClientRuntime {
+  online
+  protocol
+  connectedAt
+  lastHeartbeat
+  configVersion
+  activeProxies
+  activeStreams
+  uploadBytes
+  downloadBytes
+  errorSummary
+}
+
+fragment ProxySummaryFields on AdminProxySummary {
+  id
+  name
+  type
+  status
+  runtimeStatus
+  entryBindHost
+  entryHost
+  entryPort
+  targetHost
+  targetPort
+  activeTCPConnections
+}
+
+fragment ClientFields on AdminClient {
+  id
+  userId
+  name
+  status
+  version
+  runtime {
+    ...ClientRuntimeFields
+  }
+  lastOnlineAt
+  lastOfflineAt
+  createdAt
+  updatedAt
+}
+
+fragment ClientDetailFields on AdminClientDetail {
+  id
+  userId
+  name
+  status
+  version
+  runtime {
+    ...ClientRuntimeFields
+  }
+  lastOnlineAt
+  lastOfflineAt
+  managedProxies {
+    ...ProxySummaryFields
+  }
+  createdAt
+  updatedAt
+}
+
+fragment ProxyConfigFields on AdminProxyConfig {
+  entryBindHost
+  entryHost
+  entryPort
+  targetHost
+  targetPort
+  certFile
+  keyFile
+}
+
+fragment ManagedCertificateFields on AdminManagedCertificate {
+  proxyId
+  certificateId
+  host
+  status
+  notAfter
+  lastIssuedAt
+  lastRenewedAt
+  lastError
+}
+
+fragment ProxyFields on AdminProxy {
+  id
+  userId
+  clientId
+  name
+  type
+  status
+  description
+  runtimeStatus
+  activeTCPConnections
+  uploadBytes
+  downloadBytes
+  tcpErrorCount
+  udpErrorCount
+  httpErrorCount
+  config {
+    ...ProxyConfigFields
+  }
+  certificate {
+    ...ManagedCertificateFields
+  }
+  createdAt
+  updatedAt
+}
+
+fragment AuditFields on AdminAuditEvent {
+  id
+  actorType
+  actorId
+  resourceType
+  resourceId
+  action
+  result
+  createdAt
+}
+
+fragment UserPayloadFields on AdminUserPayload {
+  userId
+  status
+  user {
+    ...UserFields
+  }
+}
+
+fragment ClientPayloadFields on AdminClientPayload {
+  clientId
+  credential
+  token
+  client {
+    ...ClientDetailFields
+  }
+}
+
+fragment ProxyPayloadFields on AdminProxyPayload {
+  proxyId
+  status
+  proxy {
+    ...ProxyFields
+  }
+}
+
+fragment CertificatePayloadFields on AdminCertificatePayload {
+  proxyId
+  status
+  certificate {
+    ...ManagedCertificateFields
+  }
+}
+
+query Dashboard {
+  dashboard {
+    onlineClientCount
+    enabledProxyCount
+    activeTCPConnectionCount
+    cumulativeUploadBytes
+    cumulativeDownloadBytes
+    cumulativeTCPErrorCount
+    cumulativeUDPErrorCount
+    cumulativeHTTPErrorCount
+  }
+}
+
+query Users($input: AdminUsersInput) {
+  users(input: $input) {
+    totalCount
+    pageInfo {
+      ...PageInfoFields
+    }
+    items {
+      ...UserFields
+    }
+  }
+}
+
+query User($id: String!) {
+  user(id: $id) {
+    ...UserFields
+  }
+}
+
+query Clients($input: AdminClientsInput) {
+  clients(input: $input) {
+    totalCount
+    pageInfo {
+      ...PageInfoFields
+    }
+    items {
+      ...ClientFields
+    }
+  }
+}
+
+query Client($id: String!) {
+  client(id: $id) {
+    ...ClientDetailFields
+  }
+}
+
+query Proxies($input: AdminProxiesInput) {
+  proxies(input: $input) {
+    totalCount
+    pageInfo {
+      ...PageInfoFields
+    }
+    items {
+      ...ProxyFields
+    }
+  }
+}
+
+query Proxy($id: String!) {
+  proxy(id: $id) {
+    ...ProxyFields
+  }
+}
+
+query ProxyEntryOptions {
+  proxyEntryOptions {
+    tcpDefaultBindHost
+    httpDefaultBindHost
+    httpDefaultPort
+    httpsDefaultBindHost
+    httpsDefaultPort
+    hosts {
+      value
+      label
+      isDefault
+    }
+  }
+}
+
+query Certificates($input: AdminCertificatesInput) {
+  certificates(input: $input) {
+    totalCount
+    pageInfo {
+      ...PageInfoFields
+    }
+    items {
+      ...ManagedCertificateFields
+    }
+  }
+}
+
+query Audit($input: AdminAuditInput) {
+  audit(input: $input) {
+    totalCount
+    pageInfo {
+      ...PageInfoFields
+    }
+    items {
+      ...AuditFields
+    }
+  }
+}
+
+mutation CreateUser($input: AdminCreateUserInput!) {
+  createUser(input: $input) {
+    ...UserPayloadFields
+  }
+}
+
+mutation DisableUser($input: AdminUserIDInput!) {
+  disableUser(input: $input) {
+    ...UserPayloadFields
+  }
+}
+
+mutation SetUserPassword($input: AdminSetUserPasswordInput!) {
+  setUserPassword(input: $input) {
+    ...UserPayloadFields
+  }
+}
+
+mutation CreateClient($input: AdminCreateClientInput!) {
+  createClient(input: $input) {
+    ...ClientPayloadFields
+  }
+}
+
+mutation CreateClientJoin($input: AdminCreateClientJoinInput!) {
+  createClientJoin(input: $input) {
+    ...ClientPayloadFields
+  }
+}
+
+mutation RotateClientCredential($input: AdminUserIDInput!) {
+  rotateClientCredential(input: $input) {
+    ...ClientPayloadFields
+  }
+}
+
+mutation DeleteClient($input: AdminUserIDInput!) {
+  deleteClient(input: $input) {
+    clientId
+  }
+}
+
+mutation CreateProxy($input: AdminCreateProxyInput!) {
+  createProxy(input: $input) {
+    ...ProxyPayloadFields
+  }
+}
+
+mutation UpdateProxy($input: AdminUpdateProxyInput!) {
+  updateProxy(input: $input) {
+    ...ProxyPayloadFields
+  }
+}
+
+mutation EnableProxy($input: AdminUserIDInput!) {
+  enableProxy(input: $input) {
+    ...ProxyPayloadFields
+  }
+}
+
+mutation DisableProxy($input: AdminUserIDInput!) {
+  disableProxy(input: $input) {
+    ...ProxyPayloadFields
+  }
+}
+
+mutation DeleteProxy($input: AdminUserIDInput!) {
+  deleteProxy(input: $input) {
+    proxyId
+    status
+  }
+}
+
+mutation IssueManagedCertificate($input: AdminCertificateMutationInput!) {
+  issueManagedCertificate(input: $input) {
+    ...CertificatePayloadFields
+  }
+}
+
+mutation RenewManagedCertificate($input: AdminCertificateMutationInput!) {
+  renewManagedCertificate(input: $input) {
+    ...CertificatePayloadFields
+  }
+}
