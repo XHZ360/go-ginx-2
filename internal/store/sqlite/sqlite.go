@@ -831,11 +831,6 @@ create table if not exists proxies (
     updated_at timestamp not null
 );
 
-create unique index if not exists proxies_tcp_entry_unique on proxies(lower(entry_bind_host), entry_port) where type = 'tcp' and entry_port > 0;
-create unique index if not exists proxies_udp_entry_unique on proxies(lower(entry_bind_host), entry_port) where type = 'udp' and entry_port > 0;
-create unique index if not exists proxies_http_route_unique on proxies(lower(entry_bind_host), entry_port, lower(entry_host)) where type = 'http' and entry_host <> '';
-create unique index if not exists proxies_https_route_unique on proxies(lower(entry_bind_host), entry_port, lower(entry_host)) where type = 'https' and entry_host <> '';
-
 create table if not exists managed_certificates (
     id text primary key,
     proxy_id text not null references proxies(id) on delete cascade,

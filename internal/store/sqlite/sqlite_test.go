@@ -2,6 +2,7 @@ package sqlite
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"path/filepath"
 	"testing"
@@ -233,6 +234,94 @@ func TestProxyEntryBindHostAndRouteQueries(t *testing.T) {
 	}
 }
 
+func TestOpenMigratesLegacyProxyEntryBindHostBeforeIndexes(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "legacy.db")
+	raw, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if _, err := raw.ExecContext(ctx, `
+create table users (
+    id text primary key,
+    username text not null unique,
+    role text not null,
+    status text not null,
+    created_at timestamp not null,
+    updated_at timestamp not null
+);
+create table clients (
+    id text primary key,
+    user_id text not null references users(id) on delete cascade,
+    name text not null,
+    status text not null,
+    credential_hash text not null,
+    version integer not null default 1,
+    last_online_at timestamp,
+    last_offline_at timestamp,
+    created_at timestamp not null,
+    updated_at timestamp not null
+);
+create table proxies (
+    id text primary key,
+    user_id text not null references users(id) on delete cascade,
+    client_id text not null references clients(id) on delete cascade,
+    name text not null,
+    type text not null,
+    status text not null,
+    entry_host text not null default '',
+    entry_port integer not null default 0,
+    target_host text not null,
+    target_port integer not null,
+    description text not null default '',
+    created_at timestamp not null,
+    updated_at timestamp not null
+);
+create unique index proxies_tcp_entry_port_unique on proxies(entry_port) where type = 'tcp' and entry_port > 0;
+create unique index proxies_udp_entry_port_unique on proxies(entry_port) where type = 'udp' and entry_port > 0;
+create unique index proxies_http_entry_host_unique on proxies(lower(entry_host)) where type = 'http' and entry_host <> '';
+create unique index proxies_https_entry_host_unique on proxies(lower(entry_host)) where type = 'https' and entry_host <> '';
+`); err != nil {
+		t.Fatalf("create legacy schema: %v", err)
+	}
+	if _, err := raw.ExecContext(ctx, `insert into users (id, username, role, status, created_at, updated_at) values (?, ?, ?, ?, ?, ?)`, "u1", "alice", domain.RoleUser, domain.UserEnabled, now, now); err != nil {
+		t.Fatalf("insert legacy user: %v", err)
+	}
+	if _, err := raw.ExecContext(ctx, `insert into clients (id, user_id, name, status, credential_hash, created_at, updated_at) values (?, ?, ?, ?, ?, ?, ?)`, "c1", "u1", "home", domain.ClientOffline, domain.HashCredential("secret"), now, now); err != nil {
+		t.Fatalf("insert legacy client: %v", err)
+	}
+	if _, err := raw.ExecContext(ctx, `insert into proxies (id, user_id, client_id, name, type, status, entry_port, target_host, target_port, created_at, updated_at) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, "p1", "u1", "c1", "ssh", domain.ProxyTCP, domain.ProxyEnabled, 10022, "127.0.0.1", 22, now, now); err != nil {
+		t.Fatalf("insert legacy proxy: %v", err)
+	}
+	if err := raw.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	db, err := Open(path)
+	if err != nil {
+		t.Fatalf("open migrated db: %v", err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	loaded, err := db.Proxies().ByID(ctx, "p1")
+	if err != nil {
+		t.Fatalf("load migrated proxy: %v", err)
+	}
+	if loaded.EntryBindHost != "" || loaded.CertFile != "" || loaded.KeyFile != "" {
+		t.Fatalf("unexpected migrated proxy fields: %+v", loaded)
+	}
+	if indexExists(t, ctx, db.db, "proxies_tcp_entry_port_unique") {
+		t.Fatal("legacy tcp entry port index should be dropped")
+	}
+	if !indexExists(t, ctx, db.db, "proxies_tcp_entry_unique") {
+		t.Fatal("new tcp entry index should exist")
+	}
+	second := domain.Proxy{ID: "p2", UserID: "u1", ClientID: "c1", Name: "ssh-alt", Type: domain.ProxyTCP, Status: domain.ProxyEnabled, EntryBindHost: "127.0.0.1", EntryPort: 10022, TargetHost: "127.0.0.1", TargetPort: 2222}
+	if err := db.Proxies().Create(ctx, second); err != nil {
+		t.Fatalf("create same-port proxy on different bind host after migration: %v", err)
+	}
+}
+
 func TestByClientIDReturnsOnlyClientOwnedProxies(t *testing.T) {
 	ctx := context.Background()
 	db := openTestStore(t)
@@ -385,6 +474,15 @@ func TestCertificateRepositoryRecordsFailureWithoutReplacingFiles(t *testing.T) 
 	if found.Status != domain.CertificateRenewalFailed || found.LastError != "dns failed" || found.CertFile != "active.crt" || found.KeyFile != "active.key" {
 		t.Fatalf("unexpected failure state: %+v", found)
 	}
+}
+
+func indexExists(t *testing.T, ctx context.Context, db *sql.DB, name string) bool {
+	t.Helper()
+	var count int
+	if err := db.QueryRowContext(ctx, `select count(*) from sqlite_master where type = 'index' and name = ?`, name).Scan(&count); err != nil {
+		t.Fatalf("query index %s: %v", name, err)
+	}
+	return count > 0
 }
 
 func openTestStore(t *testing.T) *Store {
