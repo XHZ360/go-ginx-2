@@ -149,6 +149,9 @@ func TestConfirmJoinServiceDefaultsUsesExplicitHost(t *testing.T) {
 	if defaults.EnrollmentURL != "http://server.example.com:8081/api/client/enroll" {
 		t.Fatalf("unexpected enrollment url %q", defaults.EnrollmentURL)
 	}
+	if defaults.LegacyAdminEnrollmentURL != "http://server.example.com:8080/api/client/enroll" {
+		t.Fatalf("unexpected legacy admin enrollment url %q", defaults.LegacyAdminEnrollmentURL)
+	}
 }
 
 func TestConfirmJoinServiceDefaultsRejectsInvalidExplicitHost(t *testing.T) {

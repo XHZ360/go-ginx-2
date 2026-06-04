@@ -233,6 +233,97 @@ func TestServiceReviewClientJoinTokenResetsExpiredToken(t *testing.T) {
 	}
 }
 
+func TestServiceReviewClientJoinTokenMigratesLegacyAdminEnrollmentURL(t *testing.T) {
+	ctx := context.Background()
+	db := openTestStore(t)
+	service := Service{Store: db, DefaultJoin: config.JoinServiceDefaults{
+		EnrollmentURL:            "http://server.example.com:8081/api/client/enroll",
+		LegacyAdminEnrollmentURL: "http://server.example.com:8080/api/client/enroll",
+		ServerAddress:            "server.example.com:8443",
+		ServerTLSAddress:         "server.example.com:9443",
+		ServerName:               "go-ginx-control.test",
+	}}
+	user, err := service.CreateUser(ctx, CreateUserInput{ID: "user-1", Username: "alice", ActorID: "admin-1"})
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	client, err := service.CreateClient(ctx, CreateClientInput{ID: "client-1", UserID: user.ID, Name: "home", Credential: "old-secret", ActorID: "admin-1"})
+	if err != nil {
+		t.Fatalf("create client: %v", err)
+	}
+	createdAt := time.Now().UTC().Add(-10 * time.Minute)
+	expiresAt := time.Now().UTC().Add(time.Hour)
+	legacyPayload := enrollment.TokenPayload{
+		EnrollmentID:     "join-legacy",
+		Secret:           "legacy-secret",
+		EnrollmentURL:    service.DefaultJoin.LegacyAdminEnrollmentURL,
+		ServerAddress:    service.DefaultJoin.ServerAddress,
+		ServerTLSAddress: service.DefaultJoin.ServerTLSAddress,
+		ServerName:       service.DefaultJoin.ServerName,
+		CAPEM:            "ca-pem",
+		ClientID:         client.ID,
+		Credential:       "old-secret",
+		AllowedProtocols: []domain.Protocol{domain.ProtocolQUIC, domain.ProtocolTCPTLS},
+		Reconnect:        config.DefaultClient().Reconnect,
+		ExpiresAt:        expiresAt,
+	}
+	legacyToken, err := enrollment.EncodeToken(legacyPayload)
+	if err != nil {
+		t.Fatalf("encode legacy token: %v", err)
+	}
+	if err := db.ClientEnrollments().Create(ctx, domain.ClientEnrollment{ID: legacyPayload.EnrollmentID, ClientID: client.ID, SecretHash: enrollment.HashSecret(legacyPayload.Secret), TokenHash: enrollment.HashToken(legacyToken), Token: legacyToken, ExpiresAt: expiresAt, CreatedAt: createdAt, UpdatedAt: createdAt}); err != nil {
+		t.Fatalf("create legacy enrollment: %v", err)
+	}
+
+	reviewed, err := service.ReviewClientJoinToken(ctx, client.ID, "admin-1")
+	if err != nil {
+		t.Fatalf("review legacy token: %v", err)
+	}
+	if reviewed.Token == legacyToken {
+		t.Fatal("expected legacy admin enrollment token to be reset")
+	}
+	payload, err := enrollment.DecodeToken(reviewed.Token)
+	if err != nil {
+		t.Fatalf("decode migrated token: %v", err)
+	}
+	if payload.EnrollmentURL != service.DefaultJoin.EnrollmentURL || payload.ClientID != client.ID || payload.Credential == "old-secret" {
+		t.Fatalf("unexpected migrated token payload: %+v", payload)
+	}
+}
+
+func TestServiceReviewClientJoinTokenPreservesExplicitExternalEnrollmentURL(t *testing.T) {
+	ctx := context.Background()
+	db := openTestStore(t)
+	caFile := filepath.Join(t.TempDir(), "ca.crt")
+	if err := os.WriteFile(caFile, []byte("ca-pem"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	service := Service{Store: db, DefaultJoin: config.JoinServiceDefaults{
+		EnrollmentURL:            "http://server.example.com:8081/api/client/enroll",
+		LegacyAdminEnrollmentURL: "http://server.example.com:8080/api/client/enroll",
+		ServerAddress:            "server.example.com:8443",
+		ServerTLSAddress:         "server.example.com:9443",
+		ServerName:               "go-ginx-control.test",
+		ServerCAFile:             caFile,
+	}}
+	user, err := service.CreateUser(ctx, CreateUserInput{ID: "user-1", Username: "alice", ActorID: "admin-1"})
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	result, err := service.CreateClientJoin(ctx, CreateClientJoinInput{ID: "client-1", UserID: user.ID, Name: "home", ActorID: "admin-1", EnrollmentURL: "https://join.example.com/api/client/enroll", TTL: time.Hour})
+	if err != nil {
+		t.Fatalf("create explicit join token: %v", err)
+	}
+
+	reviewed, err := service.ReviewClientJoinToken(ctx, result.Client.ID, "admin-1")
+	if err != nil {
+		t.Fatalf("review explicit token: %v", err)
+	}
+	if reviewed.Token != result.Token {
+		t.Fatal("expected non-legacy explicit enrollment URL token to be preserved")
+	}
+}
+
 func TestServiceCreatesClientJoinTokenFromDefaultJoin(t *testing.T) {
 	ctx := context.Background()
 	db := openTestStore(t)

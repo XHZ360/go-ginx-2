@@ -44,13 +44,14 @@ type Server struct {
 }
 
 type JoinServiceDefaults struct {
-	Host             string
-	Source           string
-	ServerAddress    string
-	ServerTLSAddress string
-	EnrollmentURL    string
-	ServerName       string
-	ServerCAFile     string
+	Host                     string
+	Source                   string
+	ServerAddress            string
+	ServerTLSAddress         string
+	EnrollmentURL            string
+	LegacyAdminEnrollmentURL string
+	ServerName               string
+	ServerCAFile             string
 }
 
 type Client struct {
@@ -222,14 +223,19 @@ func ConfirmJoinServiceDefaults(cfg Server) (JoinServiceDefaults, error) {
 	if err != nil {
 		return JoinServiceDefaults{}, err
 	}
+	adminPort, err := addressPort("admin_listen", cfg.AdminListen)
+	if err != nil {
+		return JoinServiceDefaults{}, err
+	}
 	return JoinServiceDefaults{
-		Host:             host,
-		Source:           source,
-		ServerAddress:    net.JoinHostPort(host, quicPort),
-		ServerTLSAddress: tlsAddress,
-		EnrollmentURL:    "http://" + net.JoinHostPort(host, enrollmentPort) + "/api/client/enroll",
-		ServerName:       cfg.ControlTLSServerName,
-		ServerCAFile:     cfg.ControlTLSCAFile,
+		Host:                     host,
+		Source:                   source,
+		ServerAddress:            net.JoinHostPort(host, quicPort),
+		ServerTLSAddress:         tlsAddress,
+		EnrollmentURL:            "http://" + net.JoinHostPort(host, enrollmentPort) + "/api/client/enroll",
+		LegacyAdminEnrollmentURL: "http://" + net.JoinHostPort(host, adminPort) + "/api/client/enroll",
+		ServerName:               cfg.ControlTLSServerName,
+		ServerCAFile:             cfg.ControlTLSCAFile,
 	}, nil
 }
 

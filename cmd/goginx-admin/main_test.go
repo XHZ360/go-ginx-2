@@ -302,6 +302,45 @@ func TestRunClientJoinCommandResetsTokenFromDeploymentServerConfig(t *testing.T)
 	}
 }
 
+func TestRunClientJoinCommandMigratesLegacyAdminEnrollmentURL(t *testing.T) {
+	deploymentRoot := t.TempDir()
+	stateDir := t.TempDir()
+	setAdminExecutable(t, deploymentRoot)
+	t.Chdir(stateDir)
+	writeAdminServerConfig(t, deploymentRoot, "vpn.example.com", ":8443", ":9443", ":8080")
+	if err := os.MkdirAll(filepath.Join(deploymentRoot, "data", "certs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(deploymentRoot, "data", "certs", "control-ca.crt"), []byte("ca-pem"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := run([]string{"create-user", "-id", "user-1", "-username", "alice"}); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	legacyTokenOutput, err := captureStdout(func() error {
+		return run([]string{"create-client-join", "-id", "client-1", "-user", "user-1", "-name", "home", "-enrollment-url", "http://vpn.example.com:8080/api/client/enroll"})
+	})
+	if err != nil {
+		t.Fatalf("create legacy client join: %v", err)
+	}
+	legacyToken := strings.TrimSpace(legacyTokenOutput)
+
+	output, err := captureStdout(func() error {
+		return run([]string{"client-join-command", "-client", "client-1"})
+	})
+	if err != nil {
+		t.Fatalf("client join command: %v", err)
+	}
+	token := strings.TrimPrefix(strings.TrimSpace(output), "goginx-client join ")
+	payload, err := enrollment.DecodeToken(token)
+	if err != nil {
+		t.Fatalf("decode migrated join token: %v", err)
+	}
+	if token == legacyToken || payload.EnrollmentURL != "http://vpn.example.com:8081/api/client/enroll" {
+		t.Fatalf("expected legacy admin enrollment URL to migrate, tokenSame=%v payload=%+v", token == legacyToken, payload)
+	}
+}
+
 func TestRunClientJoinCommandOutputsClientCommand(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), "admin.db")
 	caFile := filepath.Join(t.TempDir(), "ca.crt")

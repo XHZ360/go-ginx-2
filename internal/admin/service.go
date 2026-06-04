@@ -349,32 +349,38 @@ func (service Service) ReviewClientJoinToken(ctx context.Context, clientID strin
 		return ReviewClientJoinTokenResult{}, err
 	}
 	now := time.Now().UTC()
-	enrollment, err := service.Store.ClientEnrollments().LatestReviewableByClientID(ctx, clientID, now)
+	enrollmentRecord, err := service.Store.ClientEnrollments().LatestReviewableByClientID(ctx, clientID, now)
 	if errors.Is(err, store.ErrNotFound) {
-		return service.resetClientJoinToken(ctx, client, actorID, now)
+		return service.resetClientJoinToken(ctx, client, actorID, now, false)
 	}
 	if err != nil {
 		return ReviewClientJoinTokenResult{}, err
 	}
+	if service.tokenUsesLegacyAdminEnrollmentURL(enrollmentRecord.Token, client.ID) {
+		return service.resetClientJoinToken(ctx, client, actorID, now, true)
+	}
 	if err := service.audit(ctx, actorID, "client", client.ID, "review_client_join_token"); err != nil {
 		return ReviewClientJoinTokenResult{}, err
 	}
-	return ReviewClientJoinTokenResult{Client: client, Token: enrollment.Token, ExpiresAt: enrollment.ExpiresAt}, nil
+	return ReviewClientJoinTokenResult{Client: client, Token: enrollmentRecord.Token, ExpiresAt: enrollmentRecord.ExpiresAt}, nil
 }
 
-func (service Service) resetClientJoinToken(ctx context.Context, client domain.Client, actorID string, now time.Time) (ReviewClientJoinTokenResult, error) {
+func (service Service) resetClientJoinToken(ctx context.Context, client domain.Client, actorID string, now time.Time, allowActive bool) (ReviewClientJoinTokenResult, error) {
 	var basePayload enrollment.TokenPayload
 	ttl := time.Hour
 	latest, err := service.Store.ClientEnrollments().LatestUnusedByClientID(ctx, client.ID)
 	if err != nil && !errors.Is(err, store.ErrNotFound) {
 		return ReviewClientJoinTokenResult{}, err
 	}
-	if err == nil && latest.ExpiresAt.After(now) {
+	if err == nil && latest.ExpiresAt.After(now) && !allowActive {
 		return ReviewClientJoinTokenResult{}, unavailableJoinTokenError()
 	}
 	if err == nil {
 		if decoded, decodeErr := enrollment.DecodeToken(latest.Token); decodeErr == nil && decoded.ClientID == client.ID {
 			basePayload = decoded
+			if service.usesLegacyAdminEnrollmentURL(basePayload.EnrollmentURL) {
+				basePayload.EnrollmentURL = service.DefaultJoin.EnrollmentURL
+			}
 		}
 		ttl = latest.ExpiresAt.Sub(latest.CreatedAt)
 		if ttl <= 0 {
@@ -414,6 +420,20 @@ func (service Service) resetClientJoinToken(ctx context.Context, client domain.C
 	}
 	client.CredentialHash = ""
 	return ReviewClientJoinTokenResult{Client: client, Token: token, ExpiresAt: expiresAt}, nil
+}
+
+func (service Service) tokenUsesLegacyAdminEnrollmentURL(token string, clientID string) bool {
+	payload, err := enrollment.DecodeToken(token)
+	if err != nil || payload.ClientID != clientID {
+		return false
+	}
+	return service.usesLegacyAdminEnrollmentURL(payload.EnrollmentURL)
+}
+
+func (service Service) usesLegacyAdminEnrollmentURL(enrollmentURL string) bool {
+	current := strings.TrimSpace(service.DefaultJoin.EnrollmentURL)
+	legacy := strings.TrimSpace(service.DefaultJoin.LegacyAdminEnrollmentURL)
+	return current != "" && legacy != "" && current != legacy && strings.TrimSpace(enrollmentURL) == legacy
 }
 
 func (service Service) defaultJoinTokenPayload() (enrollment.TokenPayload, error) {
