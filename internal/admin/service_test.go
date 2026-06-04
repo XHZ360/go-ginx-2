@@ -729,6 +729,26 @@ func TestServiceListenerAdmissionCoversCreateUpdateAndEnable(t *testing.T) {
 	}
 }
 
+func TestCreateProxyReconcileFailureRollsBackCreatedProxy(t *testing.T) {
+	ctx := context.Background()
+	db := openTestStore(t)
+	reconciler := &fakeProxyListenerReconciler{err: errors.New("bind failed")}
+	service := Service{Store: db, ListenerReconciler: reconciler}
+	user, client := createAdminTestOwnership(ctx, t, service)
+
+	_, err := service.CreateProxy(ctx, CreateProxyInput{ID: "proxy-1", UserID: user.ID, ClientID: client.ID, Name: "ssh", Type: domain.ProxyTCP, EntryPort: 10022, TargetHost: "127.0.0.1", TargetPort: 22, ActorID: "admin-1"})
+	var contractError *contracterr.Error
+	if !errors.As(err, &contractError) || contractError.Code != contracterr.CodeEntryConflict {
+		t.Fatalf("expected entry conflict reconcile error, got %v", err)
+	}
+	if reconciler.calls == 0 {
+		t.Fatal("expected reconciler to be called")
+	}
+	if _, err := db.Proxies().ByID(ctx, "proxy-1"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("expected proxy rollback, got %v", err)
+	}
+}
+
 func createAdminTestOwnership(ctx context.Context, t *testing.T, service Service) (domain.User, domain.Client) {
 	t.Helper()
 	user, err := service.CreateUser(ctx, CreateUserInput{ID: "user-1", Username: "alice", ActorID: "admin-1"})
@@ -752,6 +772,16 @@ type adminFakeIssuer struct{}
 func (adminFakeIssuer) Issue(context.Context, certmanager.IssueRequest) (certmanager.IssuedCertificate, error) {
 	certPEM, keyPEM, notAfter := adminTestCertificatePEM("app.example.com", time.Now().Add(time.Hour))
 	return certmanager.IssuedCertificate{CertPEM: certPEM, KeyPEM: keyPEM, NotAfter: notAfter}, nil
+}
+
+type fakeProxyListenerReconciler struct {
+	calls int
+	err   error
+}
+
+func (reconciler *fakeProxyListenerReconciler) ReconcileProxyListeners(context.Context) error {
+	reconciler.calls++
+	return reconciler.err
 }
 
 func openTestStore(t *testing.T) *sqlite.Store {

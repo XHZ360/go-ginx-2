@@ -7,6 +7,7 @@ import type {
   ManagedCertificate,
   PageInfo,
   PageResult,
+  ProxyEntryOptions,
   ProxyRecord,
   User,
 } from './contracts';
@@ -55,9 +56,19 @@ export type AuditFilter = {
 type UsersPayload = { users: PageResult<User> };
 type ClientsPayload = { clients: PageResult<Client> };
 type ProxiesPayload = { proxies: PageResult<ProxyRecord> };
+type ProxyEntryOptionsPayload = { proxyEntryOptions: ProxyEntryOptions };
 type CertificatesPayload = { certificates: PageResult<ManagedCertificate> };
 type AuditPayload = { audit: PageResult<AuditEvent> };
 type ClientMutationPayload = { clientId: string; credential?: string | null; token?: string | null; client: ClientDetail };
+type ProxyConfigInput = {
+  entryBindHost?: string;
+  entryHost?: string;
+  entryPort?: number;
+  targetHost?: string;
+  targetPort?: number;
+  certFile?: string;
+  keyFile?: string;
+};
 export type ClientJoinInput = {
   userId: string;
   name: string;
@@ -70,6 +81,7 @@ export type ClientJoinInput = {
 };
 
 const PAGE_INFO_FRAGMENT = `pageInfo { page pageSize totalCount totalPages hasNext hasPrev }`;
+const PROXY_CONFIG_FRAGMENT = `config { entryBindHost entryHost entryPort targetHost targetPort certFile keyFile }`;
 
 function cleanObject<T extends Record<string, unknown>>(value: T): T {
   return Object.fromEntries(
@@ -214,6 +226,7 @@ export async function queryClient(id: string) {
           type
           status
           runtimeStatus
+          entryBindHost
           entryHost
           entryPort
           targetHost
@@ -250,12 +263,7 @@ export async function queryProxies(input: ListInput<ProxyFilter>) {
           tcpErrorCount
           udpErrorCount
           httpErrorCount
-          config {
-            entryHost
-            entryPort
-            targetHost
-            targetPort
-          }
+          ${PROXY_CONFIG_FRAGMENT}
           certificate {
             proxyId
             certificateId
@@ -294,12 +302,7 @@ export async function queryProxy(id: string) {
         tcpErrorCount
         udpErrorCount
         httpErrorCount
-        config {
-          entryHost
-          entryPort
-          targetHost
-          targetPort
-        }
+        ${PROXY_CONFIG_FRAGMENT}
         certificate {
           proxyId
           certificateId
@@ -317,6 +320,22 @@ export async function queryProxy(id: string) {
     variables: { id },
   });
   return data.proxy;
+}
+
+export async function queryProxyEntryOptions() {
+  const data = await graphqlClient.request<ProxyEntryOptionsPayload>({
+    query: `query ProxyEntryOptions {
+      proxyEntryOptions {
+        tcpDefaultBindHost
+        httpDefaultBindHost
+        httpDefaultPort
+        httpsDefaultBindHost
+        httpsDefaultPort
+        hosts { value label isDefault }
+      }
+    }`,
+  });
+  return data.proxyEntryOptions;
 }
 
 export async function queryCertificates(input: ListInput<CertificateFilter>) {
@@ -453,9 +472,10 @@ export function mutateCreateClient(csrfToken: string, input: { userId: string; n
             id
             name
             type
-            status
-            runtimeStatus
-            entryHost
+          status
+          runtimeStatus
+          entryBindHost
+          entryHost
             entryPort
             targetHost
             targetPort
@@ -502,9 +522,10 @@ export function mutateCreateClientJoin(csrfToken: string, input: ClientJoinInput
             id
             name
             type
-            status
-            runtimeStatus
-            entryHost
+          status
+          runtimeStatus
+          entryBindHost
+          entryHost
             entryPort
             targetHost
             targetPort
@@ -551,9 +572,10 @@ export function mutateRotateClientCredential(csrfToken: string, id: string) {
             id
             name
             type
-            status
-            runtimeStatus
-            entryHost
+          status
+          runtimeStatus
+          entryBindHost
+          entryHost
             entryPort
             targetHost
             targetPort
@@ -591,12 +613,7 @@ export function mutateCreateProxy(
     name: string;
     type: string;
     description?: string;
-    config: {
-      entryHost?: string;
-      entryPort?: number;
-      targetHost?: string;
-      targetPort?: number;
-    };
+    config: ProxyConfigInput;
   },
 ) {
   return graphqlClient.request<{ createProxy: { proxyId: string; status: string; proxy: ProxyRecord } }>({
@@ -604,7 +621,7 @@ export function mutateCreateProxy(
       createProxy(input: $input) {
         proxyId
         status
-        proxy { id name type status runtimeStatus userId clientId description activeTCPConnections uploadBytes downloadBytes tcpErrorCount udpErrorCount httpErrorCount config { entryHost entryPort targetHost targetPort } certificate { proxyId certificateId host status notAfter lastIssuedAt lastRenewedAt lastError } createdAt updatedAt }
+        proxy { id name type status runtimeStatus userId clientId description activeTCPConnections uploadBytes downloadBytes tcpErrorCount udpErrorCount httpErrorCount ${PROXY_CONFIG_FRAGMENT} certificate { proxyId certificateId host status notAfter lastIssuedAt lastRenewedAt lastError } createdAt updatedAt }
       }
     }`,
     variables: { input },
@@ -620,12 +637,7 @@ export function mutateUpdateProxy(
     type?: string;
     name: string;
     description?: string;
-    config: {
-      entryHost?: string;
-      entryPort?: number;
-      targetHost?: string;
-      targetPort?: number;
-    };
+    config: ProxyConfigInput;
   },
 ) {
   return graphqlClient.request<{ updateProxy: { proxyId: string; status: string; proxy: ProxyRecord } }>({
@@ -633,7 +645,7 @@ export function mutateUpdateProxy(
       updateProxy(input: $input) {
         proxyId
         status
-        proxy { id name type status runtimeStatus userId clientId description activeTCPConnections uploadBytes downloadBytes tcpErrorCount udpErrorCount httpErrorCount config { entryHost entryPort targetHost targetPort } certificate { proxyId certificateId host status notAfter lastIssuedAt lastRenewedAt lastError } createdAt updatedAt }
+        proxy { id name type status runtimeStatus userId clientId description activeTCPConnections uploadBytes downloadBytes tcpErrorCount udpErrorCount httpErrorCount ${PROXY_CONFIG_FRAGMENT} certificate { proxyId certificateId host status notAfter lastIssuedAt lastRenewedAt lastError } createdAt updatedAt }
       }
     }`,
     variables: { input },
@@ -648,7 +660,7 @@ export function mutateEnableProxy(csrfToken: string, id: string) {
       enableProxy(input: $input) {
         proxyId
         status
-        proxy { id status runtimeStatus name type userId clientId description activeTCPConnections uploadBytes downloadBytes tcpErrorCount udpErrorCount httpErrorCount config { entryHost entryPort targetHost targetPort } certificate { proxyId certificateId host status notAfter lastIssuedAt lastRenewedAt lastError } createdAt updatedAt }
+        proxy { id status runtimeStatus name type userId clientId description activeTCPConnections uploadBytes downloadBytes tcpErrorCount udpErrorCount httpErrorCount ${PROXY_CONFIG_FRAGMENT} certificate { proxyId certificateId host status notAfter lastIssuedAt lastRenewedAt lastError } createdAt updatedAt }
       }
     }`,
     variables: { input: { id } },
@@ -663,7 +675,7 @@ export function mutateDisableProxy(csrfToken: string, id: string) {
       disableProxy(input: $input) {
         proxyId
         status
-        proxy { id status runtimeStatus name type userId clientId description activeTCPConnections uploadBytes downloadBytes tcpErrorCount udpErrorCount httpErrorCount config { entryHost entryPort targetHost targetPort } certificate { proxyId certificateId host status notAfter lastIssuedAt lastRenewedAt lastError } createdAt updatedAt }
+        proxy { id status runtimeStatus name type userId clientId description activeTCPConnections uploadBytes downloadBytes tcpErrorCount udpErrorCount httpErrorCount ${PROXY_CONFIG_FRAGMENT} certificate { proxyId certificateId host status notAfter lastIssuedAt lastRenewedAt lastError } createdAt updatedAt }
       }
     }`,
     variables: { input: { id } },

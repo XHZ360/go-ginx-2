@@ -52,6 +52,17 @@ type ServerRuntime struct {
 	HTTPServer         *httpproxy.Server
 	HTTPSListener      *httpsproxy.Listener
 	JoinService        config.JoinServiceDefaults
+	proxyEntryDefaults domain.ProxyEntryDefaults
+	certificateDir     string
+	httpsEntryEnabled  bool
+	defaultHTTPKey     listenerKey
+	defaultHTTPSKey    listenerKey
+	proxyListenerMu    sync.Mutex
+	tcpListeners       map[listenerKey]*tcpproxy.Listener
+	udpListeners       map[listenerKey]*udpproxy.Listener
+	httpServers        map[listenerKey]*httpproxy.Server
+	httpsListeners     map[listenerKey]*httpsproxy.Listener
+	runtimeCtx         context.Context
 
 	cancel context.CancelFunc
 	once   sync.Once
@@ -82,6 +93,10 @@ func startServerWithStore(parent context.Context, cfg config.Server, db store.St
 	if err != nil {
 		return nil, err
 	}
+	proxyEntryDefaults, err := cfg.ProxyEntryDefaults()
+	if err != nil {
+		return nil, err
+	}
 	runtimeCtx, cancel := context.WithCancel(parent)
 	sessions := session.NewManager()
 	persistentStats, err := stats.NewPersistent(runtimeCtx, db.Stats(), 30*time.Second)
@@ -99,8 +114,10 @@ func startServerWithStore(parent context.Context, cfg config.Server, db store.St
 		cancel()
 		return nil, fmt.Errorf("listen control quic: %w", err)
 	}
-	runtime := &ServerRuntime{Store: db, Sessions: sessions, Stats: memoryStats, persistentStats: persistentStats, ControlListener: controlListener, JoinService: joinDefaults, cancel: cancel}
+	runtime := &ServerRuntime{Store: db, Sessions: sessions, Stats: memoryStats, persistentStats: persistentStats, ControlListener: controlListener, JoinService: joinDefaults, proxyEntryDefaults: proxyEntryDefaults, certificateDir: cfg.CertificateDir, httpsEntryEnabled: cfg.HTTPSEntryListen != "", runtimeCtx: runtimeCtx, cancel: cancel}
+	runtime.initProxyListenerRegistry()
 	go func() { _ = controlListener.Serve(runtimeCtx) }()
+	go runSessionExpiryLoop(runtimeCtx, sessions, db, cfg.HeartbeatTimeout)
 	enrollmentServer, err := enrollmentapi.Listen(enrollmentapi.Entry{ListenAddress: cfg.ClientEnrollmentListen, Enrollment: enrollment.Service{Store: db}})
 	if err != nil {
 		_ = runtime.Close()
@@ -114,7 +131,7 @@ func startServerWithStore(parent context.Context, cfg config.Server, db store.St
 			_ = runtime.Close()
 			return nil, fmt.Errorf("assemble runtime listener claims: %w", err)
 		}
-		adminService := admin.Service{Store: db, StaticListenerClaims: staticListenerClaims, DefaultJoin: joinDefaults}
+		adminService := admin.Service{Store: db, StaticListenerClaims: staticListenerClaims, ProxyEntryDefaults: proxyEntryDefaults, DefaultJoin: joinDefaults, ListenerReconciler: runtime}
 		if cfg.ACMEEnabled {
 			certificateService, err := managedCertificateService(cfg, db)
 			if err != nil {
@@ -145,60 +162,13 @@ func startServerWithStore(parent context.Context, cfg config.Server, db store.St
 		go func() { _ = controlTLSListener.Serve(runtimeCtx) }()
 	}
 
-	tcpProxies, err := db.Proxies().EnabledByType(runtimeCtx, domain.ProxyTCP)
-	if err != nil {
+	if err := runtime.startDefaultProxyListeners(); err != nil {
 		_ = runtime.Close()
-		return nil, fmt.Errorf("list tcp proxies: %w", err)
+		return nil, err
 	}
-	for _, proxy := range tcpProxies {
-		if proxy.EntryPort == 0 {
-			_ = runtime.Close()
-			return nil, fmt.Errorf("tcp proxy %s entry port is required", proxy.ID)
-		}
-		listener, err := tcpproxy.Listen(tcpproxy.Entry{Store: db, Sessions: sessions, ListenAddress: tcpproxy.Address(cfg.TCPEntryHost, proxy.EntryPort), EntryPort: proxy.EntryPort, Stats: persistentStats})
-		if err != nil {
-			_ = runtime.Close()
-			return nil, fmt.Errorf("listen tcp proxy %s: %w", proxy.ID, err)
-		}
-		runtime.TCPListeners = append(runtime.TCPListeners, listener)
-		go func(listener *tcpproxy.Listener) { _ = listener.Serve(runtimeCtx) }(listener)
-	}
-
-	udpProxies, err := db.Proxies().EnabledByType(runtimeCtx, domain.ProxyUDP)
-	if err != nil {
+	if err := runtime.ReconcileProxyListeners(runtimeCtx); err != nil {
 		_ = runtime.Close()
-		return nil, fmt.Errorf("list udp proxies: %w", err)
-	}
-	for _, proxy := range udpProxies {
-		if proxy.EntryPort == 0 {
-			_ = runtime.Close()
-			return nil, fmt.Errorf("udp proxy %s entry port is required", proxy.ID)
-		}
-		listener, err := udpproxy.Listen(udpproxy.Entry{Store: db, Sessions: sessions, ListenAddress: udpproxy.Address(cfg.TCPEntryHost, proxy.EntryPort), EntryPort: proxy.EntryPort, Stats: persistentStats})
-		if err != nil {
-			_ = runtime.Close()
-			return nil, fmt.Errorf("listen udp proxy %s: %w", proxy.ID, err)
-		}
-		runtime.UDPListeners = append(runtime.UDPListeners, listener)
-		go func(listener *udpproxy.Listener) { _ = listener.Serve(runtimeCtx) }(listener)
-	}
-
-	httpServer, err := httpproxy.Listen(httpproxy.Entry{Store: db, Sessions: sessions, ListenAddress: cfg.HTTPEntryListen, Stats: persistentStats})
-	if err != nil {
-		_ = runtime.Close()
-		return nil, fmt.Errorf("listen http proxy: %w", err)
-	}
-	runtime.HTTPServer = httpServer
-	go func() { _ = httpServer.Serve(runtimeCtx) }()
-
-	if cfg.HTTPSEntryListen != "" {
-		httpsListener, err := httpsproxy.Listen(httpsproxy.Entry{Store: db, Sessions: sessions, ListenAddress: cfg.HTTPSEntryListen, CertificateDir: cfg.CertificateDir})
-		if err != nil {
-			_ = runtime.Close()
-			return nil, fmt.Errorf("listen https proxy: %w", err)
-		}
-		runtime.HTTPSListener = httpsListener
-		go func() { _ = httpsListener.Serve(runtimeCtx) }()
+		return nil, fmt.Errorf("reconcile proxy listeners: %w", err)
 	}
 	if cfg.ACMEEnabled {
 		certificateService, err := managedCertificateService(cfg, db)
@@ -267,18 +237,7 @@ func (runtime *ServerRuntime) Close() error {
 		if runtime.AdminServer != nil {
 			closeErr = errors.Join(closeErr, runtime.AdminServer.Close())
 		}
-		for _, listener := range runtime.TCPListeners {
-			closeErr = errors.Join(closeErr, listener.Close())
-		}
-		for _, listener := range runtime.UDPListeners {
-			closeErr = errors.Join(closeErr, listener.Close())
-		}
-		if runtime.HTTPServer != nil {
-			closeErr = errors.Join(closeErr, runtime.HTTPServer.Close())
-		}
-		if runtime.HTTPSListener != nil {
-			closeErr = errors.Join(closeErr, runtime.HTTPSListener.Close())
-		}
+		closeErr = errors.Join(closeErr, runtime.closeProxyListeners())
 		if runtime.persistentStats != nil {
 			closeErr = errors.Join(closeErr, runtime.persistentStats.Close(context.Background()))
 		}

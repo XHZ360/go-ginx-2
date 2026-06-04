@@ -178,6 +178,8 @@ TUI 是面向服务器终端的本地运维入口，使用与其他 `goginx-admi
 ./bin/goginx-admin create-https-proxy -id secure-1 -user user-1 -client client-1 -name secure -host secure.example.com -target-host 127.0.0.1 -target-port 8443
 ```
 
+四类代理都可以用 `-bind-host` 指定实际监听地址。TCP/UDP 的 `-port` 是入口端口；HTTP/HTTPS 的 `-host` 是 HTTP Host 或 HTTPS SNI 域名，`-port` 可指定入口监听端口，留空时使用 `http_entry_listen` 或 `https_entry_listen` 的默认端口。服务端会在代理创建、更新、启用、禁用或删除后热协调 listener：需要的新监听会立即启动，不再被任何启用代理使用的自定义监听会关闭。
+
 HTTPS 静态证书终止示例：
 
 ```bash

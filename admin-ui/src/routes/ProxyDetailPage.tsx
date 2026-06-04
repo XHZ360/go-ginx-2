@@ -3,7 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { ConfirmButton } from '../components/ConfirmButton';
 import { Dialog } from '../components/Dialog';
-import { TextAreaField, TextField } from '../components/FormField';
+import { SelectField, TextAreaField, TextField } from '../components/FormField';
 import { ErrorState, NotFoundState, PageLoading, ValidationBanner } from '../components/PageStates';
 import { useAuthedQuery } from '../hooks/useAuthedQuery';
 import { useMutationWithAuth } from '../hooks/useMutationWithAuth';
@@ -12,12 +12,35 @@ import {
   mutateDisableProxy,
   mutateEnableProxy,
   mutateUpdateProxy,
+  queryProxyEntryOptions,
   queryProxy,
 } from '../lib/admin-graphql';
-import { isApiError, isNotFoundError } from '../lib/contracts';
+import { isApiError, isNotFoundError, type ProxyEntryHostOption, type ProxyRecord } from '../lib/contracts';
 import { formatBytes } from '../lib/format';
 import { useSession } from '../session';
 import { DetailBackLink, PageHeader, StatusBadge, Timestamp } from './shared';
+
+function isRouteProxy(type: string) {
+  return type === 'http' || type === 'https';
+}
+
+function isHTTPSProxy(type: string) {
+  return type === 'https';
+}
+
+function proxyEntryLabel(proxy: ProxyRecord) {
+  const bindHost = proxy.config.entryBindHost || 'default';
+  const entryPort = proxy.config.entryPort ?? 'default';
+  const routeHost = isRouteProxy(proxy.type) ? proxy.config.entryHost || 'domain pending' : '';
+  return routeHost ? `${bindHost}:${entryPort} / ${routeHost}` : `${bindHost}:${entryPort}`;
+}
+
+function hostOptionsWithCurrent(options: ProxyEntryHostOption[], current: string) {
+  if (!current || options.some((option) => option.value === current)) {
+    return options;
+  }
+  return [{ value: current, label: current, isDefault: false }, ...options];
+}
 
 export function ProxyDetailPage() {
   const { id = '' } = useParams();
@@ -30,16 +53,23 @@ export function ProxyDetailPage() {
   const [localForm, setLocalForm] = useState({
     name: '',
     description: '',
+    entryBindHost: '',
     entryHost: '',
     entryPort: '',
     targetHost: '',
     targetPort: '',
+    certFile: '',
+    keyFile: '',
   });
 
   const query = useAuthedQuery({
     queryKey: ['proxy', id],
     queryFn: () => queryProxy(id),
     refetchInterval: session.pollIntervalSeconds * 1000,
+  });
+  const entryOptionsQuery = useAuthedQuery({
+    queryKey: ['proxy-entry-options'],
+    queryFn: () => queryProxyEntryOptions(),
   });
 
   useEffect(() => {
@@ -49,25 +79,31 @@ export function ProxyDetailPage() {
     setLocalForm({
       name: query.data.name,
       description: query.data.description ?? '',
+      entryBindHost: query.data.config.entryBindHost ?? '',
       entryHost: query.data.config.entryHost ?? '',
       entryPort: query.data.config.entryPort?.toString() ?? '',
       targetHost: query.data.config.targetHost ?? '',
       targetPort: query.data.config.targetPort?.toString() ?? '',
+      certFile: query.data.config.certFile ?? '',
+      keyFile: query.data.config.keyFile ?? '',
     });
   }, [query.data]);
 
   const updateMutation = useMutationWithAuth({
-    mutationFn: (input: { name: string; description: string; entryHost: string; entryPort: string; targetHost: string; targetPort: string }) =>
+    mutationFn: (input: { name: string; description: string; entryBindHost: string; entryHost: string; entryPort: string; targetHost: string; targetPort: string; certFile: string; keyFile: string }) =>
       mutateUpdateProxy(session.csrfToken ?? '', {
         id,
         type: query.data?.type,
         name: input.name,
         description: input.description,
         config: {
+          entryBindHost: input.entryBindHost || undefined,
           entryHost: input.entryHost || undefined,
           entryPort: input.entryPort ? Number(input.entryPort) : undefined,
           targetHost: input.targetHost || undefined,
           targetPort: input.targetPort ? Number(input.targetPort) : undefined,
+          certFile: input.certFile || undefined,
+          keyFile: input.keyFile || undefined,
         },
       }),
     onSuccess: async () => {
@@ -88,16 +124,28 @@ export function ProxyDetailPage() {
   const enableMutation = useMutationWithAuth({
     mutationFn: () => mutateEnableProxy(session.csrfToken ?? '', id),
     onSuccess: async () => {
+      setFormError(undefined);
       await queryClient.invalidateQueries({ queryKey: ['proxy', id] });
       await queryClient.invalidateQueries({ queryKey: ['proxies'] });
+    },
+    onError: (error) => {
+      if (isApiError(error)) {
+        setFormError(error.code === 'ENTRY_CONFLICT' ? 'Requested listener conflicts with an active listener.' : error.message);
+      }
     },
   });
 
   const disableMutation = useMutationWithAuth({
     mutationFn: () => mutateDisableProxy(session.csrfToken ?? '', id),
     onSuccess: async () => {
+      setFormError(undefined);
       await queryClient.invalidateQueries({ queryKey: ['proxy', id] });
       await queryClient.invalidateQueries({ queryKey: ['proxies'] });
+    },
+    onError: (error) => {
+      if (isApiError(error)) {
+        setFormError(error.message);
+      }
     },
   });
 
@@ -128,6 +176,9 @@ export function ProxyDetailPage() {
   }
 
   const proxy = query.data;
+  const usesRouteHost = isRouteProxy(proxy.type);
+  const usesCertificates = isHTTPSProxy(proxy.type);
+  const hostOptions = hostOptionsWithCurrent(entryOptionsQuery.data?.hosts ?? [{ value: '', label: 'Default listener host', isDefault: true }], localForm.entryBindHost);
 
   return (
     <section className="page-section">
@@ -161,8 +212,10 @@ export function ProxyDetailPage() {
             <div><dt>Type</dt><dd>{proxy.type}</dd></div>
             <div><dt>Status</dt><dd><StatusBadge value={proxy.status} /></dd></div>
             <div><dt>Runtime</dt><dd><StatusBadge value={proxy.runtimeStatus} /></dd></div>
-            <div><dt>Entry</dt><dd>{proxy.config.entryHost ?? '0.0.0.0'}:{proxy.config.entryPort ?? '-'}</dd></div>
+            <div><dt>Entry</dt><dd>{proxyEntryLabel(proxy)}</dd></div>
+            {usesRouteHost ? <div><dt>Domain</dt><dd>{proxy.config.entryHost || 'Not set'}</dd></div> : null}
             <div><dt>Target</dt><dd>{proxy.config.targetHost ?? '-'}:{proxy.config.targetPort ?? '-'}</dd></div>
+            {usesCertificates ? <div><dt>Certificate files</dt><dd>{proxy.config.certFile || 'Not set'} / {proxy.config.keyFile || 'Not set'}</dd></div> : null}
             <div><dt>Description</dt><dd>{proxy.description || 'No description'}</dd></div>
           </dl>
         </article>
@@ -208,13 +261,30 @@ export function ProxyDetailPage() {
           </>
         }
       >
+        {formError ? <div className="banner banner--danger">{formError}</div> : null}
+        {entryOptionsQuery.error ? <div className="banner banner--danger">Entry options failed to load: {entryOptionsQuery.error.message}</div> : null}
         <ValidationBanner fields={fieldErrors} />
         <div className="stack">
           <TextField label="Name" value={localForm.name} error={fieldErrors?.name} onChange={(event) => setLocalForm((current) => ({ ...current, name: event.target.value }))} />
-          <TextField label="Entry host" value={localForm.entryHost} error={fieldErrors?.entryHost} onChange={(event) => setLocalForm((current) => ({ ...current, entryHost: event.target.value }))} />
+          <SelectField label="Bind host" value={localForm.entryBindHost} error={fieldErrors?.entryBindHost} onChange={(event) => setLocalForm((current) => ({ ...current, entryBindHost: event.target.value }))}>
+            {hostOptions.map((option) => (
+              <option key={option.value || '__default'} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </SelectField>
           <TextField label="Entry port" value={localForm.entryPort} error={fieldErrors?.entryPort} onChange={(event) => setLocalForm((current) => ({ ...current, entryPort: event.target.value }))} />
+          {usesRouteHost ? (
+            <TextField label={proxy.type === 'https' ? 'SNI domain' : 'HTTP domain'} value={localForm.entryHost} error={fieldErrors?.entryHost} onChange={(event) => setLocalForm((current) => ({ ...current, entryHost: event.target.value }))} />
+          ) : null}
           <TextField label="Target host" value={localForm.targetHost} error={fieldErrors?.targetHost} onChange={(event) => setLocalForm((current) => ({ ...current, targetHost: event.target.value }))} />
           <TextField label="Target port" value={localForm.targetPort} error={fieldErrors?.targetPort} onChange={(event) => setLocalForm((current) => ({ ...current, targetPort: event.target.value }))} />
+          {usesCertificates ? (
+            <>
+              <TextField label="Certificate file" value={localForm.certFile} error={fieldErrors?.certFile} onChange={(event) => setLocalForm((current) => ({ ...current, certFile: event.target.value }))} />
+              <TextField label="Private key file" value={localForm.keyFile} error={fieldErrors?.keyFile} onChange={(event) => setLocalForm((current) => ({ ...current, keyFile: event.target.value }))} />
+            </>
+          ) : null}
           <TextAreaField label="Description" value={localForm.description} onChange={(event) => setLocalForm((current) => ({ ...current, description: event.target.value }))} />
         </div>
       </Dialog>

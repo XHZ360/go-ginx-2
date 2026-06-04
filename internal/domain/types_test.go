@@ -29,3 +29,36 @@ func TestProxyValidateAcceptsHTTPHostRouteWithoutPort(t *testing.T) {
 		t.Fatalf("expected valid proxy: %v", err)
 	}
 }
+
+func TestListenerClaimConflictsOnWildcardBindHost(t *testing.T) {
+	wildcard := ListenerClaim{Protocol: ListenerProtocolTCP, Network: ListenerNetworkTCP, BindHost: "0.0.0.0", Port: 10022}
+	concrete := ListenerClaim{Protocol: ListenerProtocolTCP, Network: ListenerNetworkTCP, BindHost: "127.0.0.1", Port: 10022}
+
+	if !wildcard.Conflicts(concrete) || !concrete.Conflicts(wildcard) {
+		t.Fatal("expected wildcard and concrete bind hosts on the same port to conflict")
+	}
+}
+
+func TestListenerClaimAllowsSharedHTTPListener(t *testing.T) {
+	first := ListenerClaim{Protocol: ListenerProtocolHTTP, Network: ListenerNetworkTCP, BindHost: "127.0.0.1", Port: 8080}
+	second := ListenerClaim{Protocol: ListenerProtocolHTTP, Network: ListenerNetworkTCP, BindHost: "127.0.0.1", Port: 8080}
+	tcp := ListenerClaim{Protocol: ListenerProtocolTCP, Network: ListenerNetworkTCP, BindHost: "127.0.0.1", Port: 8080}
+
+	if first.Conflicts(second) {
+		t.Fatal("expected HTTP listeners with the same socket to be shareable")
+	}
+	if !first.Conflicts(tcp) {
+		t.Fatal("expected HTTP and raw TCP listeners on the same socket to conflict")
+	}
+}
+
+func TestEffectiveProxyEntryAppliesHTTPDefaults(t *testing.T) {
+	proxy := Proxy{ID: "p1", Type: ProxyHTTP, EntryHost: "App.Example.com", TargetHost: "127.0.0.1", TargetPort: 8080}
+	entry, ok := EffectiveProxyEntry(proxy, ProxyEntryDefaults{HTTPBindHost: "127.0.0.1", HTTPPort: 18080})
+	if !ok {
+		t.Fatal("expected effective entry")
+	}
+	if entry.BindHost != "127.0.0.1" || entry.Port != 18080 || entry.RouteHost != "app.example.com" {
+		t.Fatalf("unexpected effective entry: %+v", entry)
+	}
+}

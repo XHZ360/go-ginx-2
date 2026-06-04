@@ -279,20 +279,41 @@ func (cfg Client) Validate() error {
 
 func (cfg Server) RuntimeListenerClaims(includeAdmin bool) ([]domain.ListenerClaim, error) {
 	claims := make([]domain.ListenerClaim, 0, 6)
-	claims = append(claims, listenerClaimFromAddress("control_quic_listen", domain.ListenerNetworkUDP, cfg.ControlQUICListen)...)
-	claims = append(claims, listenerClaimFromAddress("control_tls_listen", domain.ListenerNetworkTCP, cfg.ControlTLSListen)...)
-	claims = append(claims, listenerClaimFromAddress("client_enrollment_listen", domain.ListenerNetworkTCP, cfg.ClientEnrollmentListen)...)
+	claims = append(claims, listenerClaimFromAddress("control_quic_listen", "control_quic", domain.ListenerNetworkUDP, cfg.ControlQUICListen)...)
+	claims = append(claims, listenerClaimFromAddress("control_tls_listen", "control_tls", domain.ListenerNetworkTCP, cfg.ControlTLSListen)...)
+	claims = append(claims, listenerClaimFromAddress("client_enrollment_listen", "client_enrollment", domain.ListenerNetworkTCP, cfg.ClientEnrollmentListen)...)
 	if includeAdmin {
-		claims = append(claims, listenerClaimFromAddress("admin_listen", domain.ListenerNetworkTCP, cfg.AdminListen)...)
+		claims = append(claims, listenerClaimFromAddress("admin_listen", "admin", domain.ListenerNetworkTCP, cfg.AdminListen)...)
 	}
-	claims = append(claims, listenerClaimFromAddress("http_entry_listen", domain.ListenerNetworkTCP, cfg.HTTPEntryListen)...)
-	claims = append(claims, listenerClaimFromAddress("https_entry_listen", domain.ListenerNetworkTCP, cfg.HTTPSEntryListen)...)
+	claims = append(claims, listenerClaimFromAddress("http_entry_listen", domain.ListenerProtocolHTTP, domain.ListenerNetworkTCP, cfg.HTTPEntryListen)...)
+	claims = append(claims, listenerClaimFromAddress("https_entry_listen", domain.ListenerProtocolHTTPS, domain.ListenerNetworkTCP, cfg.HTTPSEntryListen)...)
 	for index := range claims {
 		if claims[index].Port == 0 {
 			return nil, fmt.Errorf("%s port is invalid", claims[index].Source)
 		}
 	}
 	return claims, nil
+}
+
+func (cfg Server) ProxyEntryDefaults() (domain.ProxyEntryDefaults, error) {
+	httpHost, httpPort, err := domain.ParseListenAddress(cfg.HTTPEntryListen)
+	if err != nil {
+		return domain.ProxyEntryDefaults{}, fmt.Errorf("http_entry_listen must be host:port: %w", err)
+	}
+	defaults := domain.ProxyEntryDefaults{
+		TCPBindHost:  domain.NormalizeBindHost(cfg.TCPEntryHost),
+		HTTPBindHost: httpHost,
+		HTTPPort:     httpPort,
+	}
+	if strings.TrimSpace(cfg.HTTPSEntryListen) != "" {
+		httpsHost, httpsPort, err := domain.ParseListenAddress(cfg.HTTPSEntryListen)
+		if err != nil {
+			return domain.ProxyEntryDefaults{}, fmt.Errorf("https_entry_listen must be host:port: %w", err)
+		}
+		defaults.HTTPSBindHost = httpsHost
+		defaults.HTTPSPort = httpsPort
+	}
+	return defaults, nil
 }
 
 func loadJSON(path string, target any) error {
@@ -428,18 +449,18 @@ func trimIPv6Brackets(host string) string {
 	return strings.TrimSuffix(strings.TrimPrefix(strings.TrimSpace(host), "["), "]")
 }
 
-func listenerClaimFromAddress(sourceName string, network string, value string) []domain.ListenerClaim {
+func listenerClaimFromAddress(sourceName string, protocol string, network string, value string) []domain.ListenerClaim {
 	value = strings.TrimSpace(value)
 	if value == "" {
 		return nil
 	}
-	_, portText, err := net.SplitHostPort(value)
+	host, portText, err := net.SplitHostPort(value)
 	if err != nil {
-		return []domain.ListenerClaim{{Network: network, Source: sourceName}}
+		return []domain.ListenerClaim{{Protocol: protocol, Network: network, Source: sourceName}}
 	}
 	port, err := strconv.Atoi(portText)
 	if err != nil {
-		return []domain.ListenerClaim{{Network: network, Source: sourceName}}
+		return []domain.ListenerClaim{{Protocol: protocol, Network: network, Source: sourceName}}
 	}
-	return []domain.ListenerClaim{{Network: network, Port: port, Source: sourceName, ResourceID: sourceName}}
+	return []domain.ListenerClaim{{Protocol: protocol, Network: network, BindHost: domain.NormalizeBindHost(host), Port: port, Source: sourceName, ResourceID: sourceName}}
 }

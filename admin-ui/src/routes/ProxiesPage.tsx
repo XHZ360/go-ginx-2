@@ -12,11 +12,12 @@ import {
   mutateDisableProxy,
   mutateEnableProxy,
   queryClients,
+  queryProxyEntryOptions,
   queryProxies,
   queryUsers,
   type ProxyFilter,
 } from '../lib/admin-graphql';
-import { isApiError, type Client, type User } from '../lib/contracts';
+import { isApiError, type Client, type ProxyEntryHostOption, type ProxyRecord, type User } from '../lib/contracts';
 import { formatBytes } from '../lib/format';
 import { useSession } from '../session';
 import { PageHeader, Pagination, StatusBadge, Timestamp } from './shared';
@@ -30,11 +31,36 @@ function defaultProxyForm(userId = '', clientId = '') {
     name: '',
     type: 'http',
     description: '',
+    entryBindHost: '',
     entryHost: '',
     entryPort: '',
     targetHost: '',
     targetPort: '',
+    certFile: '',
+    keyFile: '',
   };
+}
+
+function isRouteProxy(type: string) {
+  return type === 'http' || type === 'https';
+}
+
+function isHTTPSProxy(type: string) {
+  return type === 'https';
+}
+
+function proxyEntryLabel(proxy: ProxyRecord) {
+  const bindHost = proxy.config.entryBindHost || 'default';
+  const entryPort = proxy.config.entryPort ?? 'default';
+  const routeHost = isRouteProxy(proxy.type) ? proxy.config.entryHost || 'domain pending' : '';
+  return routeHost ? `${bindHost}:${entryPort} / ${routeHost}` : `${bindHost}:${entryPort}`;
+}
+
+function hostOptionsWithCurrent(options: ProxyEntryHostOption[], current: string) {
+  if (!current || options.some((option) => option.value === current)) {
+    return options;
+  }
+  return [{ value: current, label: current, isDefault: false }, ...options];
 }
 
 function userOptionLabel(user: User) {
@@ -104,6 +130,7 @@ export function ProxiesPage() {
   const [filter, setFilter] = useState<ProxyFilter>(defaultFilter);
   const [showDialog, setShowDialog] = useState(false);
   const [formError, setFormError] = useState<string>();
+  const [actionError, setActionError] = useState<string>();
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>();
   const [form, setForm] = useState(defaultProxyForm());
 
@@ -135,6 +162,10 @@ export function ProxiesPage() {
         filter: form.userId ? { userId: form.userId } : {},
       }),
   });
+  const entryOptionsQuery = useAuthedQuery({
+    queryKey: ['proxy-entry-options'],
+    queryFn: () => queryProxyEntryOptions(),
+  });
 
   const createMutation = useMutationWithAuth({
     mutationFn: () =>
@@ -145,10 +176,13 @@ export function ProxiesPage() {
         type: form.type,
         description: form.description,
         config: {
+          entryBindHost: form.entryBindHost || undefined,
           entryHost: form.entryHost || undefined,
           entryPort: form.entryPort ? Number(form.entryPort) : undefined,
           targetHost: form.targetHost || undefined,
           targetPort: form.targetPort ? Number(form.targetPort) : undefined,
+          certFile: form.certFile || undefined,
+          keyFile: form.keyFile || undefined,
         },
       }),
     onSuccess: async () => {
@@ -175,22 +209,32 @@ export function ProxiesPage() {
   const enableMutation = useMutationWithAuth({
     mutationFn: (id: string) => mutateEnableProxy(session.csrfToken ?? '', id),
     onSuccess: async (_, id) => {
+      setActionError(undefined);
       await queryClient.invalidateQueries({ queryKey: ['proxies'] });
       await queryClient.invalidateQueries({ queryKey: ['proxy', id] });
+    },
+    onError: (error) => {
+      setActionError(error instanceof Error ? error.message : 'Enable failed.');
     },
   });
 
   const disableMutation = useMutationWithAuth({
     mutationFn: (id: string) => mutateDisableProxy(session.csrfToken ?? '', id),
     onSuccess: async (_, id) => {
+      setActionError(undefined);
       await queryClient.invalidateQueries({ queryKey: ['proxies'] });
       await queryClient.invalidateQueries({ queryKey: ['proxy', id] });
     },
+    onError: (error) => {
+      setActionError(error instanceof Error ? error.message : 'Disable failed.');
+    },
   });
 
-  const usesPort = useMemo(() => form.type === 'tcp' || form.type === 'udp', [form.type]);
+  const usesRouteHost = useMemo(() => isRouteProxy(form.type), [form.type]);
+  const usesCertificates = useMemo(() => isHTTPSProxy(form.type), [form.type]);
   const users = usersQuery.data?.items ?? [];
   const clients = clientsQuery.data?.items ?? [];
+  const hostOptions = hostOptionsWithCurrent(entryOptionsQuery.data?.hosts ?? [{ value: '', label: 'Default listener host', isDefault: true }], form.entryBindHost);
   const clientSelectionMismatch = Boolean(form.clientId && clientsQuery.data && !clients.some((client) => client.id === form.clientId));
 
   const openCreateDialog = () => {
@@ -245,6 +289,7 @@ export function ProxiesPage() {
           </>
         }
       />
+      {actionError ? <div className="banner banner--danger">{actionError}</div> : null}
 
       <div className="toolbar-grid toolbar-grid--wide">
         <TextField label="Search" value={filter.query ?? ''} onChange={(event) => setFilter((current) => ({ ...current, query: event.target.value }))} />
@@ -300,7 +345,7 @@ export function ProxiesPage() {
                     <td>{proxy.clientId}</td>
                     <td><StatusBadge value={proxy.status} /></td>
                     <td><StatusBadge value={proxy.runtimeStatus} /></td>
-                    <td>{proxy.config.entryHost ?? '0.0.0.0'}:{proxy.config.entryPort ?? '-'}</td>
+                    <td>{proxyEntryLabel(proxy)}</td>
                     <td>{proxy.config.targetHost ?? '-'}:{proxy.config.targetPort ?? '-'}</td>
                     <td>{formatBytes(proxy.uploadBytes)}</td>
                     <td>{formatBytes(proxy.downloadBytes)}</td>
@@ -342,20 +387,46 @@ export function ProxiesPage() {
         {formError ? <div className="banner banner--danger">{formError}</div> : null}
         {usersQuery.error ? <div className="banner banner--danger">User options failed to load: {usersQuery.error.message}</div> : null}
         {clientsQuery.error ? <div className="banner banner--danger">Client options failed to load: {clientsQuery.error.message}</div> : null}
+        {entryOptionsQuery.error ? <div className="banner banner--danger">Entry options failed to load: {entryOptionsQuery.error.message}</div> : null}
         <ValidationBanner fields={fieldErrors} />
         <div className="toolbar-grid toolbar-grid--wide">
           <UserSelectField value={form.userId} users={users} error={fieldErrors?.userId} onChange={updateFormUser} />
           <ClientSelectField value={form.clientId} clients={clients} error={clientSelectionMismatch ? 'Selected client does not belong to the selected user.' : fieldErrors?.clientId} onChange={(clientId) => setForm((current) => ({ ...current, clientId }))} />
           <TextField label="Name" value={form.name} error={fieldErrors?.name} onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))} />
-          <SelectField label="Type" value={form.type} onChange={(event) => setForm((current) => ({ ...current, type: event.target.value }))}>
+          <SelectField label="Type" value={form.type} onChange={(event) => setForm((current) => {
+            const type = event.target.value;
+            return {
+              ...current,
+              type,
+              entryHost: isRouteProxy(type) ? current.entryHost : '',
+              certFile: isHTTPSProxy(type) ? current.certFile : '',
+              keyFile: isHTTPSProxy(type) ? current.keyFile : '',
+            };
+          })}>
             <option value="tcp">TCP</option>
             <option value="udp">UDP</option>
             <option value="http">HTTP</option>
             <option value="https">HTTPS</option>
           </SelectField>
-          <TextField label={usesPort ? 'Entry port' : 'Entry host'} value={usesPort ? form.entryPort : form.entryHost} error={usesPort ? fieldErrors?.entryPort : fieldErrors?.entryHost} onChange={(event) => setForm((current) => usesPort ? { ...current, entryPort: event.target.value } : { ...current, entryHost: event.target.value })} />
+          <SelectField label="Bind host" value={form.entryBindHost} error={fieldErrors?.entryBindHost} onChange={(event) => setForm((current) => ({ ...current, entryBindHost: event.target.value }))}>
+            {hostOptions.map((option) => (
+              <option key={option.value || '__default'} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </SelectField>
+          <TextField label="Entry port" value={form.entryPort} error={fieldErrors?.entryPort} onChange={(event) => setForm((current) => ({ ...current, entryPort: event.target.value }))} />
+          {usesRouteHost ? (
+            <TextField label={form.type === 'https' ? 'SNI domain' : 'HTTP domain'} value={form.entryHost} error={fieldErrors?.entryHost} onChange={(event) => setForm((current) => ({ ...current, entryHost: event.target.value }))} />
+          ) : null}
           <TextField label="Target host" value={form.targetHost} error={fieldErrors?.targetHost} onChange={(event) => setForm((current) => ({ ...current, targetHost: event.target.value }))} />
           <TextField label="Target port" value={form.targetPort} error={fieldErrors?.targetPort} onChange={(event) => setForm((current) => ({ ...current, targetPort: event.target.value }))} />
+          {usesCertificates ? (
+            <>
+              <TextField label="Certificate file" value={form.certFile} error={fieldErrors?.certFile} onChange={(event) => setForm((current) => ({ ...current, certFile: event.target.value }))} />
+              <TextField label="Private key file" value={form.keyFile} error={fieldErrors?.keyFile} onChange={(event) => setForm((current) => ({ ...current, keyFile: event.target.value }))} />
+            </>
+          ) : null}
           <TextAreaField label="Description" value={form.description} onChange={(event) => setForm((current) => ({ ...current, description: event.target.value }))} />
         </div>
       </Dialog>

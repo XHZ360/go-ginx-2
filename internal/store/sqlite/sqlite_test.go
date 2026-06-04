@@ -195,6 +195,44 @@ func TestDuplicateHTTPSHostIsRejectedCaseInsensitive(t *testing.T) {
 	}
 }
 
+func TestProxyEntryBindHostAndRouteQueries(t *testing.T) {
+	ctx := context.Background()
+	db := openTestStore(t)
+	seedUserAndClient(t, ctx, db)
+
+	first := domain.Proxy{ID: "p1", UserID: "u1", ClientID: "c1", Name: "web", Type: domain.ProxyHTTP, Status: domain.ProxyEnabled, EntryBindHost: "127.0.0.1", EntryHost: "app.example.com", EntryPort: 18080, TargetHost: "127.0.0.1", TargetPort: 8080}
+	second := domain.Proxy{ID: "p2", UserID: "u1", ClientID: "c1", Name: "web-alt", Type: domain.ProxyHTTP, Status: domain.ProxyEnabled, EntryBindHost: "127.0.0.1", EntryHost: "app.example.com", EntryPort: 18081, TargetHost: "127.0.0.1", TargetPort: 8081}
+	duplicate := domain.Proxy{ID: "p3", UserID: "u1", ClientID: "c1", Name: "web-dup", Type: domain.ProxyHTTP, Status: domain.ProxyEnabled, EntryBindHost: "127.0.0.1", EntryHost: "APP.EXAMPLE.COM", EntryPort: 18080, TargetHost: "127.0.0.1", TargetPort: 8082}
+	legacy := domain.Proxy{ID: "p4", UserID: "u1", ClientID: "c1", Name: "legacy", Type: domain.ProxyHTTP, Status: domain.ProxyEnabled, EntryHost: "legacy.example.com", TargetHost: "127.0.0.1", TargetPort: 8083}
+
+	if err := db.Proxies().Create(ctx, first); err != nil {
+		t.Fatalf("create first proxy: %v", err)
+	}
+	if err := db.Proxies().Create(ctx, second); err != nil {
+		t.Fatalf("create second proxy on different port: %v", err)
+	}
+	if err := db.Proxies().Create(ctx, duplicate); !errors.Is(err, store.ErrAlreadyExists) {
+		t.Fatalf("expected duplicate route to fail, got %v", err)
+	}
+	if err := db.Proxies().Create(ctx, legacy); err != nil {
+		t.Fatalf("create legacy proxy: %v", err)
+	}
+	found, err := db.Proxies().ByHTTPRoute(ctx, "127.0.0.1", 18081, "app.example.com", false)
+	if err != nil {
+		t.Fatalf("lookup exact route: %v", err)
+	}
+	if found.ID != second.ID || found.EntryBindHost != "127.0.0.1" {
+		t.Fatalf("unexpected exact route: %+v", found)
+	}
+	found, err = db.Proxies().ByHTTPRoute(ctx, "127.0.0.1", 18080, "legacy.example.com", true)
+	if err != nil {
+		t.Fatalf("lookup fallback route: %v", err)
+	}
+	if found.ID != legacy.ID {
+		t.Fatalf("unexpected fallback route: %+v", found)
+	}
+}
+
 func TestByClientIDReturnsOnlyClientOwnedProxies(t *testing.T) {
 	ctx := context.Background()
 	db := openTestStore(t)

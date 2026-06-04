@@ -18,12 +18,14 @@ import (
 )
 
 type Entry struct {
-	Store         store.Store
-	Sessions      *session.Manager
-	ListenAddress string
-	EntryPort     int
-	NewConnection func() (string, error)
-	Stats         stats.Recorder
+	Store               store.Store
+	Sessions            *session.Manager
+	ListenAddress       string
+	EntryBindHost       string
+	EntryPort           int
+	IncludeDefaultEntry bool
+	NewConnection       func() (string, error)
+	Stats               stats.Recorder
 }
 
 type Listener struct {
@@ -72,7 +74,7 @@ func (listener *Listener) handleConn(ctx context.Context, conn net.Conn) {
 	if entryPort == 0 {
 		entryPort = portFromAddr(listener.listener.Addr())
 	}
-	proxy, err := listener.entry.Store.Proxies().ByTCPEntryPort(ctx, entryPort)
+	proxy, err := listener.entry.Store.Proxies().ByTCPEntry(ctx, listener.entry.EntryBindHost, entryPort, listener.entry.IncludeDefaultEntry)
 	if err != nil || proxy.Status != domain.ProxyEnabled {
 		return
 	}

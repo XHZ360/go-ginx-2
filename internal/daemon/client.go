@@ -75,10 +75,12 @@ func runClientSession(ctx context.Context, cfg config.Client, tlsConfig *tls.Con
 	select {
 	case <-ctx.Done():
 		_ = client.Close()
+		log.Printf("client control session closed: client_id=%s protocol=%s session_id=%s reason=context_cancelled", cfg.ClientID, response.SelectedProtocol, response.SessionID)
 		return true, nil
 	case err := <-heartbeatDone:
 		_ = client.Close()
 		if errors.Is(err, context.Canceled) {
+			log.Printf("client control session closed: client_id=%s protocol=%s session_id=%s reason=heartbeat_context_cancelled", cfg.ClientID, response.SelectedProtocol, response.SessionID)
 			return true, nil
 		}
 		log.Printf("client heartbeat loop stopped: client_id=%s error=%v", cfg.ClientID, err)
@@ -86,6 +88,7 @@ func runClientSession(ctx context.Context, cfg config.Client, tlsConfig *tls.Con
 	case err := <-serveDone:
 		_ = client.Close()
 		if errors.Is(err, context.Canceled) {
+			log.Printf("client control session closed: client_id=%s protocol=%s session_id=%s reason=proxy_stream_context_cancelled", cfg.ClientID, response.SelectedProtocol, response.SessionID)
 			return true, nil
 		}
 		log.Printf("client proxy stream loop stopped: client_id=%s error=%v", cfg.ClientID, err)

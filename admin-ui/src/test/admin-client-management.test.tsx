@@ -139,6 +139,24 @@ function createFetchMock(options?: { createValidationFailure?: boolean; rotateFa
     if (query.includes('query Client(')) {
       return graphQL({ data: { client: client('client-1', 'user-1', 'home-node') } });
     }
+    if (query.includes('query ProxyEntryOptions')) {
+      return graphQL({
+        data: {
+          proxyEntryOptions: {
+            tcpDefaultBindHost: '127.0.0.1',
+            httpDefaultBindHost: '127.0.0.1',
+            httpDefaultPort: 80,
+            httpsDefaultBindHost: '127.0.0.1',
+            httpsDefaultPort: 443,
+            hosts: [
+              { value: '', label: 'Default listener host', isDefault: true },
+              { value: '127.0.0.1', label: 'Loopback IPv4', isDefault: false },
+              { value: '0.0.0.0', label: 'All IPv4 interfaces', isDefault: false },
+            ],
+          },
+        },
+      });
+    }
     if (query.includes('query Proxies')) {
       return graphQL({ data: { proxies: { items: [], totalCount: 0, pageInfo } } });
     }
@@ -211,7 +229,7 @@ function createFetchMock(options?: { createValidationFailure?: boolean; rotateFa
               tcpErrorCount: 0,
               udpErrorCount: 0,
               httpErrorCount: 0,
-              config: { entryHost: 'app.example.com', targetHost: '127.0.0.1', targetPort: 8080 },
+              config: { entryBindHost: '', entryHost: 'app.example.com', entryPort: 8080, targetHost: '127.0.0.1', targetPort: 8080 },
               certificate: null,
               createdAt: '2026-05-17T00:00:00Z',
               updatedAt: '2026-05-17T00:00:00Z',
@@ -334,7 +352,8 @@ describe('admin client management', () => {
 
     await userEvent.selectOptions(within(dialog).getByLabelText('Client'), 'client-all');
     await userEvent.type(within(dialog).getByLabelText('Name'), 'web');
-    await userEvent.type(within(dialog).getByLabelText('Entry host'), 'app.example.com');
+    await userEvent.type(within(dialog).getByLabelText('Entry port'), '8080');
+    await userEvent.type(within(dialog).getByLabelText('HTTP domain'), 'app.example.com');
     await userEvent.type(within(dialog).getByLabelText('Target host'), '127.0.0.1');
     await userEvent.type(within(dialog).getByLabelText('Target port'), '8080');
     await userEvent.click(within(dialog).getByRole('button', { name: 'Create proxy' }));

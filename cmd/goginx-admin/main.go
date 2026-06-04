@@ -233,8 +233,9 @@ func createProxy(flags *flag.FlagSet, args []string, proxyType domain.ProxyType)
 	userID := flags.String("user", "", "owner user ID")
 	clientID := flags.String("client", "", "client ID")
 	name := flags.String("name", "", "proxy name")
-	entryHost := flags.String("host", "", "HTTP or HTTPS entry host")
-	entryPort := flags.Int("port", 0, "TCP entry port")
+	entryBindHost := flags.String("bind-host", "", "entry listener bind host")
+	entryHost := flags.String("host", "", "HTTP Host or HTTPS SNI domain")
+	entryPort := flags.Int("port", 0, "entry listener port")
 	targetHost := flags.String("target-host", "", "local target host")
 	targetPort := flags.Int("target-port", 0, "local target port")
 	certFile := flags.String("cert-file", "", "HTTPS termination certificate file")
@@ -252,7 +253,7 @@ func createProxy(flags *flag.FlagSet, args []string, proxyType domain.ProxyType)
 		return err
 	}
 	defer closeStore()
-	proxy, err := service.CreateProxy(context.Background(), admin.CreateProxyInput{ID: *id, UserID: *userID, ClientID: *clientID, Name: *name, Type: proxyType, EntryHost: *entryHost, EntryPort: *entryPort, TargetHost: *targetHost, TargetPort: *targetPort, CertFile: *certFile, KeyFile: *keyFile, Description: *description, ActorID: actorID})
+	proxy, err := service.CreateProxy(context.Background(), admin.CreateProxyInput{ID: *id, UserID: *userID, ClientID: *clientID, Name: *name, Type: proxyType, EntryBindHost: *entryBindHost, EntryHost: *entryHost, EntryPort: *entryPort, TargetHost: *targetHost, TargetPort: *targetPort, CertFile: *certFile, KeyFile: *keyFile, Description: *description, ActorID: actorID})
 	if err != nil {
 		return err
 	}

@@ -155,6 +155,21 @@ type certificatePayload struct {
 	Status      string
 }
 
+type proxyEntryOptions struct {
+	TCPDefaultBindHost   string
+	HTTPDefaultBindHost  string
+	HTTPDefaultPort      int
+	HTTPSDefaultBindHost string
+	HTTPSDefaultPort     int
+	Hosts                []proxyEntryHostOption
+}
+
+type proxyEntryHostOption struct {
+	Value     string
+	Label     string
+	IsDefault bool
+}
+
 func Listen(entry Entry) (*Server, error) {
 	frontend, err := loadAdminFrontend(entry.AdminFrontendDir)
 	if err != nil {
@@ -704,6 +719,7 @@ func (server *Server) buildSchema() (graphql.Schema, error) {
 		"type":                 &graphql.Field{Type: graphql.String},
 		"status":               &graphql.Field{Type: graphql.String},
 		"runtimeStatus":        &graphql.Field{Type: graphql.String},
+		"entryBindHost":        &graphql.Field{Type: graphql.String},
 		"entryHost":            &graphql.Field{Type: graphql.String},
 		"entryPort":            &graphql.Field{Type: graphql.Int},
 		"targetHost":           &graphql.Field{Type: graphql.String},
@@ -750,10 +766,26 @@ func (server *Server) buildSchema() (graphql.Schema, error) {
 		"updatedAt":       &graphql.Field{Type: graphql.String, Resolve: userUpdatedAtResolve()},
 	}})
 	proxyConfigType := graphql.NewObject(graphql.ObjectConfig{Name: "AdminProxyConfig", Fields: graphql.Fields{
-		"entryHost":  &graphql.Field{Type: graphql.String},
-		"entryPort":  &graphql.Field{Type: graphql.Int},
-		"targetHost": &graphql.Field{Type: graphql.String},
-		"targetPort": &graphql.Field{Type: graphql.Int},
+		"entryBindHost": &graphql.Field{Type: graphql.String},
+		"entryHost":     &graphql.Field{Type: graphql.String},
+		"entryPort":     &graphql.Field{Type: graphql.Int},
+		"targetHost":    &graphql.Field{Type: graphql.String},
+		"targetPort":    &graphql.Field{Type: graphql.Int},
+		"certFile":      &graphql.Field{Type: graphql.String},
+		"keyFile":       &graphql.Field{Type: graphql.String},
+	}})
+	proxyEntryHostOptionType := graphql.NewObject(graphql.ObjectConfig{Name: "AdminProxyEntryHostOption", Fields: graphql.Fields{
+		"value":     &graphql.Field{Type: graphql.String},
+		"label":     &graphql.Field{Type: graphql.String},
+		"isDefault": &graphql.Field{Type: graphql.Boolean},
+	}})
+	proxyEntryOptionsType := graphql.NewObject(graphql.ObjectConfig{Name: "AdminProxyEntryOptions", Fields: graphql.Fields{
+		"tcpDefaultBindHost":   &graphql.Field{Type: graphql.String},
+		"httpDefaultBindHost":  &graphql.Field{Type: graphql.String},
+		"httpDefaultPort":      &graphql.Field{Type: graphql.Int},
+		"httpsDefaultBindHost": &graphql.Field{Type: graphql.String},
+		"httpsDefaultPort":     &graphql.Field{Type: graphql.Int},
+		"hosts":                &graphql.Field{Type: graphql.NewList(proxyEntryHostOptionType)},
 	}})
 	proxyType := graphql.NewObject(graphql.ObjectConfig{Name: "AdminProxy", Fields: graphql.Fields{
 		"id":                   &graphql.Field{Type: graphql.String},
@@ -850,12 +882,13 @@ func (server *Server) buildSchema() (graphql.Schema, error) {
 		"sort":   &graphql.InputObjectFieldConfig{Type: sortInput},
 	}})
 	proxyConfigInput := graphql.NewInputObject(graphql.InputObjectConfig{Name: "AdminProxyConfigInput", Fields: graphql.InputObjectConfigFieldMap{
-		"entryHost":  &graphql.InputObjectFieldConfig{Type: graphql.String},
-		"entryPort":  &graphql.InputObjectFieldConfig{Type: graphql.Int},
-		"targetHost": &graphql.InputObjectFieldConfig{Type: graphql.String},
-		"targetPort": &graphql.InputObjectFieldConfig{Type: graphql.Int},
-		"certFile":   &graphql.InputObjectFieldConfig{Type: graphql.String},
-		"keyFile":    &graphql.InputObjectFieldConfig{Type: graphql.String},
+		"entryBindHost": &graphql.InputObjectFieldConfig{Type: graphql.String},
+		"entryHost":     &graphql.InputObjectFieldConfig{Type: graphql.String},
+		"entryPort":     &graphql.InputObjectFieldConfig{Type: graphql.Int},
+		"targetHost":    &graphql.InputObjectFieldConfig{Type: graphql.String},
+		"targetPort":    &graphql.InputObjectFieldConfig{Type: graphql.Int},
+		"certFile":      &graphql.InputObjectFieldConfig{Type: graphql.String},
+		"keyFile":       &graphql.InputObjectFieldConfig{Type: graphql.String},
 	}})
 	createUserInput := graphql.NewInputObject(graphql.InputObjectConfig{Name: "AdminCreateUserInput", Fields: graphql.InputObjectConfigFieldMap{
 		"username": &graphql.InputObjectFieldConfig{Type: graphql.NewNonNull(graphql.String)},
@@ -996,6 +1029,9 @@ func (server *Server) buildSchema() (graphql.Schema, error) {
 		})},
 		"proxy": &graphql.Field{Type: proxyType, Args: graphql.FieldConfigArgument{"id": &graphql.ArgumentConfig{Type: graphql.NewNonNull(graphql.String)}}, Resolve: server.wrapResolve(func(params graphql.ResolveParams) (interface{}, error) {
 			return server.query.ProxyDetail(params.Context, params.Args["id"].(string))
+		})},
+		"proxyEntryOptions": &graphql.Field{Type: proxyEntryOptionsType, Resolve: server.wrapResolve(func(params graphql.ResolveParams) (interface{}, error) {
+			return server.proxyEntryOptions(), nil
 		})},
 		"certificates": &graphql.Field{Type: certificatesPageType, Args: graphql.FieldConfigArgument{"input": &graphql.ArgumentConfig{Type: certificatesInput}}, Resolve: server.wrapResolve(func(params graphql.ResolveParams) (interface{}, error) {
 			return server.query.ListManagedCertificates(params.Context, certificateListInputFromArgs(params.Args))
@@ -1307,9 +1343,78 @@ func defaultString(value string, fallback string) string {
 	return value
 }
 
+func (server *Server) proxyEntryOptions() proxyEntryOptions {
+	defaults := server.commands.ProxyEntryDefaults
+	options := proxyEntryOptions{
+		TCPDefaultBindHost:   defaults.TCPBindHost,
+		HTTPDefaultBindHost:  defaults.HTTPBindHost,
+		HTTPDefaultPort:      defaults.HTTPPort,
+		HTTPSDefaultBindHost: defaults.HTTPSBindHost,
+		HTTPSDefaultPort:     defaults.HTTPSPort,
+	}
+	seen := map[string]bool{}
+	add := func(value string, label string, isDefault bool) {
+		value = domain.NormalizeBindHost(value)
+		if seen[value] {
+			return
+		}
+		seen[value] = true
+		if strings.TrimSpace(label) == "" {
+			label = value
+		}
+		if value == "" {
+			label = "Default listener host"
+		}
+		options.Hosts = append(options.Hosts, proxyEntryHostOption{Value: value, Label: label, IsDefault: isDefault})
+	}
+	add("", "Default listener host", true)
+	add(defaults.TCPBindHost, "TCP/UDP default", defaults.TCPBindHost != "")
+	add(defaults.HTTPBindHost, "HTTP default", defaults.HTTPBindHost != "" && defaults.HTTPBindHost != defaults.TCPBindHost)
+	add(defaults.HTTPSBindHost, "HTTPS default", defaults.HTTPSBindHost != "" && defaults.HTTPSBindHost != defaults.TCPBindHost && defaults.HTTPSBindHost != defaults.HTTPBindHost)
+	add("0.0.0.0", "All IPv4 interfaces", false)
+	add("127.0.0.1", "Loopback IPv4", false)
+	for _, host := range localIPv4Hosts() {
+		add(host, host, false)
+	}
+	return options
+}
+
+func localIPv4Hosts() []string {
+	interfaces, err := net.Interfaces()
+	if err != nil {
+		return nil
+	}
+	hosts := make([]string, 0)
+	for _, iface := range interfaces {
+		if iface.Flags&net.FlagUp == 0 {
+			continue
+		}
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, addr := range addrs {
+			var ip net.IP
+			switch value := addr.(type) {
+			case *net.IPNet:
+				ip = value.IP
+			case *net.IPAddr:
+				ip = value.IP
+			}
+			if ip == nil || ip.IsLoopback() || ip.IsUnspecified() {
+				continue
+			}
+			if ipv4 := ip.To4(); ipv4 != nil {
+				hosts = append(hosts, ipv4.String())
+			}
+		}
+	}
+	return hosts
+}
+
 func createProxyInputFromArgs(args map[string]interface{}, actor string) admin.CreateProxyInput {
 	config := mapValue(args, "config")
-	return admin.CreateProxyInput{UserID: stringValue(args, "userId"), ClientID: stringValue(args, "clientId"), Name: stringValue(args, "name"), Type: domain.ProxyType(stringValue(args, "type")), EntryHost: stringValue(config, "entryHost"), EntryPort: intValue(config, "entryPort"), TargetHost: stringValue(config, "targetHost"), TargetPort: intValue(config, "targetPort"), CertFile: stringValue(config, "certFile"), KeyFile: stringValue(config, "keyFile"), Description: stringValue(args, "description"), ActorID: actor}
+	return admin.CreateProxyInput{UserID: stringValue(args, "userId"), ClientID: stringValue(args, "clientId"), Name: stringValue(args, "name"), Type: domain.ProxyType(stringValue(args, "type")), EntryBindHost: stringValue(config, "entryBindHost"), EntryHost: stringValue(config, "entryHost"), EntryPort: intValue(config, "entryPort"), TargetHost: stringValue(config, "targetHost"), TargetPort: intValue(config, "targetPort"), CertFile: stringValue(config, "certFile"), KeyFile: stringValue(config, "keyFile"), Description: stringValue(args, "description"), ActorID: actor}
 }
 
 func createClientJoinInputFromArgs(args map[string]interface{}, actor string) admin.CreateClientJoinInput {
@@ -1335,7 +1440,7 @@ func deploymentRelativePath(path string) string {
 
 func updateProxyInputFromArgs(args map[string]interface{}, actor string) admin.UpdateProxyInput {
 	config := mapValue(args, "config")
-	return admin.UpdateProxyInput{ID: stringValue(args, "id"), Type: domain.ProxyType(stringValue(args, "type")), Name: stringValue(args, "name"), EntryHost: stringValue(config, "entryHost"), EntryPort: intValue(config, "entryPort"), TargetHost: stringValue(config, "targetHost"), TargetPort: intValue(config, "targetPort"), CertFile: stringValue(config, "certFile"), KeyFile: stringValue(config, "keyFile"), Description: stringValue(args, "description"), ActorID: actor}
+	return admin.UpdateProxyInput{ID: stringValue(args, "id"), Type: domain.ProxyType(stringValue(args, "type")), Name: stringValue(args, "name"), EntryBindHost: stringValue(config, "entryBindHost"), EntryHost: stringValue(config, "entryHost"), EntryPort: intValue(config, "entryPort"), TargetHost: stringValue(config, "targetHost"), TargetPort: intValue(config, "targetPort"), CertFile: stringValue(config, "certFile"), KeyFile: stringValue(config, "keyFile"), Description: stringValue(args, "description"), ActorID: actor}
 }
 
 func userListInputFromArgs(args map[string]interface{}) adminquery.UserListInput {

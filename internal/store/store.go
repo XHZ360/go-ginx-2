@@ -90,8 +90,12 @@ type ProxyRepository interface {
 	List(ctx context.Context) ([]domain.Proxy, error)
 	ByClientID(ctx context.Context, clientID string) ([]domain.Proxy, error)
 	EnabledByType(ctx context.Context, proxyType domain.ProxyType) ([]domain.Proxy, error)
+	ByTCPEntry(ctx context.Context, bindHost string, port int, includeDefault bool) (domain.Proxy, error)
+	ByUDPEntry(ctx context.Context, bindHost string, port int, includeDefault bool) (domain.Proxy, error)
 	ByTCPEntryPort(ctx context.Context, port int) (domain.Proxy, error)
 	ByUDPEntryPort(ctx context.Context, port int) (domain.Proxy, error)
+	ByHTTPRoute(ctx context.Context, bindHost string, port int, host string, includeDefault bool) (domain.Proxy, error)
+	ByHTTPSRoute(ctx context.Context, bindHost string, port int, host string, includeDefault bool) (domain.Proxy, error)
 	ByHTTPHost(ctx context.Context, host string) (domain.Proxy, error)
 	ByHTTPSHost(ctx context.Context, host string) (domain.Proxy, error)
 	Update(ctx context.Context, proxy domain.Proxy) error

@@ -255,6 +255,7 @@ func (server Server) handleControl(ctx context.Context, stream io.ReadWriteClose
 		if markedOnline && latest {
 			server.setClientRuntimeStatus(context.Background(), closed.ClientID, domain.ClientOffline)
 		}
+		log.Printf("control session closed: client_id=%s protocol=%s session_id=%s latest=%t", closed.ClientID, closed.Protocol, closed.ID, latest)
 	}()
 
 	envelope, err := ReadMessage(stream)
@@ -289,10 +290,14 @@ func (server Server) handleControl(ctx context.Context, stream io.ReadWriteClose
 	}
 	registered := session.Session{ID: sessionID}
 	if _, ok := opener.(*tcpTLSMux); !ok {
-		registered, _, err = server.Sessions.Register(registerInput)
+		var replaced *session.Session
+		registered, replaced, err = server.Sessions.Register(registerInput)
 		if err != nil {
 			_ = WriteMessage(stream, MessageAuthResponse, AuthResponse{Accepted: false, Reason: err.Error()})
 			return
+		}
+		if replaced != nil {
+			log.Printf("control session replaced: client_id=%s old_session_id=%s new_session_id=%s protocol=%s", replaced.ClientID, replaced.ID, registered.ID, result.SelectedProtocol)
 		}
 		registeredSessionID = registered.ID
 	}
@@ -318,10 +323,14 @@ func (server Server) handleControl(ctx context.Context, stream io.ReadWriteClose
 	}
 	if mux, ok := opener.(*tcpTLSMux); ok {
 		mux.Start()
-		registered, _, err = server.Sessions.Register(registerInput)
+		var replaced *session.Session
+		registered, replaced, err = server.Sessions.Register(registerInput)
 		if err != nil {
 			log.Printf("control tcp tls session register failed: client_id=%s session_id=%s error=%v", result.Client.ID, sessionID, err)
 			return
+		}
+		if replaced != nil {
+			log.Printf("control session replaced: client_id=%s old_session_id=%s new_session_id=%s protocol=%s", replaced.ClientID, replaced.ID, registered.ID, result.SelectedProtocol)
 		}
 		registeredSessionID = registered.ID
 		muxReady = true

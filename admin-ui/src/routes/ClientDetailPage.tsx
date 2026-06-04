@@ -7,9 +7,21 @@ import { useMutationWithAuth } from '../hooks/useMutationWithAuth';
 import { mutateDeleteClient, mutateRotateClientCredential, queryClient } from '../lib/admin-graphql';
 import { formatBytes } from '../lib/format';
 import { ErrorState, NotFoundState, PageLoading } from '../components/PageStates';
-import { isNotFoundError } from '../lib/contracts';
+import { isNotFoundError, type ProxySummary } from '../lib/contracts';
 import { useSession } from '../session';
 import { DetailBackLink, PageHeader, StatusBadge, Timestamp } from './shared';
+
+function isRouteProxy(type: string) {
+  return type === 'http' || type === 'https';
+}
+
+function formatProxyEntry(proxy: ProxySummary) {
+  const bindHost = proxy.entryBindHost || 'default';
+  const entryPort = proxy.entryPort ?? 'default';
+  const routeHost = isRouteProxy(proxy.type) ? proxy.entryHost || 'domain pending' : '';
+
+  return routeHost ? `${bindHost}:${entryPort} / ${routeHost}` : `${bindHost}:${entryPort}`;
+}
 
 export function ClientDetailPage() {
   const { id = '' } = useParams();
@@ -153,7 +165,7 @@ export function ClientDetailPage() {
                     <td>{proxy.type}</td>
                     <td><StatusBadge value={proxy.status} /></td>
                     <td><StatusBadge value={proxy.runtimeStatus} /></td>
-                    <td>{proxy.entryHost ?? '0.0.0.0'}:{proxy.entryPort ?? '-'}</td>
+                    <td>{formatProxyEntry(proxy)}</td>
                   </tr>
                 ))}
               </tbody>

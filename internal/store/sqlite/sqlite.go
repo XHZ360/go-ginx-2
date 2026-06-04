@@ -57,6 +57,12 @@ func (s *Store) migrate(ctx context.Context) error {
 	if err := addProxyCertificateColumns(ctx, s.db); err != nil {
 		return err
 	}
+	if err := addProxyEntryBindHostColumn(ctx, s.db); err != nil {
+		return err
+	}
+	if err := migrateProxyEntryIndexes(ctx, s.db); err != nil {
+		return err
+	}
 	if err := addClientEnrollmentTokenColumn(ctx, s.db); err != nil {
 		return err
 	}
@@ -230,6 +236,8 @@ func (r clientEnrollmentRepository) MarkUsed(ctx context.Context, id string, use
 
 type proxyRepository struct{ db *sql.DB }
 
+const proxySelectColumns = `id, user_id, client_id, name, type, status, entry_bind_host, entry_host, entry_port, target_host, target_port, cert_file, key_file, description, created_at, updated_at`
+
 func (r proxyRepository) Create(ctx context.Context, proxy domain.Proxy) error {
 	if err := proxy.Validate(); err != nil {
 		return err
@@ -241,16 +249,16 @@ func (r proxyRepository) Create(ctx context.Context, proxy domain.Proxy) error {
 	if proxy.UpdatedAt.IsZero() {
 		proxy.UpdatedAt = now
 	}
-	_, err := r.db.ExecContext(ctx, `insert into proxies (id, user_id, client_id, name, type, status, entry_host, entry_port, target_host, target_port, cert_file, key_file, description, created_at, updated_at) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, proxy.ID, proxy.UserID, proxy.ClientID, proxy.Name, proxy.Type, proxy.Status, proxy.EntryHost, proxy.EntryPort, proxy.TargetHost, proxy.TargetPort, proxy.CertFile, proxy.KeyFile, proxy.Description, proxy.CreatedAt, proxy.UpdatedAt)
+	_, err := r.db.ExecContext(ctx, `insert into proxies (id, user_id, client_id, name, type, status, entry_bind_host, entry_host, entry_port, target_host, target_port, cert_file, key_file, description, created_at, updated_at) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, proxy.ID, proxy.UserID, proxy.ClientID, proxy.Name, proxy.Type, proxy.Status, domain.NormalizeBindHost(proxy.EntryBindHost), proxy.EntryHost, proxy.EntryPort, proxy.TargetHost, proxy.TargetPort, proxy.CertFile, proxy.KeyFile, proxy.Description, proxy.CreatedAt, proxy.UpdatedAt)
 	return translateError(err)
 }
 
 func (r proxyRepository) ByID(ctx context.Context, id string) (domain.Proxy, error) {
-	return scanProxy(r.db.QueryRowContext(ctx, `select id, user_id, client_id, name, type, status, entry_host, entry_port, target_host, target_port, cert_file, key_file, description, created_at, updated_at from proxies where id = ?`, id))
+	return scanProxy(r.db.QueryRowContext(ctx, `select `+proxySelectColumns+` from proxies where id = ?`, id))
 }
 
 func (r proxyRepository) List(ctx context.Context) ([]domain.Proxy, error) {
-	rows, err := r.db.QueryContext(ctx, `select id, user_id, client_id, name, type, status, entry_host, entry_port, target_host, target_port, cert_file, key_file, description, created_at, updated_at from proxies order by created_at, id`)
+	rows, err := r.db.QueryContext(ctx, `select `+proxySelectColumns+` from proxies order by created_at, id`)
 	if err != nil {
 		return nil, err
 	}
@@ -270,7 +278,7 @@ func (r proxyRepository) List(ctx context.Context) ([]domain.Proxy, error) {
 }
 
 func (r proxyRepository) ByClientID(ctx context.Context, clientID string) ([]domain.Proxy, error) {
-	rows, err := r.db.QueryContext(ctx, `select id, user_id, client_id, name, type, status, entry_host, entry_port, target_host, target_port, cert_file, key_file, description, created_at, updated_at from proxies where client_id = ? order by created_at, id`, clientID)
+	rows, err := r.db.QueryContext(ctx, `select `+proxySelectColumns+` from proxies where client_id = ? order by created_at, id`, clientID)
 	if err != nil {
 		return nil, err
 	}
@@ -291,7 +299,7 @@ func (r proxyRepository) ByClientID(ctx context.Context, clientID string) ([]dom
 }
 
 func (r proxyRepository) EnabledByType(ctx context.Context, proxyType domain.ProxyType) ([]domain.Proxy, error) {
-	rows, err := r.db.QueryContext(ctx, `select id, user_id, client_id, name, type, status, entry_host, entry_port, target_host, target_port, cert_file, key_file, description, created_at, updated_at from proxies where type = ? and status = ? order by created_at, id`, proxyType, domain.ProxyEnabled)
+	rows, err := r.db.QueryContext(ctx, `select `+proxySelectColumns+` from proxies where type = ? and status = ? order by created_at, id`, proxyType, domain.ProxyEnabled)
 	if err != nil {
 		return nil, err
 	}
@@ -311,20 +319,62 @@ func (r proxyRepository) EnabledByType(ctx context.Context, proxyType domain.Pro
 	return proxies, nil
 }
 
+func (r proxyRepository) ByTCPEntry(ctx context.Context, bindHost string, port int, includeDefault bool) (domain.Proxy, error) {
+	return r.byEntry(ctx, domain.ProxyTCP, domain.NormalizeBindHost(bindHost), port, "", includeDefault)
+}
+
+func (r proxyRepository) ByUDPEntry(ctx context.Context, bindHost string, port int, includeDefault bool) (domain.Proxy, error) {
+	return r.byEntry(ctx, domain.ProxyUDP, domain.NormalizeBindHost(bindHost), port, "", includeDefault)
+}
+
 func (r proxyRepository) ByTCPEntryPort(ctx context.Context, port int) (domain.Proxy, error) {
-	return scanProxy(r.db.QueryRowContext(ctx, `select id, user_id, client_id, name, type, status, entry_host, entry_port, target_host, target_port, cert_file, key_file, description, created_at, updated_at from proxies where type = ? and entry_port = ?`, domain.ProxyTCP, port))
+	return r.ByTCPEntry(ctx, "", port, true)
 }
 
 func (r proxyRepository) ByUDPEntryPort(ctx context.Context, port int) (domain.Proxy, error) {
-	return scanProxy(r.db.QueryRowContext(ctx, `select id, user_id, client_id, name, type, status, entry_host, entry_port, target_host, target_port, cert_file, key_file, description, created_at, updated_at from proxies where type = ? and entry_port = ?`, domain.ProxyUDP, port))
+	return r.ByUDPEntry(ctx, "", port, true)
+}
+
+func (r proxyRepository) ByHTTPRoute(ctx context.Context, bindHost string, port int, host string, includeDefault bool) (domain.Proxy, error) {
+	return r.byEntry(ctx, domain.ProxyHTTP, domain.NormalizeBindHost(bindHost), port, domain.NormalizeRouteHost(host), includeDefault)
+}
+
+func (r proxyRepository) ByHTTPSRoute(ctx context.Context, bindHost string, port int, host string, includeDefault bool) (domain.Proxy, error) {
+	return r.byEntry(ctx, domain.ProxyHTTPS, domain.NormalizeBindHost(bindHost), port, domain.NormalizeRouteHost(host), includeDefault)
 }
 
 func (r proxyRepository) ByHTTPHost(ctx context.Context, host string) (domain.Proxy, error) {
-	return scanProxy(r.db.QueryRowContext(ctx, `select id, user_id, client_id, name, type, status, entry_host, entry_port, target_host, target_port, cert_file, key_file, description, created_at, updated_at from proxies where type = ? and lower(entry_host) = lower(?)`, domain.ProxyHTTP, host))
+	return scanProxy(r.db.QueryRowContext(ctx, `select `+proxySelectColumns+` from proxies where type = ? and lower(entry_host) = lower(?) order by entry_bind_host <> '', entry_port <> 0 limit 1`, domain.ProxyHTTP, host))
 }
 
 func (r proxyRepository) ByHTTPSHost(ctx context.Context, host string) (domain.Proxy, error) {
-	return scanProxy(r.db.QueryRowContext(ctx, `select id, user_id, client_id, name, type, status, entry_host, entry_port, target_host, target_port, cert_file, key_file, description, created_at, updated_at from proxies where type = ? and lower(entry_host) = lower(?)`, domain.ProxyHTTPS, host))
+	return scanProxy(r.db.QueryRowContext(ctx, `select `+proxySelectColumns+` from proxies where type = ? and lower(entry_host) = lower(?) order by entry_bind_host <> '', entry_port <> 0 limit 1`, domain.ProxyHTTPS, host))
+}
+
+func (r proxyRepository) byEntry(ctx context.Context, proxyType domain.ProxyType, bindHost string, port int, routeHost string, includeDefault bool) (domain.Proxy, error) {
+	args := []any{proxyType, domain.NormalizeBindHost(bindHost), port}
+	routeClause := ""
+	if proxyType == domain.ProxyHTTP || proxyType == domain.ProxyHTTPS {
+		routeClause = " and lower(entry_host) = lower(?)"
+		args = append(args, routeHost)
+	}
+	defaultClause := ""
+	if includeDefault {
+		if proxyType == domain.ProxyHTTP || proxyType == domain.ProxyHTTPS {
+			defaultClause = " or (entry_bind_host = '' and (entry_port = 0 or entry_port = ?)"
+		} else {
+			defaultClause = " or (entry_bind_host = '' and entry_port = ?"
+		}
+		args = append(args, port)
+		if routeClause != "" {
+			defaultClause += " and lower(entry_host) = lower(?)"
+			args = append(args, routeHost)
+		}
+		defaultClause += ")"
+	}
+	query := `select ` + proxySelectColumns + ` from proxies where type = ? and ((lower(entry_bind_host) = lower(?) and entry_port = ?` + routeClause + `)` + defaultClause + `) order by case when lower(entry_bind_host) = lower(?) and entry_port = ? then 0 else 1 end limit 1`
+	args = append(args, bindHost, port)
+	return scanProxy(r.db.QueryRowContext(ctx, query, args...))
 }
 
 func (r proxyRepository) SetStatus(ctx context.Context, id string, status domain.ProxyStatus) error {
@@ -336,7 +386,7 @@ func (r proxyRepository) Update(ctx context.Context, proxy domain.Proxy) error {
 	if err := proxy.Validate(); err != nil {
 		return err
 	}
-	result, err := r.db.ExecContext(ctx, `update proxies set name = ?, status = ?, entry_host = ?, entry_port = ?, target_host = ?, target_port = ?, cert_file = ?, key_file = ?, description = ?, updated_at = ? where id = ?`, proxy.Name, proxy.Status, proxy.EntryHost, proxy.EntryPort, proxy.TargetHost, proxy.TargetPort, proxy.CertFile, proxy.KeyFile, proxy.Description, time.Now().UTC(), proxy.ID)
+	result, err := r.db.ExecContext(ctx, `update proxies set name = ?, status = ?, entry_bind_host = ?, entry_host = ?, entry_port = ?, target_host = ?, target_port = ?, cert_file = ?, key_file = ?, description = ?, updated_at = ? where id = ?`, proxy.Name, proxy.Status, domain.NormalizeBindHost(proxy.EntryBindHost), proxy.EntryHost, proxy.EntryPort, proxy.TargetHost, proxy.TargetPort, proxy.CertFile, proxy.KeyFile, proxy.Description, time.Now().UTC(), proxy.ID)
 	return resultError(result, err)
 }
 
@@ -579,13 +629,13 @@ func scanClientEnrollment(row *sql.Row) (domain.ClientEnrollment, error) {
 
 func scanProxy(row *sql.Row) (domain.Proxy, error) {
 	var proxy domain.Proxy
-	err := row.Scan(&proxy.ID, &proxy.UserID, &proxy.ClientID, &proxy.Name, &proxy.Type, &proxy.Status, &proxy.EntryHost, &proxy.EntryPort, &proxy.TargetHost, &proxy.TargetPort, &proxy.CertFile, &proxy.KeyFile, &proxy.Description, &proxy.CreatedAt, &proxy.UpdatedAt)
+	err := row.Scan(&proxy.ID, &proxy.UserID, &proxy.ClientID, &proxy.Name, &proxy.Type, &proxy.Status, &proxy.EntryBindHost, &proxy.EntryHost, &proxy.EntryPort, &proxy.TargetHost, &proxy.TargetPort, &proxy.CertFile, &proxy.KeyFile, &proxy.Description, &proxy.CreatedAt, &proxy.UpdatedAt)
 	return proxy, translateError(err)
 }
 
 func scanProxyRows(rows *sql.Rows) (domain.Proxy, error) {
 	var proxy domain.Proxy
-	err := rows.Scan(&proxy.ID, &proxy.UserID, &proxy.ClientID, &proxy.Name, &proxy.Type, &proxy.Status, &proxy.EntryHost, &proxy.EntryPort, &proxy.TargetHost, &proxy.TargetPort, &proxy.CertFile, &proxy.KeyFile, &proxy.Description, &proxy.CreatedAt, &proxy.UpdatedAt)
+	err := rows.Scan(&proxy.ID, &proxy.UserID, &proxy.ClientID, &proxy.Name, &proxy.Type, &proxy.Status, &proxy.EntryBindHost, &proxy.EntryHost, &proxy.EntryPort, &proxy.TargetHost, &proxy.TargetPort, &proxy.CertFile, &proxy.KeyFile, &proxy.Description, &proxy.CreatedAt, &proxy.UpdatedAt)
 	return proxy, err
 }
 
@@ -634,6 +684,29 @@ func addProxyCertificateColumns(ctx context.Context, db *sql.DB) error {
 		return err
 	}
 	return addColumnIfMissing(ctx, db, "proxies", "key_file", "text not null default ''")
+}
+
+func addProxyEntryBindHostColumn(ctx context.Context, db *sql.DB) error {
+	return addColumnIfMissing(ctx, db, "proxies", "entry_bind_host", "text not null default ''")
+}
+
+func migrateProxyEntryIndexes(ctx context.Context, db *sql.DB) error {
+	statements := []string{
+		`drop index if exists proxies_tcp_entry_port_unique`,
+		`drop index if exists proxies_udp_entry_port_unique`,
+		`drop index if exists proxies_http_entry_host_unique`,
+		`drop index if exists proxies_https_entry_host_unique`,
+		`create unique index if not exists proxies_tcp_entry_unique on proxies(lower(entry_bind_host), entry_port) where type = 'tcp' and entry_port > 0`,
+		`create unique index if not exists proxies_udp_entry_unique on proxies(lower(entry_bind_host), entry_port) where type = 'udp' and entry_port > 0`,
+		`create unique index if not exists proxies_http_route_unique on proxies(lower(entry_bind_host), entry_port, lower(entry_host)) where type = 'http' and entry_host <> ''`,
+		`create unique index if not exists proxies_https_route_unique on proxies(lower(entry_bind_host), entry_port, lower(entry_host)) where type = 'https' and entry_host <> ''`,
+	}
+	for _, statement := range statements {
+		if _, err := db.ExecContext(ctx, statement); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func addUserPasswordColumn(ctx context.Context, db *sql.DB) error {
@@ -746,6 +819,7 @@ create table if not exists proxies (
     name text not null,
     type text not null,
     status text not null,
+    entry_bind_host text not null default '',
     entry_host text not null default '',
     entry_port integer not null default 0,
     target_host text not null,
@@ -757,10 +831,10 @@ create table if not exists proxies (
     updated_at timestamp not null
 );
 
-create unique index if not exists proxies_tcp_entry_port_unique on proxies(entry_port) where type = 'tcp' and entry_port > 0;
-create unique index if not exists proxies_udp_entry_port_unique on proxies(entry_port) where type = 'udp' and entry_port > 0;
-create unique index if not exists proxies_http_entry_host_unique on proxies(lower(entry_host)) where type = 'http' and entry_host <> '';
-create unique index if not exists proxies_https_entry_host_unique on proxies(lower(entry_host)) where type = 'https' and entry_host <> '';
+create unique index if not exists proxies_tcp_entry_unique on proxies(lower(entry_bind_host), entry_port) where type = 'tcp' and entry_port > 0;
+create unique index if not exists proxies_udp_entry_unique on proxies(lower(entry_bind_host), entry_port) where type = 'udp' and entry_port > 0;
+create unique index if not exists proxies_http_route_unique on proxies(lower(entry_bind_host), entry_port, lower(entry_host)) where type = 'http' and entry_host <> '';
+create unique index if not exists proxies_https_route_unique on proxies(lower(entry_bind_host), entry_port, lower(entry_host)) where type = 'https' and entry_host <> '';
 
 create table if not exists managed_certificates (
     id text primary key,

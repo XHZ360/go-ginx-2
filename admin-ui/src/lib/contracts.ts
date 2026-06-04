@@ -64,6 +64,7 @@ export type ProxySummary = {
   type: string;
   status: string;
   runtimeStatus: string;
+  entryBindHost?: string | null;
   entryHost?: string | null;
   entryPort?: number | null;
   targetHost?: string | null;
@@ -100,10 +101,28 @@ export type ManagedCertificate = {
 };
 
 export type ProxyConfig = {
+  entryBindHost?: string | null;
   entryHost?: string | null;
   entryPort?: number | null;
   targetHost?: string | null;
   targetPort?: number | null;
+  certFile?: string | null;
+  keyFile?: string | null;
+};
+
+export type ProxyEntryHostOption = {
+  value: string;
+  label: string;
+  isDefault: boolean;
+};
+
+export type ProxyEntryOptions = {
+  tcpDefaultBindHost?: string | null;
+  httpDefaultBindHost?: string | null;
+  httpDefaultPort?: number | null;
+  httpsDefaultBindHost?: string | null;
+  httpsDefaultPort?: number | null;
+  hosts: ProxyEntryHostOption[];
 };
 
 export type ProxyRecord = {

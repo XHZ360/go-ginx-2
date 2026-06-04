@@ -203,6 +203,22 @@ func (r authProxyRepository) ByUDPEntryPort(context.Context, int) (domain.Proxy,
 	return domain.Proxy{}, store.ErrNotFound
 }
 
+func (r authProxyRepository) ByTCPEntry(context.Context, string, int, bool) (domain.Proxy, error) {
+	return domain.Proxy{}, store.ErrNotFound
+}
+
+func (r authProxyRepository) ByUDPEntry(context.Context, string, int, bool) (domain.Proxy, error) {
+	return domain.Proxy{}, store.ErrNotFound
+}
+
+func (r authProxyRepository) ByHTTPRoute(context.Context, string, int, string, bool) (domain.Proxy, error) {
+	return domain.Proxy{}, store.ErrNotFound
+}
+
+func (r authProxyRepository) ByHTTPSRoute(context.Context, string, int, string, bool) (domain.Proxy, error) {
+	return domain.Proxy{}, store.ErrNotFound
+}
+
 func (r authProxyRepository) ByHTTPHost(context.Context, string) (domain.Proxy, error) {
 	return domain.Proxy{}, store.ErrNotFound
 }

@@ -150,21 +150,22 @@ type ClientEnrollment struct {
 }
 
 type Proxy struct {
-	ID          string
-	UserID      string
-	ClientID    string
-	Name        string
-	Type        ProxyType
-	Status      ProxyStatus
-	EntryHost   string
-	EntryPort   int
-	TargetHost  string
-	TargetPort  int
-	CertFile    string
-	KeyFile     string
-	Description string
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
+	ID            string
+	UserID        string
+	ClientID      string
+	Name          string
+	Type          ProxyType
+	Status        ProxyStatus
+	EntryBindHost string
+	EntryHost     string
+	EntryPort     int
+	TargetHost    string
+	TargetPort    int
+	CertFile      string
+	KeyFile       string
+	Description   string
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
 }
 
 type ManagedCertificate struct {

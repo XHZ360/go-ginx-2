@@ -210,10 +210,13 @@ type ManagedCertificatePage struct {
 }
 
 type ProxyTypeConfig struct {
-	EntryHost  string
-	EntryPort  int
-	TargetHost string
-	TargetPort int
+	EntryBindHost string
+	EntryHost     string
+	EntryPort     int
+	TargetHost    string
+	TargetPort    int
+	CertFile      string
+	KeyFile       string
 }
 
 type ProxySummary struct {
@@ -222,6 +225,7 @@ type ProxySummary struct {
 	Type                 domain.ProxyType
 	Status               domain.ProxyStatus
 	RuntimeStatus        domain.ProxyStatus
+	EntryBindHost        string
 	EntryHost            string
 	EntryPort            int
 	TargetHost           string
@@ -590,7 +594,7 @@ func proxyListItemFromDomain(proxy domain.Proxy, runtimeSession session.Session,
 			runtimeStatus = domain.ProxyOnline
 		}
 	}
-	return ProxyListItem{ID: proxy.ID, UserID: proxy.UserID, ClientID: proxy.ClientID, Name: proxy.Name, Type: proxy.Type, Status: proxy.Status, Description: proxy.Description, RuntimeStatus: runtimeStatus, ActiveTCPConnections: proxyStats.TCPCurrentConnections, UploadBytes: proxyStats.TCPUploadBytes + proxyStats.UDPUploadBytes + proxyStats.HTTPUploadBytes, DownloadBytes: proxyStats.TCPDownloadBytes + proxyStats.UDPDownloadBytes + proxyStats.HTTPDownloadBytes, TCPErrorCount: proxyStats.TCPErrors, UDPErrorCount: proxyStats.UDPErrors, HTTPErrorCount: proxyStats.HTTPErrors, Config: ProxyTypeConfig{EntryHost: proxy.EntryHost, EntryPort: proxy.EntryPort, TargetHost: proxy.TargetHost, TargetPort: proxy.TargetPort}, Certificate: certificate, CreatedAt: proxy.CreatedAt, UpdatedAt: proxy.UpdatedAt}
+	return ProxyListItem{ID: proxy.ID, UserID: proxy.UserID, ClientID: proxy.ClientID, Name: proxy.Name, Type: proxy.Type, Status: proxy.Status, Description: proxy.Description, RuntimeStatus: runtimeStatus, ActiveTCPConnections: proxyStats.TCPCurrentConnections, UploadBytes: proxyStats.TCPUploadBytes + proxyStats.UDPUploadBytes + proxyStats.HTTPUploadBytes, DownloadBytes: proxyStats.TCPDownloadBytes + proxyStats.UDPDownloadBytes + proxyStats.HTTPDownloadBytes, TCPErrorCount: proxyStats.TCPErrors, UDPErrorCount: proxyStats.UDPErrors, HTTPErrorCount: proxyStats.HTTPErrors, Config: ProxyTypeConfig{EntryBindHost: proxy.EntryBindHost, EntryHost: proxy.EntryHost, EntryPort: proxy.EntryPort, TargetHost: proxy.TargetHost, TargetPort: proxy.TargetPort, CertFile: proxy.CertFile, KeyFile: proxy.KeyFile}, Certificate: certificate, CreatedAt: proxy.CreatedAt, UpdatedAt: proxy.UpdatedAt}
 }
 
 func proxySummaryFromDomain(proxy domain.Proxy, runtimeSession session.Session, proxyStats stats.ProxyStats) ProxySummary {
@@ -602,7 +606,7 @@ func proxySummaryFromDomain(proxy domain.Proxy, runtimeSession session.Session, 
 			runtimeStatus = domain.ProxyOnline
 		}
 	}
-	return ProxySummary{ID: proxy.ID, Name: proxy.Name, Type: proxy.Type, Status: proxy.Status, RuntimeStatus: runtimeStatus, EntryHost: proxy.EntryHost, EntryPort: proxy.EntryPort, TargetHost: proxy.TargetHost, TargetPort: proxy.TargetPort, ActiveTCPConnections: proxyStats.TCPCurrentConnections}
+	return ProxySummary{ID: proxy.ID, Name: proxy.Name, Type: proxy.Type, Status: proxy.Status, RuntimeStatus: runtimeStatus, EntryBindHost: proxy.EntryBindHost, EntryHost: proxy.EntryHost, EntryPort: proxy.EntryPort, TargetHost: proxy.TargetHost, TargetPort: proxy.TargetPort, ActiveTCPConnections: proxyStats.TCPCurrentConnections}
 }
 
 func certificateSummary(certificate domain.ManagedCertificate) ManagedCertificateSummary {

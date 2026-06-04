@@ -19,13 +19,15 @@ import (
 )
 
 type Entry struct {
-	Store         store.Store
-	Sessions      *session.Manager
-	ListenAddress string
-	EntryPort     int
-	IdleTimeout   time.Duration
-	NewSession    func() (string, error)
-	Stats         stats.Recorder
+	Store               store.Store
+	Sessions            *session.Manager
+	ListenAddress       string
+	EntryBindHost       string
+	EntryPort           int
+	IncludeDefaultEntry bool
+	IdleTimeout         time.Duration
+	NewSession          func() (string, error)
+	Stats               stats.Recorder
 }
 
 type Listener struct {
@@ -96,7 +98,7 @@ func (listener *Listener) handlePacket(ctx context.Context, remoteAddr net.Addr,
 	if entryPort == 0 {
 		entryPort = portFromAddr(listener.conn.LocalAddr())
 	}
-	proxy, err := listener.entry.Store.Proxies().ByUDPEntryPort(ctx, entryPort)
+	proxy, err := listener.entry.Store.Proxies().ByUDPEntry(ctx, listener.entry.EntryBindHost, entryPort, listener.entry.IncludeDefaultEntry)
 	if err != nil || proxy.Status != domain.ProxyEnabled {
 		return
 	}

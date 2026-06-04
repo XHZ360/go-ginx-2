@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"io"
+	"log"
 	"net"
 	nethttp "net/http"
 	"strings"
@@ -19,11 +20,14 @@ import (
 )
 
 type Entry struct {
-	Store         store.Store
-	Sessions      *session.Manager
-	ListenAddress string
-	NewRequest    func() (string, error)
-	Stats         stats.Recorder
+	Store                store.Store
+	Sessions             *session.Manager
+	ListenAddress        string
+	EntryBindHost        string
+	EntryPort            int
+	IncludeDefaultRoutes bool
+	NewRequest           func() (string, error)
+	Stats                stats.Recorder
 }
 
 type Server struct {
@@ -52,6 +56,10 @@ func (server *Server) Addr() net.Addr {
 	return server.ln.Addr()
 }
 
+func (server *Server) SetEntryPort(port int) {
+	server.entry.EntryPort = port
+}
+
 func (server *Server) Serve(ctx context.Context) error {
 	done := make(chan error, 1)
 	go func() { done <- server.server.Serve(server.ln) }()
@@ -72,8 +80,9 @@ func (server *Server) Close() error {
 }
 
 func (server *Server) ServeHTTP(w nethttp.ResponseWriter, r *nethttp.Request) {
-	proxy, err := server.entry.Store.Proxies().ByHTTPHost(r.Context(), hostWithoutPort(r.Host))
+	proxy, err := server.entry.Store.Proxies().ByHTTPRoute(r.Context(), server.entry.EntryBindHost, server.entry.EntryPort, hostWithoutPort(r.Host), server.entry.IncludeDefaultRoutes)
 	if err != nil || proxy.Status != domain.ProxyEnabled {
+		log.Printf("http proxy route failed: bind_host=%s port=%d host=%s category=route_miss", displayBindHost(server.entry.EntryBindHost), server.entry.EntryPort, hostWithoutPort(r.Host))
 		nethttp.Error(w, "proxy not found", nethttp.StatusNotFound)
 		return
 	}
@@ -88,12 +97,14 @@ func (server *Server) ServeHTTP(w nethttp.ResponseWriter, r *nethttp.Request) {
 	}
 	latest, ok := server.entry.Sessions.Latest(proxy.ClientID)
 	if !ok || latest.StreamOpener == nil {
+		log.Printf("http proxy route failed: bind_host=%s port=%d host=%s proxy_id=%s category=client_offline", displayBindHost(server.entry.EntryBindHost), server.entry.EntryPort, hostWithoutPort(r.Host), proxy.ID)
 		statusCode = nethttp.StatusServiceUnavailable
 		nethttp.Error(w, "client offline", nethttp.StatusServiceUnavailable)
 		return
 	}
 	stream, err := latest.StreamOpener.OpenStream(r.Context())
 	if err != nil {
+		log.Printf("http proxy route failed: bind_host=%s port=%d host=%s proxy_id=%s category=open_stream_failed error=%v", displayBindHost(server.entry.EntryBindHost), server.entry.EntryPort, hostWithoutPort(r.Host), proxy.ID, err)
 		nethttp.Error(w, "open proxy stream failed", nethttp.StatusBadGateway)
 		return
 	}
@@ -126,6 +137,14 @@ func (server *Server) ServeHTTP(w nethttp.ResponseWriter, r *nethttp.Request) {
 	bytes, err := io.Copy(w, response.Body)
 	downloadBytes = bytes
 	failed = err != nil || response.StatusCode >= 500
+}
+
+func displayBindHost(host string) string {
+	host = domain.NormalizeBindHost(host)
+	if host == "" {
+		return "*"
+	}
+	return host
 }
 
 func (server *Server) requestID() (string, error) {

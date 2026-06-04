@@ -22,7 +22,13 @@ type Service struct {
 	Store                store.Store
 	Certificates         certmanager.Service
 	StaticListenerClaims []domain.ListenerClaim
+	ProxyEntryDefaults   domain.ProxyEntryDefaults
+	ListenerReconciler   ProxyListenerReconciler
 	DefaultJoin          config.JoinServiceDefaults
+}
+
+type ProxyListenerReconciler interface {
+	ReconcileProxyListeners(ctx context.Context) error
 }
 
 type CreateUserInput struct {
@@ -73,33 +79,35 @@ type ReviewClientJoinTokenResult struct {
 }
 
 type CreateProxyInput struct {
-	ID          string
-	UserID      string
-	ClientID    string
-	Name        string
-	Type        domain.ProxyType
-	EntryHost   string
-	EntryPort   int
-	TargetHost  string
-	TargetPort  int
-	CertFile    string
-	KeyFile     string
-	Description string
-	ActorID     string
+	ID            string
+	UserID        string
+	ClientID      string
+	Name          string
+	Type          domain.ProxyType
+	EntryBindHost string
+	EntryHost     string
+	EntryPort     int
+	TargetHost    string
+	TargetPort    int
+	CertFile      string
+	KeyFile       string
+	Description   string
+	ActorID       string
 }
 
 type UpdateProxyInput struct {
-	ID          string
-	Type        domain.ProxyType
-	Name        string
-	EntryHost   string
-	EntryPort   int
-	TargetHost  string
-	TargetPort  int
-	CertFile    string
-	KeyFile     string
-	Description string
-	ActorID     string
+	ID            string
+	Type          domain.ProxyType
+	Name          string
+	EntryBindHost string
+	EntryHost     string
+	EntryPort     int
+	TargetHost    string
+	TargetPort    int
+	CertFile      string
+	KeyFile       string
+	Description   string
+	ActorID       string
 }
 
 type CertificateInput struct {
@@ -492,11 +500,16 @@ func (service Service) CreateProxy(ctx context.Context, input CreateProxyInput) 
 	if _, err := service.Store.Clients().ByID(ctx, input.ClientID); err != nil {
 		return domain.Proxy{}, err
 	}
-	proxy := domain.Proxy{ID: input.ID, UserID: input.UserID, ClientID: input.ClientID, Name: input.Name, Type: input.Type, Status: domain.ProxyEnabled, EntryHost: input.EntryHost, EntryPort: input.EntryPort, TargetHost: input.TargetHost, TargetPort: input.TargetPort, CertFile: input.CertFile, KeyFile: input.KeyFile, Description: input.Description}
+	proxy := domain.Proxy{ID: input.ID, UserID: input.UserID, ClientID: input.ClientID, Name: input.Name, Type: input.Type, Status: domain.ProxyEnabled, EntryBindHost: input.EntryBindHost, EntryHost: input.EntryHost, EntryPort: input.EntryPort, TargetHost: input.TargetHost, TargetPort: input.TargetPort, CertFile: input.CertFile, KeyFile: input.KeyFile, Description: input.Description}
 	if err := service.ensureProxyAdmission(ctx, proxy, ""); err != nil {
 		return domain.Proxy{}, err
 	}
 	if err := service.Store.Proxies().Create(ctx, proxy); err != nil {
+		return domain.Proxy{}, err
+	}
+	if err := service.reconcileProxyListeners(ctx); err != nil {
+		_ = service.Store.Proxies().Delete(ctx, proxy.ID)
+		_ = service.reconcileProxyListeners(ctx)
 		return domain.Proxy{}, err
 	}
 	action := "create_proxy"
@@ -526,6 +539,7 @@ func (service Service) UpdateProxy(ctx context.Context, input UpdateProxyInput) 
 	if err != nil {
 		return domain.Proxy{}, err
 	}
+	previous := existing
 	if input.Type != "" && input.Type != existing.Type {
 		return domain.Proxy{}, contracterr.Validation("validation failed", map[string]string{"type": "proxy type is immutable"})
 	}
@@ -533,6 +547,7 @@ func (service Service) UpdateProxy(ctx context.Context, input UpdateProxyInput) 
 		return domain.Proxy{}, contracterr.Unsupported("forward proxy is not supported in this management batch")
 	}
 	existing.Name = input.Name
+	existing.EntryBindHost = input.EntryBindHost
 	existing.EntryHost = input.EntryHost
 	existing.EntryPort = input.EntryPort
 	existing.TargetHost = input.TargetHost
@@ -540,13 +555,18 @@ func (service Service) UpdateProxy(ctx context.Context, input UpdateProxyInput) 
 	existing.CertFile = input.CertFile
 	existing.KeyFile = input.KeyFile
 	existing.Description = input.Description
-	if existing.Type == domain.ProxyHTTPS && (strings.TrimSpace(existing.CertFile) == "") != (strings.TrimSpace(existing.KeyFile) == "") {
-		return domain.Proxy{}, contracterr.Validation("validation failed", map[string]string{"certFile": "https proxy cert file and key file must be provided together", "keyFile": "https proxy cert file and key file must be provided together"})
+	if err := validateProxyEntryFields(existing.Type, existing.EntryBindHost, existing.EntryHost, existing.EntryPort, existing.CertFile, existing.KeyFile); err != nil {
+		return domain.Proxy{}, err
 	}
 	if err := service.ensureProxyAdmission(ctx, existing, existing.ID); err != nil {
 		return domain.Proxy{}, err
 	}
 	if err := service.Store.Proxies().Update(ctx, existing); err != nil {
+		return domain.Proxy{}, err
+	}
+	if err := service.reconcileProxyListeners(ctx); err != nil {
+		_ = service.Store.Proxies().Update(ctx, previous)
+		_ = service.reconcileProxyListeners(ctx)
 		return domain.Proxy{}, err
 	}
 	return existing, service.audit(ctx, input.ActorID, "proxy", existing.ID, "update_proxy")
@@ -573,6 +593,11 @@ func (service Service) EnableProxy(ctx context.Context, proxyID string, actorID 
 	if err := service.Store.Proxies().SetStatus(ctx, proxyID, domain.ProxyEnabled); err != nil {
 		return err
 	}
+	if err := service.reconcileProxyListeners(ctx); err != nil {
+		_ = service.Store.Proxies().SetStatus(ctx, proxyID, domain.ProxyDisabled)
+		_ = service.reconcileProxyListeners(ctx)
+		return err
+	}
 	return service.audit(ctx, actorID, "proxy", proxyID, "enable_proxy")
 }
 
@@ -584,6 +609,9 @@ func (service Service) DisableProxy(ctx context.Context, proxyID string, actorID
 		return contracterr.Validation("validation failed", map[string]string{"id": "proxy id is required"})
 	}
 	if err := service.Store.Proxies().SetStatus(ctx, proxyID, domain.ProxyDisabled); err != nil {
+		return err
+	}
+	if err := service.reconcileProxyListeners(ctx); err != nil {
 		return err
 	}
 	return service.audit(ctx, actorID, "proxy", proxyID, "disable_proxy")
@@ -604,6 +632,9 @@ func (service Service) DeleteProxy(ctx context.Context, proxyID string, actorID 
 		return contracterr.Conflict("proxy must be disabled before delete", nil)
 	}
 	if err := service.Store.Proxies().Delete(ctx, proxyID); err != nil {
+		return err
+	}
+	if err := service.reconcileProxyListeners(ctx); err != nil {
 		return err
 	}
 	return service.audit(ctx, actorID, "proxy", proxyID, "delete_proxy")
@@ -654,7 +685,16 @@ func (service Service) ensureProxyAdmission(ctx context.Context, proxy domain.Pr
 	if !proxyRequiresListenerAdmission(proxy.Type) || proxy.Status != domain.ProxyEnabled {
 		return nil
 	}
-	proposed, ok := domain.ListenerClaimForProxy(proxy)
+	proposedEntry, ok := domain.EffectiveProxyEntry(proxy, service.ProxyEntryDefaults)
+	if !ok {
+		return nil
+	}
+	if conflict, ok, err := service.findActiveRouteConflict(ctx, proposedEntry, ignoreProxyID); err != nil {
+		return err
+	} else if ok {
+		return &contracterr.Error{Code: contracterr.CodeEntryConflict, Message: fmt.Sprintf("%s route %s on %s:%d conflicts with proxy %s", proposedEntry.Protocol, proposedEntry.RouteHost, displayBindHost(proposedEntry.BindHost), proposedEntry.Port, conflict.ID), Err: domain.ErrEntryConflict}
+	}
+	proposed, ok := domain.ListenerClaimForProxy(proxy, service.ProxyEntryDefaults)
 	if !ok {
 		return nil
 	}
@@ -678,7 +718,7 @@ func (service Service) activeListenerClaims(ctx context.Context, ignoreProxyID s
 		if proxy.ID == ignoreProxyID || proxy.Status != domain.ProxyEnabled {
 			continue
 		}
-		claim, ok := domain.ListenerClaimForProxy(proxy)
+		claim, ok := domain.ListenerClaimForProxy(proxy, service.ProxyEntryDefaults)
 		if !ok {
 			continue
 		}
@@ -688,7 +728,47 @@ func (service Service) activeListenerClaims(ctx context.Context, ignoreProxyID s
 }
 
 func proxyRequiresListenerAdmission(proxyType domain.ProxyType) bool {
-	return proxyType == domain.ProxyTCP || proxyType == domain.ProxyUDP
+	return proxyType == domain.ProxyTCP || proxyType == domain.ProxyUDP || proxyType == domain.ProxyHTTP || proxyType == domain.ProxyHTTPS
+}
+
+func (service Service) reconcileProxyListeners(ctx context.Context) error {
+	if service.ListenerReconciler == nil {
+		return nil
+	}
+	if err := service.ListenerReconciler.ReconcileProxyListeners(ctx); err != nil {
+		return &contracterr.Error{Code: contracterr.CodeEntryConflict, Message: "proxy listener reconcile failed", Err: err}
+	}
+	return nil
+}
+
+func (service Service) findActiveRouteConflict(ctx context.Context, proposed domain.ProxyEntry, ignoreProxyID string) (domain.Proxy, bool, error) {
+	if proposed.Protocol != domain.ListenerProtocolHTTP && proposed.Protocol != domain.ListenerProtocolHTTPS {
+		return domain.Proxy{}, false, nil
+	}
+	proxies, err := service.Store.Proxies().EnabledByType(ctx, domain.ProxyType(proposed.Protocol))
+	if err != nil {
+		return domain.Proxy{}, false, err
+	}
+	for _, proxy := range proxies {
+		if proxy.ID == ignoreProxyID {
+			continue
+		}
+		entry, ok := domain.EffectiveProxyEntry(proxy, service.ProxyEntryDefaults)
+		if !ok {
+			continue
+		}
+		if entry.Protocol == proposed.Protocol && entry.Port == proposed.Port && domain.NormalizeBindHost(entry.BindHost) == domain.NormalizeBindHost(proposed.BindHost) && domain.NormalizeRouteHost(entry.RouteHost) == domain.NormalizeRouteHost(proposed.RouteHost) {
+			return proxy, true, nil
+		}
+	}
+	return domain.Proxy{}, false, nil
+}
+
+func displayBindHost(host string) string {
+	if domain.NormalizeBindHost(host) == "" {
+		return "*"
+	}
+	return domain.NormalizeBindHost(host)
 }
 
 func (service Service) audit(ctx context.Context, actorID string, resourceType string, resourceID string, action string) error {
@@ -838,19 +918,8 @@ func validateCreateProxyInput(input CreateProxyInput) error {
 	if input.TargetPort <= 0 || input.TargetPort > 65535 {
 		fields["targetPort"] = "proxy target port is invalid"
 	}
-	switch input.Type {
-	case domain.ProxyTCP, domain.ProxyUDP:
-		if input.EntryPort <= 0 || input.EntryPort > 65535 {
-			fields["entryPort"] = fmt.Sprintf("%s proxy entry port is required", input.Type)
-		}
-	case domain.ProxyHTTP, domain.ProxyHTTPS:
-		if strings.TrimSpace(input.EntryHost) == "" {
-			fields["entryHost"] = fmt.Sprintf("%s proxy entry host is required", input.Type)
-		}
-	}
-	if input.Type == domain.ProxyHTTPS && (strings.TrimSpace(input.CertFile) == "") != (strings.TrimSpace(input.KeyFile) == "") {
-		fields["certFile"] = "https proxy cert file and key file must be provided together"
-		fields["keyFile"] = "https proxy cert file and key file must be provided together"
+	if err := collectProxyEntryFieldErrors(fields, input.Type, input.EntryBindHost, input.EntryHost, input.EntryPort, input.CertFile, input.KeyFile); err != nil {
+		return err
 	}
 	if len(fields) > 0 {
 		return contracterr.Validation("validation failed", fields)
@@ -872,8 +941,53 @@ func validateUpdateProxyInput(input UpdateProxyInput) error {
 	if input.TargetPort <= 0 || input.TargetPort > 65535 {
 		fields["targetPort"] = "proxy target port is invalid"
 	}
+	if input.Type != "" && !input.Type.Valid() {
+		fields["type"] = "proxy type is invalid"
+	}
+	if input.Type.Valid() {
+		if err := collectProxyEntryFieldErrors(fields, input.Type, input.EntryBindHost, input.EntryHost, input.EntryPort, input.CertFile, input.KeyFile); err != nil {
+			return err
+		}
+	}
 	if len(fields) > 0 {
 		return contracterr.Validation("validation failed", fields)
+	}
+	return nil
+}
+
+func validateProxyEntryFields(proxyType domain.ProxyType, entryBindHost string, entryHost string, entryPort int, certFile string, keyFile string) error {
+	fields := map[string]string{}
+	if err := collectProxyEntryFieldErrors(fields, proxyType, entryBindHost, entryHost, entryPort, certFile, keyFile); err != nil {
+		return err
+	}
+	if len(fields) > 0 {
+		return contracterr.Validation("validation failed", fields)
+	}
+	return nil
+}
+
+func collectProxyEntryFieldErrors(fields map[string]string, proxyType domain.ProxyType, entryBindHost string, entryHost string, entryPort int, certFile string, keyFile string) error {
+	if strings.TrimSpace(entryBindHost) != "" && !domain.ValidBindHost(entryBindHost) {
+		fields["entryBindHost"] = "proxy entry bind host is invalid"
+	}
+	switch proxyType {
+	case domain.ProxyTCP, domain.ProxyUDP:
+		if entryPort <= 0 || entryPort > 65535 {
+			fields["entryPort"] = fmt.Sprintf("%s proxy entry port is required", proxyType)
+		}
+	case domain.ProxyHTTP, domain.ProxyHTTPS:
+		if strings.TrimSpace(entryHost) == "" {
+			fields["entryHost"] = fmt.Sprintf("%s proxy route host is required", proxyType)
+		} else if !domain.ValidBindHost(entryHost) {
+			fields["entryHost"] = fmt.Sprintf("%s proxy route host is invalid", proxyType)
+		}
+		if entryPort < 0 || entryPort > 65535 {
+			fields["entryPort"] = fmt.Sprintf("%s proxy entry port is invalid", proxyType)
+		}
+	}
+	if proxyType == domain.ProxyHTTPS && (strings.TrimSpace(certFile) == "") != (strings.TrimSpace(keyFile) == "") {
+		fields["certFile"] = "https proxy cert file and key file must be provided together"
+		fields["keyFile"] = "https proxy cert file and key file must be provided together"
 	}
 	return nil
 }

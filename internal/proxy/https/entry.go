@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"os"
@@ -36,11 +37,14 @@ const (
 var errHTTPBodyTooLarge = errors.New("http body too large")
 
 type Entry struct {
-	Store          store.Store
-	Sessions       *session.Manager
-	ListenAddress  string
-	CertificateDir string
-	NewConnection  func() (string, error)
+	Store                store.Store
+	Sessions             *session.Manager
+	ListenAddress        string
+	EntryBindHost        string
+	EntryPort            int
+	IncludeDefaultRoutes bool
+	CertificateDir       string
+	NewConnection        func() (string, error)
 }
 
 type Listener struct {
@@ -67,6 +71,10 @@ func (listener *Listener) Addr() net.Addr {
 	return listener.listener.Addr()
 }
 
+func (listener *Listener) SetEntryPort(port int) {
+	listener.entry.EntryPort = port
+}
+
 func (listener *Listener) Close() error {
 	return listener.listener.Close()
 }
@@ -91,8 +99,9 @@ func (listener *Listener) handleConn(ctx context.Context, conn net.Conn) {
 	if err != nil || serverName == "" {
 		return
 	}
-	proxy, err := listener.entry.Store.Proxies().ByHTTPSHost(ctx, serverName)
+	proxy, err := listener.entry.Store.Proxies().ByHTTPSRoute(ctx, listener.entry.EntryBindHost, listener.entry.EntryPort, serverName, listener.entry.IncludeDefaultRoutes)
 	if err != nil || proxy.Status != domain.ProxyEnabled {
+		log.Printf("https proxy route failed: bind_host=%s port=%d sni=%s category=route_miss", displayBindHost(listener.entry.EntryBindHost), listener.entry.EntryPort, serverName)
 		return
 	}
 	certificate, err := listener.resolver.Certificate(ctx, serverName, proxy)
@@ -106,10 +115,12 @@ func (listener *Listener) handleConn(ctx context.Context, conn net.Conn) {
 	_ = conn.SetDeadline(time.Time{})
 	latest, ok := listener.entry.Sessions.Latest(proxy.ClientID)
 	if !ok || latest.StreamOpener == nil {
+		log.Printf("https proxy route failed: bind_host=%s port=%d sni=%s proxy_id=%s category=client_offline", displayBindHost(listener.entry.EntryBindHost), listener.entry.EntryPort, serverName, proxy.ID)
 		return
 	}
 	stream, err := latest.StreamOpener.OpenStream(ctx)
 	if err != nil {
+		log.Printf("https proxy route failed: bind_host=%s port=%d sni=%s proxy_id=%s category=open_stream_failed error=%v", displayBindHost(listener.entry.EntryBindHost), listener.entry.EntryPort, serverName, proxy.ID, err)
 		return
 	}
 	defer stream.Close()
@@ -142,11 +153,13 @@ func (listener *Listener) handleTerminatedConn(ctx context.Context, conn net.Con
 
 	latest, ok := listener.entry.Sessions.Latest(proxy.ClientID)
 	if !ok || latest.StreamOpener == nil {
+		log.Printf("https proxy route failed: bind_host=%s port=%d sni=%s proxy_id=%s category=client_offline", displayBindHost(listener.entry.EntryBindHost), listener.entry.EntryPort, proxy.EntryHost, proxy.ID)
 		_ = writeSimpleResponse(tlsConn, http.StatusServiceUnavailable, "client offline\n")
 		return
 	}
 	stream, err := latest.StreamOpener.OpenStream(ctx)
 	if err != nil {
+		log.Printf("https proxy route failed: bind_host=%s port=%d sni=%s proxy_id=%s category=open_stream_failed error=%v", displayBindHost(listener.entry.EntryBindHost), listener.entry.EntryPort, proxy.EntryHost, proxy.ID, err)
 		_ = writeSimpleResponse(tlsConn, http.StatusBadGateway, "open proxy stream failed\n")
 		return
 	}
@@ -258,6 +271,14 @@ func writeSimpleResponse(writer io.Writer, statusCode int, body string) error {
 	response.Header.Set("Content-Type", "text/plain; charset=utf-8")
 	response.ContentLength = int64(len(body))
 	return response.Write(writer)
+}
+
+func displayBindHost(host string) string {
+	host = domain.NormalizeBindHost(host)
+	if host == "" {
+		return "*"
+	}
+	return host
 }
 
 func (listener *Listener) connectionID() (string, error) {

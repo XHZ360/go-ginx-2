@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/json"
@@ -422,6 +423,255 @@ func TestRunClientFallsBackToTCPTLSHTTPProxyTraffic(t *testing.T) {
 	}
 }
 
+func TestReconcileHTTPProxyCustomListenerWithoutRestart(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	serverCert, serverKey, caFile := writeTestTLSFiles(t)
+	target := startHTTPTextTarget(t, "hello custom listener")
+	targetPort := portNumber(t, target.Addr())
+	customPort := reservePort(t)
+	dbPath := filepath.Join(t.TempDir(), "http-custom-listener.db")
+	seedDatabase(t, dbPath, nil)
+	runtime, err := StartServer(ctx, config.Server{AdminListen: "127.0.0.1:0", ClientEnrollmentListen: "127.0.0.1:0", ControlQUICListen: "127.0.0.1:0", ControlTLSListen: "127.0.0.1:0", ControlTLSCertFile: serverCert, ControlTLSKeyFile: serverKey, TCPEntryHost: "127.0.0.1", HTTPEntryListen: "127.0.0.1:0", SQLitePath: dbPath, DataDir: t.TempDir(), CertificateDir: t.TempDir(), HeartbeatTimeout: time.Second, LogRetentionDays: 1})
+	if err != nil {
+		t.Fatalf("start server: %v", err)
+	}
+	t.Cleanup(func() { _ = runtime.Close() })
+	proxy := domain.Proxy{ID: "http-custom", UserID: "user-1", ClientID: "client-1", Name: "custom", Type: domain.ProxyHTTP, Status: domain.ProxyEnabled, EntryBindHost: "127.0.0.1", EntryHost: "custom.example.com", EntryPort: customPort, TargetHost: "127.0.0.1", TargetPort: targetPort}
+	if err := runtime.Store.Proxies().Create(ctx, proxy); err != nil {
+		t.Fatalf("create proxy: %v", err)
+	}
+	if err := runtime.ReconcileProxyListeners(ctx); err != nil {
+		t.Fatalf("reconcile create: %v", err)
+	}
+	if runtime.HTTPProxyListenerCount() != 2 {
+		t.Fatalf("expected default and custom HTTP listeners, got %d", runtime.HTTPProxyListenerCount())
+	}
+
+	clientDone := make(chan error, 1)
+	go func() {
+		clientDone <- RunClient(ctx, config.Client{ServerAddress: "127.0.0.1:1", ServerTLSAddress: runtime.ControlTLSListener.Addr().String(), ServerName: "localhost", ServerCAFile: caFile, ClientID: "client-1", Credential: "secret", AllowedProtocols: []domain.Protocol{domain.ProtocolTCPTLS}, Reconnect: config.Reconnect{InitialDelay: time.Millisecond, MaxDelay: time.Millisecond}})
+	}()
+	waitForActiveProxySession(t, runtime)
+
+	request, err := nethttp.NewRequestWithContext(ctx, nethttp.MethodGet, "http://"+net.JoinHostPort("127.0.0.1", strconv.Itoa(customPort))+"/", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	request.Host = "custom.example.com"
+	response, err := nethttp.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatalf("http request: %v", err)
+	}
+	defer response.Body.Close()
+	payload, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	if response.StatusCode != nethttp.StatusOK || string(payload) != "hello custom listener" {
+		t.Fatalf("unexpected response status=%d body=%q", response.StatusCode, string(payload))
+	}
+	if err := runtime.Store.Proxies().SetStatus(ctx, proxy.ID, domain.ProxyDisabled); err != nil {
+		t.Fatalf("disable proxy: %v", err)
+	}
+	if err := runtime.ReconcileProxyListeners(ctx); err != nil {
+		t.Fatalf("reconcile disable: %v", err)
+	}
+	if runtime.HTTPProxyListenerCount() != 1 {
+		t.Fatalf("expected custom HTTP listener to close, got %d listeners", runtime.HTTPProxyListenerCount())
+	}
+	cancel()
+	if err := <-clientDone; err != nil {
+		t.Fatalf("run client: %v", err)
+	}
+}
+
+func TestReconcileHTTPSProxyCustomListenerWithoutRestart(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	serverCert, serverKey, caFile := writeTestTLSFiles(t)
+	target, originPool := startTLSEchoTarget(t, "custom.example.com")
+	targetPort := portNumber(t, target.Addr())
+	customPort := reservePort(t)
+	dbPath := filepath.Join(t.TempDir(), "https-custom-listener.db")
+	seedDatabase(t, dbPath, nil)
+	runtime, err := StartServer(ctx, config.Server{AdminListen: "127.0.0.1:0", ClientEnrollmentListen: "127.0.0.1:0", ControlQUICListen: "127.0.0.1:0", ControlTLSListen: "127.0.0.1:0", ControlTLSCertFile: serverCert, ControlTLSKeyFile: serverKey, TCPEntryHost: "127.0.0.1", HTTPEntryListen: "127.0.0.1:0", HTTPSEntryListen: "127.0.0.1:0", SQLitePath: dbPath, DataDir: t.TempDir(), CertificateDir: t.TempDir(), HeartbeatTimeout: time.Second, LogRetentionDays: 1})
+	if err != nil {
+		t.Fatalf("start server: %v", err)
+	}
+	t.Cleanup(func() { _ = runtime.Close() })
+	proxy := domain.Proxy{ID: "https-custom", UserID: "user-1", ClientID: "client-1", Name: "secure", Type: domain.ProxyHTTPS, Status: domain.ProxyEnabled, EntryBindHost: "127.0.0.1", EntryHost: "custom.example.com", EntryPort: customPort, TargetHost: "127.0.0.1", TargetPort: targetPort}
+	if err := runtime.Store.Proxies().Create(ctx, proxy); err != nil {
+		t.Fatalf("create proxy: %v", err)
+	}
+	if err := runtime.ReconcileProxyListeners(ctx); err != nil {
+		t.Fatalf("reconcile create: %v", err)
+	}
+	if runtime.HTTPSProxyListenerCount() != 2 {
+		t.Fatalf("expected default and custom HTTPS listeners, got %d", runtime.HTTPSProxyListenerCount())
+	}
+
+	clientDone := make(chan error, 1)
+	go func() {
+		clientDone <- RunClient(ctx, config.Client{ServerAddress: "127.0.0.1:1", ServerTLSAddress: runtime.ControlTLSListener.Addr().String(), ServerName: "localhost", ServerCAFile: caFile, ClientID: "client-1", Credential: "secret", AllowedProtocols: []domain.Protocol{domain.ProtocolTCPTLS}, Reconnect: config.Reconnect{InitialDelay: time.Millisecond, MaxDelay: time.Millisecond}})
+	}()
+	waitForTCPTLSSession(t, runtime)
+
+	dialer := &net.Dialer{Timeout: time.Second}
+	conn, err := tls.DialWithDialer(dialer, "tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(customPort)), &tls.Config{RootCAs: originPool, ServerName: "custom.example.com", MinVersion: tls.VersionTLS12})
+	if err != nil {
+		t.Fatalf("dial custom https entry: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	if _, err := conn.Write([]byte("ping\n")); err != nil {
+		t.Fatalf("write custom https entry: %v", err)
+	}
+	payload := make([]byte, len("ping\n"))
+	if _, err := io.ReadFull(conn, payload); err != nil {
+		t.Fatalf("read custom https entry: %v", err)
+	}
+	if string(payload) != "ping\n" {
+		t.Fatalf("unexpected https payload %q", string(payload))
+	}
+	if err := runtime.Store.Proxies().SetStatus(ctx, proxy.ID, domain.ProxyDisabled); err != nil {
+		t.Fatalf("disable proxy: %v", err)
+	}
+	if err := runtime.ReconcileProxyListeners(ctx); err != nil {
+		t.Fatalf("reconcile disable: %v", err)
+	}
+	if runtime.HTTPSProxyListenerCount() != 1 {
+		t.Fatalf("expected custom HTTPS listener to close, got %d listeners", runtime.HTTPSProxyListenerCount())
+	}
+	cancel()
+	if err := <-clientDone; err != nil {
+		t.Fatalf("run client: %v", err)
+	}
+}
+
+func TestReconcileTCPProxyCustomBindHostWithoutRestart(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	serverCert, serverKey, caFile := writeTestTLSFiles(t)
+	target := startEchoTarget(t)
+	targetPort := portNumber(t, target.Addr())
+	entryPort := reservePort(t)
+	dbPath := filepath.Join(t.TempDir(), "tcp-custom-bind-host.db")
+	seedDatabase(t, dbPath, nil)
+	runtime, err := StartServer(ctx, config.Server{AdminListen: "127.0.0.1:0", ClientEnrollmentListen: "127.0.0.1:0", ControlQUICListen: "127.0.0.1:0", ControlTLSListen: "127.0.0.1:0", ControlTLSCertFile: serverCert, ControlTLSKeyFile: serverKey, TCPEntryHost: "0.0.0.0", HTTPEntryListen: "127.0.0.1:0", SQLitePath: dbPath, DataDir: t.TempDir(), CertificateDir: t.TempDir(), HeartbeatTimeout: time.Second, LogRetentionDays: 1})
+	if err != nil {
+		t.Fatalf("start server: %v", err)
+	}
+	t.Cleanup(func() { _ = runtime.Close() })
+	proxy := domain.Proxy{ID: "tcp-custom", UserID: "user-1", ClientID: "client-1", Name: "echo", Type: domain.ProxyTCP, Status: domain.ProxyEnabled, EntryBindHost: "127.0.0.1", EntryPort: entryPort, TargetHost: "127.0.0.1", TargetPort: targetPort}
+	if err := runtime.Store.Proxies().Create(ctx, proxy); err != nil {
+		t.Fatalf("create proxy: %v", err)
+	}
+	if err := runtime.ReconcileProxyListeners(ctx); err != nil {
+		t.Fatalf("reconcile create: %v", err)
+	}
+	if runtime.TCPProxyListenerCount() != 1 {
+		t.Fatalf("expected one TCP listener, got %d", runtime.TCPProxyListenerCount())
+	}
+
+	clientDone := make(chan error, 1)
+	go func() {
+		clientDone <- RunClient(ctx, config.Client{ServerAddress: "127.0.0.1:1", ServerTLSAddress: runtime.ControlTLSListener.Addr().String(), ServerName: "localhost", ServerCAFile: caFile, ClientID: "client-1", Credential: "secret", AllowedProtocols: []domain.Protocol{domain.ProtocolTCPTLS}, Reconnect: config.Reconnect{InitialDelay: time.Millisecond, MaxDelay: time.Millisecond}})
+	}()
+	waitForTCPTLSSession(t, runtime)
+
+	conn, err := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(entryPort)), time.Second)
+	if err != nil {
+		t.Fatalf("dial custom tcp entry: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	if _, err := conn.Write([]byte("ping")); err != nil {
+		t.Fatalf("write custom tcp entry: %v", err)
+	}
+	payload := make([]byte, len("ping"))
+	if _, err := io.ReadFull(conn, payload); err != nil {
+		t.Fatalf("read custom tcp entry: %v", err)
+	}
+	if string(payload) != "ping" {
+		t.Fatalf("unexpected tcp payload %q", string(payload))
+	}
+	if err := runtime.Store.Proxies().SetStatus(ctx, proxy.ID, domain.ProxyDisabled); err != nil {
+		t.Fatalf("disable proxy: %v", err)
+	}
+	if err := runtime.ReconcileProxyListeners(ctx); err != nil {
+		t.Fatalf("reconcile disable: %v", err)
+	}
+	if runtime.TCPProxyListenerCount() != 0 {
+		t.Fatalf("expected custom TCP listener to close, got %d listeners", runtime.TCPProxyListenerCount())
+	}
+	cancel()
+	if err := <-clientDone; err != nil {
+		t.Fatalf("run client: %v", err)
+	}
+}
+
+func TestReconcileUDPProxyCustomBindHostWithoutRestart(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	serverCert, serverKey, caFile := writeTestTLSFiles(t)
+	target := startUDPEchoTarget(t)
+	targetPort := portNumber(t, target.LocalAddr())
+	entryPort := reserveUDPPort(t)
+	dbPath := filepath.Join(t.TempDir(), "udp-custom-bind-host.db")
+	seedDatabase(t, dbPath, nil)
+	runtime, err := StartServer(ctx, config.Server{AdminListen: "127.0.0.1:0", ClientEnrollmentListen: "127.0.0.1:0", ControlQUICListen: "127.0.0.1:0", ControlTLSListen: "127.0.0.1:0", ControlTLSCertFile: serverCert, ControlTLSKeyFile: serverKey, TCPEntryHost: "0.0.0.0", HTTPEntryListen: "127.0.0.1:0", SQLitePath: dbPath, DataDir: t.TempDir(), CertificateDir: t.TempDir(), HeartbeatTimeout: time.Second, LogRetentionDays: 1})
+	if err != nil {
+		t.Fatalf("start server: %v", err)
+	}
+	t.Cleanup(func() { _ = runtime.Close() })
+	proxy := domain.Proxy{ID: "udp-custom", UserID: "user-1", ClientID: "client-1", Name: "dns", Type: domain.ProxyUDP, Status: domain.ProxyEnabled, EntryBindHost: "127.0.0.1", EntryPort: entryPort, TargetHost: "127.0.0.1", TargetPort: targetPort}
+	if err := runtime.Store.Proxies().Create(ctx, proxy); err != nil {
+		t.Fatalf("create proxy: %v", err)
+	}
+	if err := runtime.ReconcileProxyListeners(ctx); err != nil {
+		t.Fatalf("reconcile create: %v", err)
+	}
+	if runtime.UDPProxyListenerCount() != 1 {
+		t.Fatalf("expected one UDP listener, got %d", runtime.UDPProxyListenerCount())
+	}
+
+	clientDone := make(chan error, 1)
+	go func() {
+		clientDone <- RunClient(ctx, config.Client{ServerAddress: "127.0.0.1:1", ServerTLSAddress: runtime.ControlTLSListener.Addr().String(), ServerName: "localhost", ServerCAFile: caFile, ClientID: "client-1", Credential: "secret", AllowedProtocols: []domain.Protocol{domain.ProtocolTCPTLS}, Reconnect: config.Reconnect{InitialDelay: time.Millisecond, MaxDelay: time.Millisecond}})
+	}()
+	waitForTCPTLSSession(t, runtime)
+
+	conn, err := net.Dial("udp", net.JoinHostPort("127.0.0.1", strconv.Itoa(entryPort)))
+	if err != nil {
+		t.Fatalf("dial custom udp entry: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	if _, err := conn.Write([]byte("ping")); err != nil {
+		t.Fatalf("write custom udp entry: %v", err)
+	}
+	_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	payload := make([]byte, 64*1024)
+	n, err := conn.Read(payload)
+	if err != nil {
+		t.Fatalf("read custom udp entry: %v", err)
+	}
+	if string(payload[:n]) != "ping" {
+		t.Fatalf("unexpected udp payload %q", string(payload[:n]))
+	}
+	if err := runtime.Store.Proxies().SetStatus(ctx, proxy.ID, domain.ProxyDisabled); err != nil {
+		t.Fatalf("disable proxy: %v", err)
+	}
+	if err := runtime.ReconcileProxyListeners(ctx); err != nil {
+		t.Fatalf("reconcile disable: %v", err)
+	}
+	if runtime.UDPProxyListenerCount() != 0 {
+		t.Fatalf("expected custom UDP listener to close, got %d listeners", runtime.UDPProxyListenerCount())
+	}
+	cancel()
+	if err := <-clientDone; err != nil {
+		t.Fatalf("run client: %v", err)
+	}
+}
+
 func TestStartServerRenewsManagedCertificates(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
@@ -583,6 +833,66 @@ func startHTTPTextTarget(t *testing.T, body string) net.Listener {
 	t.Cleanup(func() { _ = server.Close() })
 	go func() { _ = server.Serve(listener) }()
 	return listener
+}
+
+func startUDPEchoTarget(t *testing.T) net.PacketConn {
+	t.Helper()
+	conn, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen udp echo target: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	go func() {
+		buffer := make([]byte, 64*1024)
+		for {
+			n, addr, err := conn.ReadFrom(buffer)
+			if err != nil {
+				return
+			}
+			_, _ = conn.WriteTo(buffer[:n], addr)
+		}
+	}()
+	return conn
+}
+
+func startTLSEchoTarget(t *testing.T, serverName string) (net.Listener, *x509.CertPool) {
+	t.Helper()
+	certPEM, keyPEM := daemonTestCertificatePEMBytes(serverName, time.Now().Add(time.Hour))
+	cert, err := tls.X509KeyPair(certPEM, keyPEM)
+	if err != nil {
+		t.Fatalf("load tls echo certificate: %v", err)
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(certPEM) {
+		t.Fatal("append tls echo certificate")
+	}
+	listener, err := tls.Listen("tcp", "127.0.0.1:0", &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12})
+	if err != nil {
+		t.Fatalf("listen tls echo target: %v", err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			go func(conn net.Conn) {
+				defer conn.Close()
+				buffer := make([]byte, 64*1024)
+				for {
+					n, err := conn.Read(buffer)
+					if err != nil {
+						return
+					}
+					if _, err := conn.Write(buffer[:n]); err != nil {
+						return
+					}
+				}
+			}(conn)
+		}
+	}()
+	return listener, pool
 }
 
 func portNumber(t *testing.T, addr net.Addr) int {

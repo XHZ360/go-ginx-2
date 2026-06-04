@@ -35,8 +35,10 @@
 - 状态
 - RuntimeStatus
 - 描述
-- EntryHost / EntryPort
+- EntryBindHost / EntryPort
+- HTTP Host 或 HTTPS SNI 域名
 - TargetHost / TargetPort
+- HTTPS CertFile / KeyFile
 - 活跃连接数
 - 上传流量
 - 下载流量
@@ -56,7 +58,11 @@
 
 - 允许编辑支持的字段
 - 不允许修改代理类型
-- TCP/UDP 更新后若发生监听冲突，展示 `ENTRY_CONFLICT`
+- BindHost 使用后端提供的监听地址选项，不使用自由输入
+- TCP/UDP 编辑 BindHost、EntryPort、TargetHost、TargetPort
+- HTTP/HTTPS 编辑 BindHost、EntryPort、域名、TargetHost、TargetPort
+- HTTPS 可编辑成对的 CertFile / KeyFile
+- 更新或启用后若发生监听冲突或 listener 启动失败，展示 `ENTRY_CONFLICT`
 - 错误需定位到对应字段或操作区
 
 ## 8. HTTPS 证书区
