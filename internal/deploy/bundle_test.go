@@ -22,8 +22,8 @@ func TestBuildBundleCreatesExpectedLayout(t *testing.T) {
 		filepath.Join(outputDir, "bin", binaryName("goginx-server", targetGOOS)),
 		filepath.Join(outputDir, "bin", binaryName("goginx-client", targetGOOS)),
 		filepath.Join(outputDir, "bin", binaryName("goginx-admin", targetGOOS)),
-		filepath.Join(outputDir, "config", "server.json"),
-		filepath.Join(outputDir, "config", "client.json"),
+		filepath.Join(outputDir, "config", bundledServerExampleConfigName),
+		filepath.Join(outputDir, "config", bundledClientExampleConfigName),
 		filepath.Join(outputDir, "config", "admin-credentials.json.example"),
 		filepath.Join(outputDir, "config", "goginx-server.env.example"),
 		filepath.Join(outputDir, "config", "goginx-client.env.example"),
@@ -37,7 +37,15 @@ func TestBuildBundleCreatesExpectedLayout(t *testing.T) {
 			t.Fatalf("expected %s: %v", path, err)
 		}
 	}
-	serverConfig := readBundledServerConfig(t, filepath.Join(outputDir, "config", "server.json"))
+	for _, path := range []string{
+		filepath.Join(outputDir, "config", "server.json"),
+		filepath.Join(outputDir, "config", "client.json"),
+	} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("expected no generated runtime config %s, got err=%v", path, err)
+		}
+	}
+	serverConfig := readBundledServerConfig(t, filepath.Join(outputDir, "config", bundledServerExampleConfigName))
 	if !serverConfig.AdminEnabled {
 		t.Fatal("expected bundled server config to enable admin")
 	}
@@ -47,7 +55,7 @@ func TestBuildBundleCreatesExpectedLayout(t *testing.T) {
 	if serverConfig.AdminFrontendDir != "" {
 		t.Fatalf("expected empty admin_frontend_dir for default admin-ui directory, got %q", serverConfig.AdminFrontendDir)
 	}
-	clientConfig := readBundledClientConfig(t, filepath.Join(outputDir, "config", "client.json"))
+	clientConfig := readBundledClientConfig(t, filepath.Join(outputDir, "config", bundledClientExampleConfigName))
 	if clientConfig.ServerName != "go-ginx-control.local" || clientConfig.ServerCAFile != "data/certs/server-ca.crt" {
 		t.Fatalf("unexpected client trust config: %+v", clientConfig)
 	}
@@ -77,14 +85,22 @@ func TestBuildBundleCreatesWindowsLayoutWithoutSystemd(t *testing.T) {
 		filepath.Join(outputDir, "bin", "goginx-server.exe"),
 		filepath.Join(outputDir, "bin", "goginx-client.exe"),
 		filepath.Join(outputDir, "bin", "goginx-admin.exe"),
-		filepath.Join(outputDir, "config", "server.json"),
-		filepath.Join(outputDir, "config", "client.json"),
+		filepath.Join(outputDir, "config", bundledServerExampleConfigName),
+		filepath.Join(outputDir, "config", bundledClientExampleConfigName),
 		filepath.Join(outputDir, "data", "certs", "managed"),
 		filepath.Join(outputDir, "logs"),
 		filepath.Join(outputDir, bundledAdminFrontendDir, "index.html"),
 	} {
 		if _, err := os.Stat(path); err != nil {
 			t.Fatalf("expected %s: %v", path, err)
+		}
+	}
+	for _, path := range []string{
+		filepath.Join(outputDir, "config", "server.json"),
+		filepath.Join(outputDir, "config", "client.json"),
+	} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("expected no generated runtime config %s, got err=%v", path, err)
 		}
 	}
 	if _, err := os.Stat(filepath.Join(outputDir, "systemd")); !os.IsNotExist(err) {
@@ -124,7 +140,7 @@ func TestBuildBundleCopiesAdminFrontendAssetsWhenPresent(t *testing.T) {
 	if string(assetContent) != "console.log('admin');" {
 		t.Fatalf("unexpected bundled admin frontend asset %q", string(assetContent))
 	}
-	serverConfig := readBundledServerConfig(t, filepath.Join(outputDir, "config", "server.json"))
+	serverConfig := readBundledServerConfig(t, filepath.Join(outputDir, "config", bundledServerExampleConfigName))
 	if !serverConfig.AdminEnabled {
 		t.Fatal("expected bundled server config to enable admin")
 	}
@@ -134,7 +150,7 @@ func TestBuildBundleCopiesAdminFrontendAssetsWhenPresent(t *testing.T) {
 	if serverConfig.AdminFrontendDir != "" {
 		t.Fatalf("expected admin_frontend_dir to remain optional, got %q", serverConfig.AdminFrontendDir)
 	}
-	clientConfig := readBundledClientConfig(t, filepath.Join(outputDir, "config", "client.json"))
+	clientConfig := readBundledClientConfig(t, filepath.Join(outputDir, "config", bundledClientExampleConfigName))
 	if clientConfig.ServerName != "go-ginx-control.local" || clientConfig.ServerCAFile != "data/certs/server-ca.crt" {
 		t.Fatalf("unexpected client trust config: %+v", clientConfig)
 	}

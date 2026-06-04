@@ -23,7 +23,11 @@ type BundleOptions struct {
 	InstallRoot string
 }
 
-const bundledAdminFrontendDir = "admin-ui"
+const (
+	bundledAdminFrontendDir        = "admin-ui"
+	bundledServerExampleConfigName = "server.example.json"
+	bundledClientExampleConfigName = "client.example.json"
+)
 
 func BuildBundle(ctx context.Context, options BundleOptions) error {
 	var err error
@@ -71,10 +75,10 @@ func BuildBundle(ctx context.Context, options BundleOptions) error {
 	if err := copyAdminFrontendAssets(adminFrontendDist, filepath.Join(options.OutputDir, bundledAdminFrontendDir)); err != nil {
 		return err
 	}
-	if err := writeJSONFile(filepath.Join(options.OutputDir, "config", "server.json"), defaultServerBundleConfig()); err != nil {
+	if err := writeJSONFile(filepath.Join(options.OutputDir, "config", bundledServerExampleConfigName), defaultServerBundleConfig()); err != nil {
 		return err
 	}
-	if err := writeJSONFile(filepath.Join(options.OutputDir, "config", "client.json"), defaultClientBundleConfig()); err != nil {
+	if err := writeJSONFile(filepath.Join(options.OutputDir, "config", bundledClientExampleConfigName), defaultClientBundleConfig()); err != nil {
 		return err
 	}
 	if err := os.WriteFile(filepath.Join(options.OutputDir, "config", "admin-credentials.json.example"), []byte(adminCredentialsExample()), 0o600); err != nil {

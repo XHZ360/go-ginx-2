@@ -162,7 +162,7 @@ The core bundle layout is stable and contains:
 
 1. `bin/` with `goginx-server`, `goginx-client`, and `goginx-admin`.
 2. `admin-ui/` with the management frontend build output used by default at runtime.
-3. `config/` with optional sample `server.json`, `client.json`, and environment examples.
+3. `config/` with optional sample `server.example.json`, `client.example.json`, and environment examples.
 4. `data/` with SQLite and certificate directories.
 5. `logs/` for operator-managed log files.
 6. `systemd/` with rendered `goginx-server.service` and `goginx-client.service` units.

@@ -300,7 +300,7 @@ HTTPS 静态证书终止示例：
 
 `time.Duration` 字段在 JSON 中使用纳秒数。认证失败会立即退出；临时拨号失败或运行时故障会按 `reconnect` 退避重试。
 
-Release 包生成的 `config/client.json` 会由 join 流程更新，客户端信任文件为 `data/certs/server-ca.crt`。该文件由 `./bin/goginx-client join <token>` 写入；如果跳过 join 而手写 `client.json`，需要把服务端的 `data/certs/control-ca.crt` 分发到客户端并保存为 `data/certs/server-ca.crt`。
+Release 包包含 `config/client.example.json` 作为显式配置参考；`./bin/goginx-client join <token>` 会写入实际的 `config/client.json` 和客户端信任文件 `data/certs/server-ca.crt`。如果跳过 join 而手写 `client.json`，需要把服务端的 `data/certs/control-ca.crt` 分发到客户端并保存为 `data/certs/server-ca.crt`。
 
 ## 托管 HTTPS 证书
 
@@ -399,7 +399,7 @@ $env:CGO_ENABLED="0"
 go run ./cmd/goginx-admin build-deploy-bundle -output ./dist/linux-systemd-bundle -goos linux -goarch amd64 -install-root /opt/go-ginx
 ```
 
-`build-deploy-bundle` 会把 `admin-ui/dist` 复制为发布包根目录下的 `admin-ui/`。将 `./dist/linux-systemd-bundle` 作为 Release 产物发布；目标服务器只需要拿到这个目录或其压缩包。
+`build-deploy-bundle` 会把 `admin-ui/dist` 复制为发布包根目录下的 `admin-ui/`，并在 `config/` 下生成 `server.example.json` 和 `client.example.json` 作为显式配置参考。将 `./dist/linux-systemd-bundle` 作为 Release 产物发布；目标服务器只需要拿到这个目录或其压缩包。
 
 生成 Windows 发布包：
 
@@ -412,7 +412,7 @@ $env:CGO_ENABLED="0"
 go run ./cmd/goginx-admin build-deploy-bundle -output ./dist/windows-amd64-bundle -goos windows -goarch amd64
 ```
 
-`build-deploy-bundle` 会把 `admin-ui/dist` 复制为发布包根目录下的 `admin-ui/`。Windows 产物不包含 `systemd/`，但保留 `bin/`、`config/`、`data/`、`logs/` 和 `admin-ui/` 目录，适合解压后直接运行 `.\bin\goginx-server.exe`、`.\bin\goginx-client.exe` 和 `.\bin\goginx-admin.exe`。
+`build-deploy-bundle` 会把 `admin-ui/dist` 复制为发布包根目录下的 `admin-ui/`，并在 `config/` 下生成 `server.example.json` 和 `client.example.json` 作为显式配置参考。Windows 产物不包含 `systemd/`，但保留 `bin/`、`config/`、`data/`、`logs/` 和 `admin-ui/` 目录，适合解压后直接运行 `.\bin\goginx-server.exe`、`.\bin\goginx-client.exe` 和 `.\bin\goginx-admin.exe`。
 
 ## Release 部署包部署
 
@@ -420,7 +420,7 @@ Linux `systemd` Release 包核心内容：
 
 - `bin/`：`goginx-server`、`goginx-client`、`goginx-admin`
 - `admin-ui/`：管理前端构建产物，默认由管理监听器同源服务
-- `config/`：示例配置和环境文件
+- `config/`：`server.example.json`、`client.example.json`、示例环境文件和可选凭据示例
 - `data/`：SQLite 与证书目录
 - `logs/`：运行日志目录，默认包含 `server.log` 和 `client.log`
 - `systemd/`：渲染后的 `goginx-server.service` 和 `goginx-client.service`

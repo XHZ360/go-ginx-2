@@ -72,7 +72,7 @@
 
 #### Scenario: Bundle marks sample config as optional
 - **WHEN** 部署包包含 server 或 client JSON 示例
-- **THEN** 这些文件被文档化为高级覆盖或迁移参考，而不是基础部署启动的必需输入
+- **THEN** 这些文件使用 `server.example.json` 或 `client.example.json` 命名，并被文档化为高级覆盖或迁移参考，而不是基础部署启动的必需输入
 
 #### Scenario: Bundle layout is stable across builds
 - **WHEN** 操作者或自动化流程消费部署包
