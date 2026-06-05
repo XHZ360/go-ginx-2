@@ -23,6 +23,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/quic-go/quic-go"
 	"github.com/simp-frp/go-ginx-2/internal/control"
 	"github.com/simp-frp/go-ginx-2/internal/domain"
 	"github.com/simp-frp/go-ginx-2/internal/session"
@@ -501,6 +502,53 @@ func TestHTTPEntryUpgradeLikeNonWebSocketUsesHTTPPath(t *testing.T) {
 	}
 }
 
+func TestHTTPEntryReleasesQUICStreamsAfterShortRequests(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	origin := httptest.NewServer(nethttp.HandlerFunc(func(w nethttp.ResponseWriter, r *nethttp.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = w.Write([]byte("origin-response"))
+	}))
+	t.Cleanup(origin.Close)
+	originURL, err := url.Parse(origin.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	originHost, originPortText, err := net.SplitHostPort(originURL.Host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	originPort, err := strconv.Atoi(originPortText)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const streamLimit = 4
+	entry, _ := startHTTPProxyRuntimeWithQUICConfig(t, ctx, domain.ProtocolQUIC, originHost, originPort, &quic.Config{MaxIncomingStreams: streamLimit})
+	client := &nethttp.Client{Timeout: 2 * time.Second}
+
+	for i := range streamLimit * 3 {
+		request, err := nethttp.NewRequestWithContext(ctx, nethttp.MethodGet, "http://"+entry.Addr().String()+"/ok-"+strconv.Itoa(i), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		request.Host = "app.example.com"
+		response, err := client.Do(request)
+		if err != nil {
+			t.Fatalf("short proxy request %d: %v", i, err)
+		}
+		body, err := io.ReadAll(response.Body)
+		_ = response.Body.Close()
+		if err != nil {
+			t.Fatalf("read short proxy response %d: %v", i, err)
+		}
+		if response.StatusCode != nethttp.StatusOK || string(body) != "origin-response" {
+			t.Fatalf("unexpected short proxy response %d status=%d body=%q", i, response.StatusCode, string(body))
+		}
+	}
+}
+
 func stringPtr(value string) *string {
 	return &value
 }
@@ -522,6 +570,10 @@ func seedHTTPProxy(t *testing.T, ctx context.Context, db *sqlite.Store, targetHo
 }
 
 func startHTTPProxyRuntime(t *testing.T, ctx context.Context, protocol domain.Protocol, targetHost string, targetPort int) (*Server, *stats.Memory) {
+	return startHTTPProxyRuntimeWithQUICConfig(t, ctx, protocol, targetHost, targetPort, nil)
+}
+
+func startHTTPProxyRuntimeWithQUICConfig(t *testing.T, ctx context.Context, protocol domain.Protocol, targetHost string, targetPort int, clientQUICConfig *quic.Config) (*Server, *stats.Memory) {
 	t.Helper()
 	db, err := sqlite.Open(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
@@ -545,7 +597,7 @@ func startHTTPProxyRuntime(t *testing.T, ctx context.Context, protocol domain.Pr
 		t.Cleanup(func() { _ = controlListener.Close() })
 		go func() { _ = controlListener.Serve(ctx) }()
 		var response control.AuthResponse
-		client, response, err = control.DialAndAuthenticate(ctx, controlListener.Addr().String(), testClientTLSConfig(t), nil, control.AuthRequest{ClientID: "client-1", Credential: "secret", Timestamp: time.Now().UTC(), Protocols: []domain.Protocol{domain.ProtocolQUIC}})
+		client, response, err = control.DialAndAuthenticate(ctx, controlListener.Addr().String(), testClientTLSConfig(t), clientQUICConfig, control.AuthRequest{ClientID: "client-1", Credential: "secret", Timestamp: time.Now().UTC(), Protocols: []domain.Protocol{domain.ProtocolQUIC}})
 		if err != nil {
 			t.Fatalf("dial authenticate: %v", err)
 		}
