@@ -12,6 +12,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"slices"
 	"strconv"
 	"strings"
@@ -548,15 +549,33 @@ func handleHTTPStream(stream io.ReadWriteCloser, request OpenStream) {
 		return
 	}
 	defer inbound.Body.Close()
+	targetAuthority := net.JoinHostPort(request.TargetHost, strconv.Itoa(request.TargetPort))
 	inbound.RequestURI = ""
 	inbound.URL.Scheme = "http"
-	inbound.URL.Host = net.JoinHostPort(request.TargetHost, strconv.Itoa(request.TargetPort))
+	inbound.URL.Host = targetAuthority
+	inbound.Host = targetAuthority
+	rewriteHTTPOrigin(inbound.Header, targetAuthority)
 	response, err := http.DefaultTransport.RoundTrip(inbound)
 	if err != nil {
 		response = &http.Response{StatusCode: http.StatusBadGateway, Status: "502 Bad Gateway", Body: io.NopCloser(strings.NewReader("target unreachable\n")), Header: make(http.Header)}
 	}
 	defer response.Body.Close()
 	_ = response.Write(stream)
+}
+
+func rewriteHTTPOrigin(header http.Header, targetAuthority string) {
+	origin := header.Get("Origin")
+	if origin == "" {
+		return
+	}
+	parsed, err := url.Parse(origin)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return
+	}
+	header.Set("Origin", (&url.URL{Scheme: "http", Host: targetAuthority}).String())
 }
 
 func handleUDPStream(stream io.ReadWriteCloser, request OpenStream) {

@@ -33,13 +33,45 @@ func TestHTTPEntryProxiesThroughQUICClientStream(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
+	type originCase struct {
+		requestOrigin *string
+		wantPresent   bool
+		wantOrigin    string
+	}
+	var targetAuthority string
+	testCases := map[string]originCase{
+		"/hello":          {requestOrigin: stringPtr("https://app.example.com"), wantPresent: true},
+		"/missing-origin": {wantPresent: false},
+		"/null-origin":    {requestOrigin: stringPtr("null"), wantPresent: true, wantOrigin: "null"},
+		"/empty-origin":   {requestOrigin: stringPtr(""), wantPresent: true, wantOrigin: ""},
+		"/ftp-origin":     {requestOrigin: stringPtr("ftp://app.example.com"), wantPresent: true, wantOrigin: "ftp://app.example.com"},
+		"/bad-origin":     {requestOrigin: stringPtr("://bad"), wantPresent: true, wantOrigin: "://bad"},
+	}
 	origin := httptest.NewServer(nethttp.HandlerFunc(func(w nethttp.ResponseWriter, r *nethttp.Request) {
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
 			t.Fatal(err)
 		}
-		if r.URL.Path != "/hello" || string(body) != "request-body" || r.Header.Get("X-Test") != "yes" {
+		testCase, ok := testCases[r.URL.Path]
+		if !ok {
+			t.Fatalf("unexpected origin request path=%s", r.URL.Path)
+		}
+		if string(body) != "request-body" || r.Header.Get("X-Test") != "yes" {
 			t.Fatalf("unexpected origin request path=%s body=%q header=%s", r.URL.Path, string(body), r.Header.Get("X-Test"))
+		}
+		if r.Host != targetAuthority {
+			t.Fatalf("expected target host %q, got %q", targetAuthority, r.Host)
+		}
+		wantOrigin := testCase.wantOrigin
+		if r.URL.Path == "/hello" {
+			wantOrigin = "http://" + targetAuthority
+		}
+		origins, present := r.Header["Origin"]
+		if present != testCase.wantPresent {
+			t.Fatalf("unexpected origin presence path=%s present=%t want=%t values=%v", r.URL.Path, present, testCase.wantPresent, origins)
+		}
+		if testCase.wantPresent && (len(origins) != 1 || origins[0] != wantOrigin) {
+			t.Fatalf("unexpected origin path=%s got=%v want=%q", r.URL.Path, origins, wantOrigin)
 		}
 		w.Header().Set("X-Origin", "ok")
 		w.WriteHeader(nethttp.StatusCreated)
@@ -50,6 +82,7 @@ func TestHTTPEntryProxiesThroughQUICClientStream(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	targetAuthority = originURL.Host
 	originHost, originPortText, err := net.SplitHostPort(originURL.Host)
 	if err != nil {
 		t.Fatal(err)
@@ -100,28 +133,37 @@ func TestHTTPEntryProxiesThroughQUICClientStream(t *testing.T) {
 	t.Cleanup(func() { _ = entry.Close() })
 	go func() { _ = entry.Serve(ctx) }()
 
-	request, err := nethttp.NewRequestWithContext(ctx, nethttp.MethodPost, "http://"+entry.Addr().String()+"/hello", strings.NewReader("request-body"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	request.Host = "app.example.com"
-	request.Header.Set("X-Test", "yes")
-	responseFromProxy, err := nethttp.DefaultClient.Do(request)
-	if err != nil {
-		t.Fatalf("proxy request: %v", err)
-	}
-	defer responseFromProxy.Body.Close()
-	responseBody, err := io.ReadAll(responseFromProxy.Body)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if responseFromProxy.StatusCode != nethttp.StatusCreated || responseFromProxy.Header.Get("X-Origin") != "ok" || string(responseBody) != "origin-response" {
-		t.Fatalf("unexpected proxy response status=%d header=%s body=%q", responseFromProxy.StatusCode, responseFromProxy.Header.Get("X-Origin"), string(responseBody))
+	for path, testCase := range testCases {
+		request, err := nethttp.NewRequestWithContext(ctx, nethttp.MethodPost, "http://"+entry.Addr().String()+path, strings.NewReader("request-body"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		request.Host = "app.example.com"
+		request.Header.Set("X-Test", "yes")
+		if testCase.requestOrigin != nil {
+			request.Header["Origin"] = []string{*testCase.requestOrigin}
+		}
+		responseFromProxy, err := nethttp.DefaultClient.Do(request)
+		if err != nil {
+			t.Fatalf("proxy request %s: %v", path, err)
+		}
+		defer responseFromProxy.Body.Close()
+		responseBody, err := io.ReadAll(responseFromProxy.Body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if responseFromProxy.StatusCode != nethttp.StatusCreated || responseFromProxy.Header.Get("X-Origin") != "ok" || string(responseBody) != "origin-response" {
+			t.Fatalf("unexpected proxy response path=%s status=%d header=%s body=%q", path, responseFromProxy.StatusCode, responseFromProxy.Header.Get("X-Origin"), string(responseBody))
+		}
 	}
 	snapshot := memoryStats.Snapshot("proxy-1")
-	if snapshot.HTTPRequests != 1 || snapshot.HTTPStatusCodes[nethttp.StatusCreated] != 1 || snapshot.HTTPUploadBytes != int64(len("request-body")) || snapshot.HTTPDownloadBytes != int64(len("origin-response")) || snapshot.HTTPErrors != 0 {
+	if snapshot.HTTPRequests != int64(len(testCases)) || snapshot.HTTPStatusCodes[nethttp.StatusCreated] != int64(len(testCases)) || snapshot.HTTPUploadBytes != int64(len("request-body")*len(testCases)) || snapshot.HTTPDownloadBytes != int64(len("origin-response")*len(testCases)) || snapshot.HTTPErrors != 0 {
 		t.Fatalf("unexpected HTTP stats: %+v", snapshot)
 	}
+}
+
+func stringPtr(value string) *string {
+	return &value
 }
 
 func seedHTTPProxy(t *testing.T, ctx context.Context, db *sqlite.Store, targetHost string, targetPort int) {

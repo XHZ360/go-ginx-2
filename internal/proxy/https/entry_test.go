@@ -107,7 +107,16 @@ func TestHTTPSEntryTerminatesTLSBySelectedCertificate(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
-	origin := startHTTPOrigin(t, "terminated response")
+	var targetAuthority string
+	origin := startHTTPOrigin(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Host != targetAuthority {
+			t.Fatalf("expected target host %q, got %q", targetAuthority, r.Host)
+		}
+		if got := r.Header.Get("Origin"); got != "http://"+targetAuthority {
+			t.Fatalf("expected target origin %q, got %q", "http://"+targetAuthority, got)
+		}
+		_, _ = w.Write([]byte("terminated response"))
+	}))
 	originHost, originPortText, err := net.SplitHostPort(origin.Addr().String())
 	if err != nil {
 		t.Fatal(err)
@@ -116,6 +125,7 @@ func TestHTTPSEntryTerminatesTLSBySelectedCertificate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	targetAuthority = net.JoinHostPort(originHost, originPortText)
 	certFile, keyFile, pool := writeCertificateFilesFor(t, "app.example.com")
 
 	db, err := sqlite.Open(filepath.Join(t.TempDir(), "test.db"))
@@ -165,6 +175,7 @@ func TestHTTPSEntryTerminatesTLSBySelectedCertificate(t *testing.T) {
 		t.Fatal(err)
 	}
 	request.Host = "app.example.com"
+	request.Header.Set("Origin", "https://app.example.com")
 	httpResponse, err := httpClient.Do(request)
 	if err != nil {
 		t.Fatalf("https request: %v", err)
@@ -449,15 +460,13 @@ func seedHTTPSTerminationProxy(t *testing.T, ctx context.Context, db *sqlite.Sto
 	}
 }
 
-func startHTTPOrigin(t *testing.T, body string) net.Listener {
+func startHTTPOrigin(t *testing.T, handler http.Handler) net.Listener {
 	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	server := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte(body))
-	})}
+	server := &http.Server{Handler: handler}
 	t.Cleanup(func() { _ = server.Close() })
 	go func() { _ = server.Serve(listener) }()
 	return listener

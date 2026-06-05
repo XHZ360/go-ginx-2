@@ -195,6 +195,13 @@ HTTPS 静态证书终止示例：
   -key-file data/certs/term.key
 ```
 
+HTTPS 代理按 TLS ClientHello 中的 SNI 路由到对应代理后，会先尝试选择可用于该 SNI 的证书材料：
+
+- 如果代理配置了完整的 `cert_file` 和 `key_file`，服务端使用这对静态证书终止公网 TLS，并把解密后的 HTTP 请求转发到客户端本地 HTTP 目标。
+- 如果没有静态证书配置，服务端会查找该 HTTPS host 的 active 托管证书；状态为 `valid` 或 `expiring_soon` 且证书/私钥文件存在时，同样执行 TLS 终止。
+- 如果既没有完整静态证书，也没有 active 托管证书，HTTPS 代理保持 SNI passthrough：服务端只用 SNI 选路，不解密公网 TLS，把加密字节流转发到客户端本地 HTTPS 目标。
+- 如果显式配置了静态证书但证书/私钥不完整、文件不可读、已过期、域名不匹配或 key 不匹配，该连接会失败；运行时不会把无效证书自动降级为 passthrough。
+
 ## 运行时配置
 
 ### 托管状态文件
