@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -221,7 +222,7 @@ func TestServerAuthenticatesSQLiteAdministrators(t *testing.T) {
 	if err := db.Users().SetPassword(context.Background(), "user-1", ordinaryHash); err != nil {
 		t.Fatal(err)
 	}
-	server, err := Listen(Entry{ListenAddress: "127.0.0.1:0", AdminFrontendDir: writeAdminFrontendFixture(t), Query: adminquery.Service{Store: db, Sessions: sessions, Stats: memory}, Commands: admin.Service{Store: db}})
+	server, err := Listen(Entry{ListenAddress: "127.0.0.1:0", AdminFrontendDir: writeAdminFrontendFixture(t), AdminJWTSecret: testAdminJWTSecret(), Query: adminquery.Service{Store: db, Sessions: sessions, Stats: memory}, Commands: admin.Service{Store: db}})
 	if err != nil {
 		t.Fatalf("listen sqlite admin server: %v", err)
 	}
@@ -255,7 +256,7 @@ func TestServerDoesNotRedeemClientEnrollmentToken(t *testing.T) {
 	if err := db.ClientEnrollments().Create(context.Background(), domain.ClientEnrollment{ID: payload.EnrollmentID, ClientID: payload.ClientID, SecretHash: enrollment.HashSecret(payload.Secret), TokenHash: enrollment.HashToken(token), Token: token, ExpiresAt: expiresAt}); err != nil {
 		t.Fatal(err)
 	}
-	server, err := Listen(Entry{ListenAddress: "127.0.0.1:0", AdminFrontendDir: writeAdminFrontendFixture(t), Query: adminquery.Service{Store: db, Sessions: sessions, Stats: memory}, Commands: admin.Service{Store: db}})
+	server, err := Listen(Entry{ListenAddress: "127.0.0.1:0", AdminFrontendDir: writeAdminFrontendFixture(t), AdminJWTSecret: testAdminJWTSecret(), Query: adminquery.Service{Store: db, Sessions: sessions, Stats: memory}, Commands: admin.Service{Store: db}})
 	if err != nil {
 		t.Fatalf("listen admin server: %v", err)
 	}
@@ -606,7 +607,6 @@ func TestServerSessionExpiryAndLogout(t *testing.T) {
 	now := time.Now().UTC()
 	server := startAdminTestServer(t, func(entry *Entry) {
 		entry.Now = func() time.Time { return now }
-		entry.SessionIdleTimeout = time.Minute
 		entry.SessionAbsoluteLifetime = 5 * time.Minute
 	})
 	client := newAdminHTTPClient(t)
@@ -633,6 +633,12 @@ func TestServerSessionExpiryAndLogout(t *testing.T) {
 	loginAdmin(t, client, server.Addr().String(), "admin", "secret")
 	now = now.Add(2 * time.Minute)
 	bootstrap = readBootstrap(t, client, server.Addr().String())
+	if !bootstrap.Authenticated {
+		t.Fatal("expected jwt session to survive inactivity before absolute expiry")
+	}
+
+	now = now.Add(4 * time.Minute)
+	bootstrap = readBootstrap(t, client, server.Addr().String())
 	if bootstrap.Authenticated {
 		t.Fatal("expected session to expire from bootstrap")
 	}
@@ -645,13 +651,72 @@ func TestServerSessionExpiryAndLogout(t *testing.T) {
 	assertGraphQLErrorCode(t, response, http.StatusUnauthorized, "UNAUTHENTICATED")
 }
 
+func TestServerJWTSessionSurvivesRestartWithSameSigningKey(t *testing.T) {
+	client := newAdminHTTPClient(t)
+	first := startAdminTestServer(t, nil)
+	login := loginAdmin(t, client, first.Addr().String(), "admin", "secret")
+	if !login.Authenticated {
+		t.Fatalf("expected authenticated login: %+v", login)
+	}
+	if err := first.Close(); err != nil {
+		t.Fatalf("close first server: %v", err)
+	}
+
+	second := startAdminTestServer(t, nil)
+	bootstrap := readBootstrap(t, client, second.Addr().String())
+	if !bootstrap.Authenticated || bootstrap.Username != "admin" || bootstrap.CSRFToken != login.CSRFToken {
+		t.Fatalf("expected jwt bootstrap after restart, got %+v login=%+v", bootstrap, login)
+	}
+	result := postAdminGraphQL(t, client, second.Addr().String(), `query { dashboard { onlineClientCount } }`, "", http.StatusOK)
+	if result["data"].(map[string]any)["dashboard"].(map[string]any)["onlineClientCount"].(float64) != 1 {
+		t.Fatalf("unexpected dashboard after restart: %+v", result)
+	}
+}
+
+func TestServerJWTSessionRejectsOldSigningKeyAfterRotation(t *testing.T) {
+	client := newAdminHTTPClient(t)
+	first := startAdminTestServer(t, nil)
+	loginAdmin(t, client, first.Addr().String(), "admin", "secret")
+	if err := first.Close(); err != nil {
+		t.Fatalf("close first server: %v", err)
+	}
+
+	second := startAdminTestServer(t, func(entry *Entry) {
+		entry.AdminJWTSecret = []byte("fedcba9876543210fedcba9876543210")
+	})
+	bootstrap := readBootstrap(t, client, second.Addr().String())
+	if bootstrap.Authenticated {
+		t.Fatalf("expected rotated key to reject old jwt, got %+v", bootstrap)
+	}
+}
+
+func TestServerInvalidJWTBootstrapClearsCookie(t *testing.T) {
+	server := startAdminTestServer(t, nil)
+	client := newAdminHTTPClient(t)
+	cookieURL, err := url.Parse("http://" + server.Addr().String() + adminAPIPrefix + "/session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	client.Jar.SetCookies(cookieURL, []*http.Cookie{{Name: adminSessionCookieName, Value: "not-a-jwt", Path: adminSessionCookiePath}})
+	bootstrap := readBootstrap(t, client, server.Addr().String())
+	if bootstrap.Authenticated {
+		t.Fatalf("expected invalid jwt to be unauthenticated, got %+v", bootstrap)
+	}
+	cookies := client.Jar.Cookies(cookieURL)
+	for _, cookie := range cookies {
+		if cookie.Name == adminSessionCookieName && cookie.Value != "" {
+			t.Fatalf("expected invalid jwt cookie to be cleared, got %+v", cookies)
+		}
+	}
+}
+
 func startAdminTestServer(t *testing.T, mutateEntry func(*Entry)) *Server {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	db, sessions, memory := adminAPITestRuntime(t)
 	credentialsFile := writeAdminCredentials(t)
-	entry := Entry{ListenAddress: "127.0.0.1:0", AdminCredentialsFile: credentialsFile, AdminFrontendDir: writeAdminFrontendFixture(t), Query: adminquery.Service{Store: db, Sessions: sessions, Stats: memory}, Commands: admin.Service{Store: db}}
+	entry := Entry{ListenAddress: "127.0.0.1:0", AdminCredentialsFile: credentialsFile, AdminFrontendDir: writeAdminFrontendFixture(t), AdminJWTSecret: testAdminJWTSecret(), Query: adminquery.Service{Store: db, Sessions: sessions, Stats: memory}, Commands: admin.Service{Store: db}}
 	if mutateEntry != nil {
 		mutateEntry(&entry)
 	}
@@ -756,6 +821,10 @@ func newAdminHTTPClient(t *testing.T) *http.Client {
 		t.Fatal(err)
 	}
 	return &http.Client{Jar: jar}
+}
+
+func testAdminJWTSecret() []byte {
+	return []byte("0123456789abcdef0123456789abcdef")
 }
 
 func loginAdmin(t *testing.T, client *http.Client, addr string, username string, password string) sessionBootstrapResponse {

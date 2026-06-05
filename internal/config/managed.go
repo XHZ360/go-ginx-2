@@ -5,6 +5,7 @@ import (
 	"crypto/rsa"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
@@ -13,6 +14,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/simp-frp/go-ginx-2/internal/deploypath"
@@ -23,6 +25,7 @@ const (
 	DefaultClientConfigPath = "config/client.json"
 	DefaultClientCAFile     = "data/certs/server-ca.crt"
 	DefaultServerConfigPath = "config/server.json"
+	MinAdminJWTSecretBytes  = 32
 )
 
 type JoinServiceDefaultsOptions struct {
@@ -102,6 +105,7 @@ func ResolveServerPaths(cfg *Server, root string) {
 	}
 	cfg.AdminCredentialsFile = deploypath.Resolve(root, cfg.AdminCredentialsFile)
 	cfg.AdminFrontendDir = deploypath.Resolve(root, cfg.AdminFrontendDir)
+	cfg.AdminJWTSecretFile = deploypath.Resolve(root, cfg.AdminJWTSecretFile)
 	cfg.ControlTLSCAFile = deploypath.Resolve(root, cfg.ControlTLSCAFile)
 	cfg.ControlTLSCertFile = deploypath.Resolve(root, cfg.ControlTLSCertFile)
 	cfg.ControlTLSKeyFile = deploypath.Resolve(root, cfg.ControlTLSKeyFile)
@@ -119,6 +123,7 @@ func ResolveClientPaths(cfg *Client, root string) {
 
 func applyManagedServerEnv(cfg *Server) {
 	envString("GOGINX_ADMIN_LISTEN", &cfg.AdminListen)
+	envString("GOGINX_ADMIN_JWT_SECRET_FILE", &cfg.AdminJWTSecretFile)
 	envString("GOGINX_CLIENT_ENROLLMENT_LISTEN", &cfg.ClientEnrollmentListen)
 	envString("GOGINX_CONTROL_QUIC_LISTEN", &cfg.ControlQUICListen)
 	envString("GOGINX_CONTROL_TLS_LISTEN", &cfg.ControlTLSListen)
@@ -150,7 +155,51 @@ func PrepareManagedServer(cfg *Server) error {
 			return fmt.Errorf("create managed directory %s: %w", dir, err)
 		}
 	}
+	if err := EnsureAdminJWTSecret(cfg); err != nil {
+		return err
+	}
 	return EnsureControlTLS(cfg)
+}
+
+func EnsureAdminJWTSecret(cfg *Server) error {
+	if cfg == nil {
+		return errors.New("server config is required")
+	}
+	if strings.TrimSpace(cfg.AdminJWTSecretFile) == "" {
+		return errors.New("admin_jwt_secret_file is required")
+	}
+	if fileExists(cfg.AdminJWTSecretFile) {
+		_, err := LoadAdminJWTSecret(cfg.AdminJWTSecretFile)
+		return err
+	}
+	secret := make([]byte, MinAdminJWTSecretBytes)
+	if _, err := rand.Read(secret); err != nil {
+		return fmt.Errorf("generate admin jwt secret: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(cfg.AdminJWTSecretFile), 0o755); err != nil {
+		return err
+	}
+	content := append([]byte(base64.RawURLEncoding.EncodeToString(secret)), '\n')
+	return os.WriteFile(cfg.AdminJWTSecretFile, content, 0o600)
+}
+
+func LoadAdminJWTSecret(path string) ([]byte, error) {
+	if strings.TrimSpace(path) == "" {
+		return nil, errors.New("admin_jwt_secret_file is required")
+	}
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read admin jwt secret: %w", err)
+	}
+	encoded := strings.TrimSpace(string(content))
+	secret, err := base64.RawURLEncoding.DecodeString(encoded)
+	if err != nil {
+		return nil, fmt.Errorf("decode admin jwt secret: %w", err)
+	}
+	if len(secret) < MinAdminJWTSecretBytes {
+		return nil, fmt.Errorf("admin jwt secret must be at least %d bytes", MinAdminJWTSecretBytes)
+	}
+	return secret, nil
 }
 
 func LoadManagedClient() (Client, error) {

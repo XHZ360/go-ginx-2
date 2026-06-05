@@ -55,6 +55,9 @@ func TestBuildBundleCreatesExpectedLayout(t *testing.T) {
 	if serverConfig.AdminFrontendDir != "" {
 		t.Fatalf("expected empty admin_frontend_dir for default admin-ui directory, got %q", serverConfig.AdminFrontendDir)
 	}
+	if serverConfig.AdminJWTSecretFile != "data/admin-jwt.key" {
+		t.Fatalf("unexpected admin jwt secret path: %+v", serverConfig)
+	}
 	clientConfig := readBundledClientConfig(t, filepath.Join(outputDir, "config", bundledClientExampleConfigName))
 	if clientConfig.ServerName != "go-ginx-control.local" || clientConfig.ServerCAFile != "data/certs/server-ca.crt" {
 		t.Fatalf("unexpected client trust config: %+v", clientConfig)
@@ -150,6 +153,9 @@ func TestBuildBundleCopiesAdminFrontendAssetsWhenPresent(t *testing.T) {
 	if serverConfig.AdminFrontendDir != "" {
 		t.Fatalf("expected admin_frontend_dir to remain optional, got %q", serverConfig.AdminFrontendDir)
 	}
+	if serverConfig.AdminJWTSecretFile != "data/admin-jwt.key" {
+		t.Fatalf("unexpected admin jwt secret path: %+v", serverConfig)
+	}
 	clientConfig := readBundledClientConfig(t, filepath.Join(outputDir, "config", bundledClientExampleConfigName))
 	if clientConfig.ServerName != "go-ginx-control.local" || clientConfig.ServerCAFile != "data/certs/server-ca.crt" {
 		t.Fatalf("unexpected client trust config: %+v", clientConfig)
@@ -207,6 +213,7 @@ func readBundledServerConfig(t *testing.T, path string) bundledServerConfig {
 type bundledServerConfig struct {
 	AdminEnabled       bool   `json:"admin_enabled"`
 	AdminFrontendDir   string `json:"admin_frontend_dir"`
+	AdminJWTSecretFile string `json:"admin_jwt_secret_file"`
 	ControlTLSCAFile   string `json:"control_tls_ca_file"`
 	ControlTLSCertFile string `json:"control_tls_cert_file"`
 	ControlTLSKeyFile  string `json:"control_tls_key_file"`

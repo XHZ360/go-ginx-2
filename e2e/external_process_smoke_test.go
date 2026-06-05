@@ -9,6 +9,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
@@ -312,12 +313,14 @@ func TestExternalProcessesAdminAPIUI(t *testing.T) {
 	enrollmentPort := reservePort(t)
 	certFile, keyFile, caFile := writeTLSFiles(t, workDir)
 	adminCredsFile := writeAdminCredentialsFile(t, workDir, "admin", "secret")
+	adminJWTSecretFile := writeAdminJWTSecretFile(t, workDir)
 	dbPath := filepath.Join(workDir, "go-ginx.db")
 	seedSQLite(t, dbPath, domain.Proxy{ID: "http-1", UserID: "user-1", ClientID: "client-1", Name: "web", Type: domain.ProxyHTTP, Status: domain.ProxyEnabled, EntryHost: "app.example.com", TargetHost: "127.0.0.1", TargetPort: 8080})
 	serverConfig := writeJSON(t, filepath.Join(workDir, "server.json"), map[string]any{
 		"admin_listen":             net.JoinHostPort("127.0.0.1", strconv.Itoa(adminPort)),
 		"admin_credentials_file":   adminCredsFile,
 		"admin_frontend_dir":       frontendDir,
+		"admin_jwt_secret_file":    adminJWTSecretFile,
 		"client_enrollment_listen": net.JoinHostPort("127.0.0.1", strconv.Itoa(enrollmentPort)),
 		"control_quic_listen":      net.JoinHostPort("127.0.0.1", strconv.Itoa(controlPort)),
 		"control_tls_listen":       net.JoinHostPort("127.0.0.1", strconv.Itoa(controlTLSPort)),
@@ -1143,6 +1146,14 @@ func writeAdminCredentialsFile(t *testing.T, dir string, username string, passwo
 	}
 	path := filepath.Join(dir, "admin-creds.json")
 	writeFile(t, path, []byte(`{"administrators":[{"username":"`+username+`","password_hash":"`+hash+`"}]}`))
+	return path
+}
+
+func writeAdminJWTSecretFile(t *testing.T, dir string) string {
+	t.Helper()
+	path := filepath.Join(dir, "admin-jwt.key")
+	secret := base64.RawURLEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef"))
+	writeFile(t, path, append([]byte(secret), '\n'))
 	return path
 }
 

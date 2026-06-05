@@ -262,6 +262,7 @@ func serverEnvExample() string {
 	return strings.Join([]string{
 		"# Optional ACME and service overrides for goginx-server",
 		"CF_DNS_API_TOKEN=",
+		"GOGINX_ADMIN_JWT_SECRET_FILE=",
 		"",
 	}, "\n")
 }

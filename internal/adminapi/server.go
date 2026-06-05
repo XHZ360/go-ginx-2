@@ -58,6 +58,7 @@ type Entry struct {
 	ListenAddress           string
 	AdminCredentialsFile    string
 	AdminFrontendDir        string
+	AdminJWTSecret          []byte
 	Credentials             credentialVerifier
 	Enrollment              enrollment.Service
 	Query                   adminquery.Service
@@ -184,12 +185,17 @@ func Listen(entry Entry) (*Server, error) {
 		_ = listener.Close()
 		return nil, err
 	}
+	sessions, err := newSessionManager(entry.AdminJWTSecret, entry.SessionAbsoluteLifetime, entry.Now)
+	if err != nil {
+		_ = listener.Close()
+		return nil, err
+	}
 	server := &Server{
 		query:      entry.Query,
 		commands:   entry.Commands,
 		listener:   listener,
 		creds:      creds,
-		sessions:   newSessionManager(entry.SessionIdleTimeout, entry.SessionAbsoluteLifetime, entry.Now),
+		sessions:   sessions,
 		frontend:   frontend,
 		enrollment: entry.Enrollment,
 	}
@@ -584,6 +590,14 @@ func (server *Server) hasValidCSRFToken(r *http.Request, session administratorSe
 }
 
 func (server *Server) writeSessionCookie(w http.ResponseWriter, r *http.Request, session administratorSession) {
+	expires := session.ExpiresAt
+	if expires.IsZero() {
+		expires = time.Now().UTC().Add(defaultSessionAbsoluteLifetime)
+	}
+	maxAge := int(expires.Sub(session.CreatedAt).Seconds())
+	if maxAge <= 0 {
+		maxAge = int(defaultSessionAbsoluteLifetime.Seconds())
+	}
 	http.SetCookie(w, &http.Cookie{
 		Name:     adminSessionCookieName,
 		Value:    session.ID,
@@ -591,6 +605,8 @@ func (server *Server) writeSessionCookie(w http.ResponseWriter, r *http.Request,
 		HttpOnly: true,
 		Secure:   requestHasTLSCookieContext(r),
 		SameSite: http.SameSiteLaxMode,
+		Expires:  expires,
+		MaxAge:   maxAge,
 	})
 }
 

@@ -20,7 +20,7 @@ This guide covers the implemented milestone-one daemon runtime plus the first su
 14. Checked-in `systemd` service templates for supervised server and client execution.
 15. Configless server startup with managed `data/` state and generated control-channel TLS material.
 16. One-time client join tokens that write managed client state for later no-`-config` startup.
-17. Optional administrator-only management listener with session login, session bootstrap, logout, GraphQL operations, client enrollment, and same-origin dedicated frontend delivery from the runtime `admin-ui/` directory or an explicit frontend directory override.
+17. Optional administrator-only management listener with 8-hour JWT login, session bootstrap, logout, GraphQL operations, client enrollment, and same-origin dedicated frontend delivery from the runtime `admin-ui/` directory or an explicit frontend directory override.
 
 ## Seed SQLite
 
@@ -42,6 +42,7 @@ On first start the server creates managed runtime state beneath the working dire
 2. `data/certs/control-ca.crt` for client trust distribution.
 3. `data/certs/control.crt` and `data/certs/control.key` for QUIC and TCP+TLS control listeners.
 4. `data/certs/managed/` for managed HTTPS proxy certificates.
+5. `data/admin-jwt.key` for administrator JWT signing.
 
 Initialize the first administrator locally:
 
@@ -74,7 +75,7 @@ On the client host:
 
 The join command redeems the token through the dedicated client enrollment listener at `/api/client/enroll`, writes `data/client-state.json`, writes `data/certs/server-ca.crt`, and subsequent client runs use that managed state. The admin listener no longer serves `/api/client/enroll`; old tokens that point at the admin listener must be regenerated. By default these paths are under the deployment root derived from the `goginx-client` binary location; when the binary is under `bin/`, the deployment root is the parent of `bin/`.
 
-Managed startup accepts environment overrides for file-free deployments that need non-default ports, paths, or join defaults, including `GOGINX_ADMIN_LISTEN`, `GOGINX_CLIENT_ENROLLMENT_LISTEN`, `GOGINX_CONTROL_QUIC_LISTEN`, `GOGINX_CONTROL_TLS_LISTEN`, `GOGINX_JOIN_SERVICE_HOST`, `GOGINX_HTTP_ENTRY_LISTEN`, `GOGINX_HTTPS_ENTRY_LISTEN`, `GOGINX_SQLITE_PATH`, `GOGINX_DATA_DIR`, and `GOGINX_CERTIFICATE_DIR`. Treat `127.0.0.1` as a local development or last-resort fallback; cross-host joins should use a reachable DNS name or IP through `GOGINX_JOIN_SERVICE_HOST`, `join_service_host`, `-server-config`, or explicit join command flags. Configless defaults use `:8081` for client enrollment, `:80` for HTTP entry traffic, and `:443` for HTTPS entry traffic; binding 80/443 can require root, `CAP_NET_BIND_SERVICE`, service-manager privileges, or explicit non-privileged overrides.
+Managed startup accepts environment overrides for file-free deployments that need non-default ports, paths, secrets, or join defaults, including `GOGINX_ADMIN_LISTEN`, `GOGINX_ADMIN_JWT_SECRET_FILE`, `GOGINX_CLIENT_ENROLLMENT_LISTEN`, `GOGINX_CONTROL_QUIC_LISTEN`, `GOGINX_CONTROL_TLS_LISTEN`, `GOGINX_JOIN_SERVICE_HOST`, `GOGINX_HTTP_ENTRY_LISTEN`, `GOGINX_HTTPS_ENTRY_LISTEN`, `GOGINX_SQLITE_PATH`, `GOGINX_DATA_DIR`, and `GOGINX_CERTIFICATE_DIR`. Treat `127.0.0.1` as a local development or last-resort fallback; cross-host joins should use a reachable DNS name or IP through `GOGINX_JOIN_SERVICE_HOST`, `join_service_host`, `-server-config`, or explicit join command flags. Configless defaults use `:8081` for client enrollment, `:80` for HTTP entry traffic, and `:443` for HTTPS entry traffic; binding 80/443 can require root, `CAP_NET_BIND_SERVICE`, service-manager privileges, or explicit non-privileged overrides.
 
 ## Optional Server Config
 
@@ -84,6 +85,7 @@ Explicit JSON config remains supported for advanced deployments. Create `server.
 {
   "admin_listen": "127.0.0.1:8080",
   "admin_frontend_dir": "web/admin",
+  "admin_jwt_secret_file": "data/admin-jwt.key",
   "client_enrollment_listen": "0.0.0.0:8081",
   "control_quic_listen": "127.0.0.1:8443",
   "control_tls_listen": "127.0.0.1:9443",
@@ -110,6 +112,8 @@ Explicit JSON config remains supported for advanced deployments. Create `server.
 `control_quic_listen` is the primary control listener. `control_tls_listen` enables TCP+TLS fallback for authentication, proxy snapshots, heartbeats, and framed proxy substreams. TCP+TLS fallback is reliable but uses one TCP connection, so slow streams can cause normal TCP head-of-line effects.
 
 When `admin_frontend_dir` is empty, the server loads the dedicated admin frontend from `admin-ui/` under the deployment root. If the server binary is under `bin/`, the deployment root is the parent of `bin/`; otherwise it is the binary directory. `admin_frontend_dir` is optional and, when set, must point to another directory containing the dedicated admin frontend build output, including `index.html`. The admin listener serves those browser routes and assets on the same origin as the administrator API while keeping `/api/admin/*` reserved for backend endpoints.
+
+`admin_jwt_secret_file` points to the stable HMAC signing key used for administrator browser JWTs. The managed default is `data/admin-jwt.key`; explicit deployments can override it through JSON or `GOGINX_ADMIN_JWT_SECRET_FILE`. The key file should be readable only by the service account, included in backup and restore plans, and never logged or exposed to clients.
 
 The control certificate must be valid for the client `server_name`, and the client must trust the CA that signed it.
 
@@ -163,7 +167,7 @@ The core bundle layout is stable and contains:
 1. `bin/` with `goginx-server`, `goginx-client`, and `goginx-admin`.
 2. `admin-ui/` with the management frontend build output used by default at runtime.
 3. `config/` with optional sample `server.example.json`, `client.example.json`, and environment examples.
-4. `data/` with SQLite and certificate directories.
+4. `data/` with SQLite, certificate directories, and the administrator JWT signing key.
 5. `logs/` for operator-managed log files.
 6. `systemd/` with rendered `goginx-server.service` and `goginx-client.service` units.
 7. `config/admin-credentials.json.example` for the optional administrator management surface.
@@ -204,7 +208,7 @@ For the supported `systemd` deployment model:
 3. Install `systemd/goginx-server.service` and `systemd/goginx-client.service` into `/etc/systemd/system/`.
 4. Run `systemctl daemon-reload`.
 5. Start the units with `systemctl enable --now goginx-server goginx-client`.
-6. Restart after config or binary updates with `systemctl restart goginx-server goginx-client`.
+6. Restart after config or binary updates with `systemctl restart goginx-server goginx-client`, preserving `data/admin-jwt.key` when you want unexpired administrator JWTs to survive the restart.
 
 The server starts SQLite, the QUIC control listener, the optional TCP+TLS fallback listener, the default HTTP entry listener, the optional default HTTPS entry listener, and any extra per-proxy listeners required by enabled proxies. Each proxy has an effective entry listener:
 
@@ -216,14 +220,18 @@ When administrators create, update, enable, disable, or delete proxies, the daem
 
 When configless server startup is used, the server starts an administrator-only management listener on `admin_listen` and authenticates SQLite administrator users initialized by `init-admin`. `admin_credentials_file` remains a compatibility override. The `/api/admin/*` namespace remains reserved for management API behavior and exposes:
 
-1. `POST /api/admin/login` for administrator session creation.
+1. `POST /api/admin/login` for administrator JWT creation.
 2. `GET /api/admin/session` for browser session bootstrap.
-3. `POST /api/admin/logout` for session invalidation.
+3. `POST /api/admin/logout` for browser cookie clearing.
 4. `POST /api/admin/graphql` for administrator GraphQL queries and mutations.
+
+Successful login signs an administrator JWT with an 8-hour absolute lifetime and writes it to the existing HttpOnly same-origin cookie. The server no longer keeps an in-process session map for administrator login state and does not apply an idle timeout. `GET /api/admin/session` validates the JWT cookie and returns the administrator context plus the CSRF token stored in JWT claims. GraphQL queries require only a valid JWT; GraphQL mutations and authenticated logout still require `X-GoGinx-CSRF-Token` to match the JWT claim.
+
+If the server restarts with the same `admin_jwt_secret_file` contents, unexpired administrator JWT cookies remain valid. Deleting, corrupting, or rotating `data/admin-jwt.key` invalidates existing administrator JWTs and requires administrators to log in again. Logout only clears the browser cookie; pure stateless JWT mode does not provide server-side revocation for an unexpired token that was copied outside the browser. During upgrade from older in-memory sessions, existing session cookies cannot be migrated and administrators should log in once after the first restart. Rolling back to an older build makes JWT cookies look like unknown session ids, so administrators will also need to log in again.
 
 The same listener serves the dedicated admin frontend on non-API `GET` and `HEAD` routes. Browser routes such as `/`, `/login`, `/users`, `/clients`, `/proxies`, `/certificates`, and `/audit` resolve through the frontend shell, deep links serve `index.html`, and real asset files are served directly from the selected frontend directory. Missing asset-like paths such as `/assets/missing.js` still return `404 Not Found`. `admin_frontend_dir` is an override for development or custom deployments rather than a baseline requirement.
 
-The first session-authenticated management slice is intentionally narrow: it excludes ordinary-user self-service, quota editing, log search, domain lifecycle management, advanced alerts, and realtime subscriptions. The legacy server-rendered admin UI and browser-facing `/graphql` route are not served in this slice.
+The first JWT-authenticated management slice is intentionally narrow: it excludes ordinary-user self-service, quota editing, log search, domain lifecycle management, advanced alerts, and realtime subscriptions. The legacy server-rendered admin UI and browser-facing `/graphql` route are not served in this slice.
 
 When `acme_enabled` is true, the server reads the Cloudflare token from `acme_cloudflare_token_env`, stores managed certificates under `certificate_dir/managed/<host>/`, renews expiring managed certificates inside `acme_renewal_window`, hot reloads future TLS handshakes, and keeps the previous active certificate pair for rollback. SQLite stores only lifecycle metadata and file paths.
 
@@ -252,14 +260,15 @@ $env:CF_DNS_API_TOKEN="<cloudflare-token>"
 12. Managed certificate issuance fails immediately if the Cloudflare token environment variable is missing, the proxy host is not delegated to Cloudflare, or the process cannot reach the ACME directory or Cloudflare API.
 13. Client reconnect loops: transient dial or runtime failures now retry using the configured reconnect backoff, including control-listener outages or daemon restarts. Authentication rejection still exits immediately, so re-check the stored credential instead of waiting for automatic recovery.
 14. `systemd` install paths: the generated service files assume the rendered `install_root` passed to `build-deploy-bundle`. Rebuild the bundle or edit the unit files if you deploy somewhere other than that path.
-15. Upgrade and rollback: replace the bundle contents in the install root, including `admin-ui/`, then restart the units. Roll back by restoring the previous bundle directory contents and restarting the same units.
+15. Upgrade and rollback: replace the bundle contents in the install root, including `admin-ui/`, then restart the units. Preserve `data/admin-jwt.key` across upgrades when you want unexpired administrator JWTs to remain valid after restart. The first upgrade from older in-memory sessions requires administrators to log in again once; rollback to an older build also clears JWT cookies as unknown sessions.
 16. Administrator management credentials: `admin_credentials_file` must point to a readable JSON file containing administrator usernames and bcrypt password hashes. The file is separate from SQLite users and should be readable only by the service account.
-17. Management transport protection: the admin listener uses session-authenticated same-origin API routes and is expected to run behind TLS. Local loopback access is accepted for development and automated tests; loopback testing may issue non-`Secure` cookies because browsers and HTTP clients do not send `Secure` cookies over plain `http://127.0.0.1` development traffic.
-18. Configless port conflicts: set `GOGINX_ADMIN_LISTEN`, `GOGINX_CLIENT_ENROLLMENT_LISTEN`, `GOGINX_CONTROL_QUIC_LISTEN`, `GOGINX_CONTROL_TLS_LISTEN`, `GOGINX_HTTP_ENTRY_LISTEN`, or `GOGINX_HTTPS_ENTRY_LISTEN` to free static addresses, or switch to explicit JSON config. Per-proxy `entry_bind_host` and `entry_port` must also avoid active static listeners and active proxy listeners. Wildcard addresses such as `0.0.0.0`, `::`, or an empty host conflict with concrete addresses on the same protocol and port. On systems that restrict low ports, either grant permission for the server to bind 80/443 or override the HTTP/HTTPS entry listeners.
-19. Managed control TLS state: if `data/certs/control-ca.crt`, `control.crt`, or `control.key` is missing or corrupted, stop the server and restore the set from backup; deleting the set forces regeneration and breaks existing joined clients until they join again.
-20. Missing administrator bootstrap: configless management login has no default password. Run `goginx-admin init-admin` before logging in. By default the CLI writes to `data/go-ginx.db` under the deployment root derived from the `goginx-admin` binary location; use `-db` when targeting a custom server SQLite path.
-21. Join token failures: expired, already-used, tampered, revoked, or admin-listener-era join tokens are rejected by `/api/client/enroll`; generate a new token with `goginx-admin create-client-join`.
-22. Client managed state damage: if `data/client-state.json` or `data/certs/server-ca.crt` is missing on the client host, run `goginx-client join <new-token>` again.
+17. Administrator JWT signing key: `admin_jwt_secret_file` must point to a readable base64url key with at least 32 decoded bytes. If `data/admin-jwt.key` is missing or corrupted, restore it from backup to keep unexpired JWTs valid; deleting or rotating it requires administrators to log in again. Do not copy the key into logs, bug reports, frontend assets, or client-visible config.
+18. Management transport protection: the admin listener uses JWT-authenticated same-origin API routes and is expected to run behind TLS. Local loopback access is accepted for development and automated tests; loopback testing may issue non-`Secure` cookies because browsers and HTTP clients do not send `Secure` cookies over plain `http://127.0.0.1` development traffic.
+19. Configless port conflicts: set `GOGINX_ADMIN_LISTEN`, `GOGINX_CLIENT_ENROLLMENT_LISTEN`, `GOGINX_CONTROL_QUIC_LISTEN`, `GOGINX_CONTROL_TLS_LISTEN`, `GOGINX_HTTP_ENTRY_LISTEN`, or `GOGINX_HTTPS_ENTRY_LISTEN` to free static addresses, or switch to explicit JSON config. Per-proxy `entry_bind_host` and `entry_port` must also avoid active static listeners and active proxy listeners. Wildcard addresses such as `0.0.0.0`, `::`, or an empty host conflict with concrete addresses on the same protocol and port. On systems that restrict low ports, either grant permission for the server to bind 80/443 or override the HTTP/HTTPS entry listeners.
+20. Managed control TLS state: if `data/certs/control-ca.crt`, `control.crt`, or `control.key` is missing or corrupted, stop the server and restore the set from backup; deleting the set forces regeneration and breaks existing joined clients until they join again.
+21. Missing administrator bootstrap: configless management login has no default password. Run `goginx-admin init-admin` before logging in. By default the CLI writes to `data/go-ginx.db` under the deployment root derived from the `goginx-admin` binary location; use `-db` when targeting a custom server SQLite path.
+22. Join token failures: expired, already-used, tampered, revoked, or admin-listener-era join tokens are rejected by `/api/client/enroll`; generate a new token with `goginx-admin create-client-join`.
+23. Client managed state damage: if `data/client-state.json` or `data/certs/server-ca.crt` is missing on the client host, run `goginx-client join <new-token>` again.
 
 ## Not Implemented
 

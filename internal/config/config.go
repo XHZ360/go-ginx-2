@@ -19,6 +19,7 @@ type Server struct {
 	AdminListen            string        `json:"admin_listen"`
 	AdminCredentialsFile   string        `json:"admin_credentials_file"`
 	AdminFrontendDir       string        `json:"admin_frontend_dir"`
+	AdminJWTSecretFile     string        `json:"admin_jwt_secret_file"`
 	ClientEnrollmentListen string        `json:"client_enrollment_listen"`
 	ControlQUICListen      string        `json:"control_quic_listen"`
 	ControlTLSListen       string        `json:"control_tls_listen"`
@@ -76,6 +77,7 @@ func DefaultServer() Server {
 		AdminListen:            "127.0.0.1:8080",
 		AdminCredentialsFile:   "",
 		AdminFrontendDir:       "",
+		AdminJWTSecretFile:     "data/admin-jwt.key",
 		ClientEnrollmentListen: ":8081",
 		ControlQUICListen:      ":8443",
 		ControlTLSListen:       ":9443",
@@ -172,6 +174,9 @@ func (cfg Server) Validate() error {
 	}
 	if strings.TrimSpace(cfg.CertificateDir) == "" {
 		return errors.New("certificate_dir is required")
+	}
+	if (cfg.AdminEnabled || strings.TrimSpace(cfg.AdminCredentialsFile) != "") && strings.TrimSpace(cfg.AdminJWTSecretFile) == "" {
+		return errors.New("admin_jwt_secret_file is required when admin is enabled")
 	}
 	if cfg.ACMEEnabled {
 		if strings.TrimSpace(cfg.ACMEDirectoryURL) == "" {

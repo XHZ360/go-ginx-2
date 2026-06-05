@@ -28,6 +28,7 @@ func TestLoadServerConfigDefaultsToDeploymentRoot(t *testing.T) {
 		cfg.ControlTLSCAFile,
 		cfg.ControlTLSCertFile,
 		cfg.ControlTLSKeyFile,
+		cfg.AdminJWTSecretFile,
 	} {
 		if _, err := os.Stat(path); err != nil {
 			t.Fatalf("expected generated control tls file %s: %v", path, err)
@@ -69,6 +70,9 @@ func TestLoadServerConfigResolvesRelativeConfigAndPathsFromDeploymentRoot(t *tes
 	}
 	if loaded.ControlTLSCertFile != filepath.Join(deploymentRoot, "data", "certs", "custom.crt") {
 		t.Fatalf("expected deployment-root control cert path, got %q", loaded.ControlTLSCertFile)
+	}
+	if loaded.AdminJWTSecretFile != filepath.Join(deploymentRoot, "data", "admin-jwt.key") {
+		t.Fatalf("expected deployment-root admin jwt secret path, got %q", loaded.AdminJWTSecretFile)
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
 	"io"
@@ -91,12 +92,13 @@ func TestStartServerServesConfiguredAdminFrontend(t *testing.T) {
 	seedDatabase(t, dbPath, []domain.Proxy{{ID: "http-1", UserID: "user-1", ClientID: "client-1", Name: "web", Type: domain.ProxyHTTP, Status: domain.ProxyEnabled, EntryHost: "app.example.com", TargetHost: "127.0.0.1", TargetPort: 8080}})
 	frontendDir := writeDaemonAdminFrontendFixture(t)
 	adminCredentialsFile := writeDaemonAdminCredentials(t)
+	adminJWTSecretFile := writeDaemonAdminJWTSecret(t)
 	adminPort := reservePort(t)
 	enrollmentPort := reservePort(t)
 	controlQUICPort := reserveUDPPort(t)
 	httpEntryPort := reservePort(t)
 
-	runtime, err := StartServer(ctx, config.Server{AdminListen: net.JoinHostPort("127.0.0.1", strconv.Itoa(adminPort)), AdminCredentialsFile: adminCredentialsFile, AdminFrontendDir: frontendDir, ClientEnrollmentListen: net.JoinHostPort("127.0.0.1", strconv.Itoa(enrollmentPort)), ControlQUICListen: net.JoinHostPort("127.0.0.1", strconv.Itoa(controlQUICPort)), ControlTLSCertFile: serverCert, ControlTLSKeyFile: serverKey, TCPEntryHost: "127.0.0.1", HTTPEntryListen: net.JoinHostPort("127.0.0.1", strconv.Itoa(httpEntryPort)), SQLitePath: dbPath, DataDir: t.TempDir(), CertificateDir: t.TempDir(), HeartbeatTimeout: time.Second, LogRetentionDays: 1})
+	runtime, err := StartServer(ctx, config.Server{AdminListen: net.JoinHostPort("127.0.0.1", strconv.Itoa(adminPort)), AdminCredentialsFile: adminCredentialsFile, AdminFrontendDir: frontendDir, AdminJWTSecretFile: adminJWTSecretFile, ClientEnrollmentListen: net.JoinHostPort("127.0.0.1", strconv.Itoa(enrollmentPort)), ControlQUICListen: net.JoinHostPort("127.0.0.1", strconv.Itoa(controlQUICPort)), ControlTLSCertFile: serverCert, ControlTLSKeyFile: serverKey, TCPEntryHost: "127.0.0.1", HTTPEntryListen: net.JoinHostPort("127.0.0.1", strconv.Itoa(httpEntryPort)), SQLitePath: dbPath, DataDir: t.TempDir(), CertificateDir: t.TempDir(), HeartbeatTimeout: time.Second, LogRetentionDays: 1})
 	if err != nil {
 		t.Fatalf("start server with admin frontend: %v", err)
 	}
@@ -1024,6 +1026,16 @@ func writeDaemonAdminCredentials(t *testing.T) string {
 	path := filepath.Join(t.TempDir(), "admins.json")
 	content := []byte(`{"administrators":[{"username":"admin","password_hash":"` + hash + `"}]}`)
 	if err := os.WriteFile(path, content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func writeDaemonAdminJWTSecret(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "admin-jwt.key")
+	secret := base64.RawURLEncoding.EncodeToString([]byte("0123456789abcdef0123456789abcdef"))
+	if err := os.WriteFile(path, append([]byte(secret), '\n'), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	return path

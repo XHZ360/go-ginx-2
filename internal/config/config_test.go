@@ -52,8 +52,21 @@ func TestDefaultServerUsesSeparatedEnrollmentAndWebEntryPorts(t *testing.T) {
 	if cfg.ClientEnrollmentListen != ":8081" || cfg.HTTPEntryListen != ":80" || cfg.HTTPSEntryListen != ":443" {
 		t.Fatalf("unexpected default listener ports: %+v", cfg)
 	}
+	if cfg.AdminJWTSecretFile != "data/admin-jwt.key" {
+		t.Fatalf("unexpected admin jwt secret file %q", cfg.AdminJWTSecretFile)
+	}
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("validate default server: %v", err)
+	}
+}
+
+func TestServerValidateRequiresAdminJWTSecretWhenAdminEnabled(t *testing.T) {
+	cfg := DefaultServer()
+	cfg.AdminEnabled = true
+	cfg.AdminJWTSecretFile = ""
+
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected missing admin jwt secret validation error")
 	}
 }
 
@@ -338,11 +351,12 @@ func TestManagedServerCreatesRuntimeDirectoriesAndControlTLS(t *testing.T) {
 	cfg.ControlTLSCertFile = filepath.Join(root, "data", "certs", "control.crt")
 	cfg.ControlTLSKeyFile = filepath.Join(root, "data", "certs", "control.key")
 	cfg.ControlTLSServerName = "go-ginx-control.test"
+	cfg.AdminJWTSecretFile = filepath.Join(root, "data", "admin-jwt.key")
 
 	if err := PrepareManagedServer(&cfg); err != nil {
 		t.Fatalf("prepare managed server: %v", err)
 	}
-	for _, path := range []string{cfg.DataDir, cfg.CertificateDir, cfg.ControlTLSCAFile, cfg.ControlTLSCertFile, cfg.ControlTLSKeyFile} {
+	for _, path := range []string{cfg.DataDir, cfg.CertificateDir, cfg.ControlTLSCAFile, cfg.ControlTLSCertFile, cfg.ControlTLSKeyFile, cfg.AdminJWTSecretFile} {
 		if _, err := os.Stat(path); err != nil {
 			t.Fatalf("expected managed path %s: %v", path, err)
 		}
@@ -350,6 +364,10 @@ func TestManagedServerCreatesRuntimeDirectoriesAndControlTLS(t *testing.T) {
 	certInfo, err := os.Stat(cfg.ControlTLSCertFile)
 	if err != nil {
 		t.Fatal(err)
+	}
+	secret, err := LoadAdminJWTSecret(cfg.AdminJWTSecretFile)
+	if err != nil {
+		t.Fatalf("load generated admin jwt secret: %v", err)
 	}
 	if err := PrepareManagedServer(&cfg); err != nil {
 		t.Fatalf("prepare managed server again: %v", err)
@@ -360,6 +378,13 @@ func TestManagedServerCreatesRuntimeDirectoriesAndControlTLS(t *testing.T) {
 	}
 	if !reusedInfo.ModTime().Equal(certInfo.ModTime()) {
 		t.Fatal("expected existing control certificate to be reused")
+	}
+	reusedSecret, err := LoadAdminJWTSecret(cfg.AdminJWTSecretFile)
+	if err != nil {
+		t.Fatalf("load reused admin jwt secret: %v", err)
+	}
+	if string(reusedSecret) != string(secret) {
+		t.Fatal("expected existing admin jwt secret to be reused")
 	}
 
 	cert, err := tls.LoadX509KeyPair(cfg.ControlTLSCertFile, cfg.ControlTLSKeyFile)
@@ -380,6 +405,24 @@ func TestManagedServerCreatesRuntimeDirectoriesAndControlTLS(t *testing.T) {
 	}
 	if _, err := leaf.Verify(x509.VerifyOptions{DNSName: cfg.ControlTLSServerName, Roots: pool, CurrentTime: time.Now().UTC()}); err != nil {
 		t.Fatalf("verify generated control cert: %v", err)
+	}
+}
+
+func TestManagedServerRejectsInvalidAdminJWTSecret(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultServer()
+	cfg.DataDir = filepath.Join(root, "data")
+	cfg.CertificateDir = filepath.Join(root, "data", "certs")
+	cfg.AdminJWTSecretFile = filepath.Join(root, "data", "admin-jwt.key")
+	if err := os.MkdirAll(filepath.Dir(cfg.AdminJWTSecretFile), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(cfg.AdminJWTSecretFile, []byte("short\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := PrepareManagedServer(&cfg); err == nil {
+		t.Fatal("expected invalid admin jwt secret error")
 	}
 }
 
@@ -414,6 +457,7 @@ func TestLoadManagedServerAppliesEnvironmentOverrides(t *testing.T) {
 	t.Setenv("GOGINX_DATA_DIR", filepath.Join(root, "data"))
 	t.Setenv("GOGINX_SQLITE_PATH", filepath.Join(root, "data", "go-ginx.db"))
 	t.Setenv("GOGINX_CERTIFICATE_DIR", filepath.Join(root, "data", "certs"))
+	t.Setenv("GOGINX_ADMIN_JWT_SECRET_FILE", filepath.Join(root, "data", "admin-jwt.key"))
 	t.Setenv("GOGINX_CONTROL_TLS_CA_FILE", filepath.Join(root, "data", "certs", "control-ca.crt"))
 	t.Setenv("GOGINX_CONTROL_TLS_CERT_FILE", filepath.Join(root, "data", "certs", "control.crt"))
 	t.Setenv("GOGINX_CONTROL_TLS_KEY_FILE", filepath.Join(root, "data", "certs", "control.key"))
@@ -432,8 +476,14 @@ func TestLoadManagedServerAppliesEnvironmentOverrides(t *testing.T) {
 	if cfg.JoinServiceHost != "join.example.com" {
 		t.Fatalf("join service environment override was not applied: %+v", cfg)
 	}
+	if cfg.AdminJWTSecretFile != filepath.Join(root, "data", "admin-jwt.key") {
+		t.Fatalf("admin jwt secret environment override was not applied: %+v", cfg)
+	}
 	if _, err := os.Stat(cfg.ControlTLSCAFile); err != nil {
 		t.Fatalf("expected generated ca file: %v", err)
+	}
+	if _, err := LoadAdminJWTSecret(cfg.AdminJWTSecretFile); err != nil {
+		t.Fatalf("expected generated admin jwt secret: %v", err)
 	}
 }
 

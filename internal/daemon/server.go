@@ -140,7 +140,12 @@ func startServerWithStore(parent context.Context, cfg config.Server, db store.St
 			}
 			adminService.Certificates = certificateService
 		}
-		adminServer, err := adminapi.Listen(adminapi.Entry{ListenAddress: cfg.AdminListen, AdminCredentialsFile: cfg.AdminCredentialsFile, AdminFrontendDir: cfg.AdminFrontendDir, Query: adminquery.Service{Store: db, Sessions: sessions, Stats: memoryStats}, Commands: adminService, Enrollment: enrollment.Service{Store: db}})
+		adminJWTSecret, err := config.LoadAdminJWTSecret(cfg.AdminJWTSecretFile)
+		if err != nil {
+			_ = runtime.Close()
+			return nil, fmt.Errorf("load admin jwt secret: %w", err)
+		}
+		adminServer, err := adminapi.Listen(adminapi.Entry{ListenAddress: cfg.AdminListen, AdminCredentialsFile: cfg.AdminCredentialsFile, AdminFrontendDir: cfg.AdminFrontendDir, AdminJWTSecret: adminJWTSecret, Query: adminquery.Service{Store: db, Sessions: sessions, Stats: memoryStats}, Commands: adminService, Enrollment: enrollment.Service{Store: db}})
 		if err != nil {
 			_ = runtime.Close()
 			return nil, fmt.Errorf("listen admin api: %w", err)
