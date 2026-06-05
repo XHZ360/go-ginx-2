@@ -155,8 +155,9 @@ Build the first supported deployment bundle for a Linux `systemd` installation:
 
 ```powershell
 Set-Location admin-ui
-npm ci
-npm run build
+corepack enable
+pnpm install --frozen-lockfile
+pnpm build
 Set-Location ..
 $env:CGO_ENABLED="0"
 go run ./cmd/goginx-admin build-deploy-bundle -output ./.tmp/linux-systemd-bundle -goos linux -goarch amd64 -install-root /opt/go-ginx
@@ -178,8 +179,9 @@ Build the Windows release bundle for direct execution on Windows hosts:
 
 ```powershell
 Set-Location admin-ui
-npm ci
-npm run build
+corepack enable
+pnpm install --frozen-lockfile
+pnpm build
 Set-Location ..
 $env:CGO_ENABLED="0"
 go run ./cmd/goginx-admin build-deploy-bundle -output ./.tmp/windows-amd64-bundle -goos windows -goarch amd64

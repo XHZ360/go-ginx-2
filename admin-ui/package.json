@@ -3,12 +3,13 @@
   "private": true,
   "version": "0.1.0",
   "type": "module",
+  "packageManager": "pnpm@10.33.2",
   "scripts": {
     "dev": "vite",
-    "build": "npm run codegen && tsc --noEmit && vite build",
+    "build": "pnpm codegen && tsc --noEmit && vite build",
     "codegen": "graphql-codegen --config codegen.ts",
     "graphql:schema": "go run ../cmd/admin-graphql-schema --output src/graphql/schema.json",
-    "graphql:refresh": "npm run graphql:schema && npm run codegen",
+    "graphql:refresh": "pnpm graphql:schema && pnpm codegen",
     "preview": "vite preview",
     "test": "vitest run"
   },

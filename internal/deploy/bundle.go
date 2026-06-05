@@ -163,7 +163,7 @@ func requireAdminFrontendDist(options BundleOptions) (string, error) {
 	info, err := os.Stat(sourceDir)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return "", fmt.Errorf("admin frontend build output is required at %s; run npm ci and npm run build in %s before build-deploy-bundle", sourceDir, filepath.Join(options.RepoRoot, "admin-ui"))
+			return "", fmt.Errorf("admin frontend build output is required at %s; run corepack enable, pnpm install --frozen-lockfile, and pnpm build in %s before build-deploy-bundle", sourceDir, filepath.Join(options.RepoRoot, "admin-ui"))
 		}
 		return "", fmt.Errorf("stat admin frontend dist: %w", err)
 	}
@@ -174,7 +174,7 @@ func requireAdminFrontendDist(options BundleOptions) (string, error) {
 	indexInfo, err := os.Stat(indexPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return "", fmt.Errorf("admin frontend index is required at %s; run npm run build in %s before build-deploy-bundle", indexPath, filepath.Join(options.RepoRoot, "admin-ui"))
+			return "", fmt.Errorf("admin frontend index is required at %s; run pnpm build in %s before build-deploy-bundle", indexPath, filepath.Join(options.RepoRoot, "admin-ui"))
 		}
 		return "", fmt.Errorf("stat admin frontend index: %w", err)
 	}

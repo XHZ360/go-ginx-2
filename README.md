@@ -42,11 +42,11 @@ openspec/          OpenSpec 规格和历史变更
 
 ## 环境要求
 
-- 部署环境不需要安装 Go、Node.js 或 npm，只需要使用 Release 后的部署包或二进制文件。
+- 部署环境不需要安装 Go、Node.js、Corepack 或 pnpm，只需要使用 Release 后的部署包或二进制文件。
 - Linux `systemd` 部署建议使用 Release 产物中的完整部署包，包内应包含 `bin/`、`config/`、`data/`、`logs/` 和 `systemd/`。
 - Windows 或手动运行环境使用对应平台的 Release 压缩包即可；下文 Linux 示例使用 `./bin/goginx-*`，Windows 可替换为 `.\bin\goginx-*.exe`。
 - 只有源码开发、测试、发布构建环境需要 Go `1.25` 或与 `go.mod` 匹配的版本。
-- 只有开发或重新构建 `admin-ui/` 时需要 Node.js 与 npm。
+- 只有开发或重新构建 `admin-ui/` 时需要 Node.js；前端包管理通过 Corepack 启用 pnpm。
 - 源码测试和发布构建建议禁用 cgo：
 
 ```powershell
@@ -363,9 +363,10 @@ export CF_DNS_API_TOKEN="<cloudflare-token>"
 
 ```powershell
 Set-Location admin-ui
-npm ci
-npm run test
-npm run build
+corepack enable
+pnpm install --frozen-lockfile
+pnpm test
+pnpm build
 ```
 
 服务端默认使用部署根目录下的 `admin-ui/` 构建产物目录。若服务端二进制位于 `bin/`，部署根目录就是 `bin/` 的上一级；开发或自定义部署时，可将其他构建产物目录配置到 `admin_frontend_dir`。
@@ -408,8 +409,9 @@ go test ./e2e -run "TestExternalProcessesProxy(TCP|UDP|HTTP|HTTPS)$" -count=1
 
 ```powershell
 Set-Location admin-ui
-npm ci
-npm run build
+corepack enable
+pnpm install --frozen-lockfile
+pnpm build
 Set-Location ..
 $env:CGO_ENABLED="0"
 go run ./cmd/goginx-admin build-deploy-bundle -output ./dist/linux-systemd-bundle -goos linux -goarch amd64 -install-root /opt/go-ginx
@@ -421,8 +423,9 @@ go run ./cmd/goginx-admin build-deploy-bundle -output ./dist/linux-systemd-bundl
 
 ```powershell
 Set-Location admin-ui
-npm ci
-npm run build
+corepack enable
+pnpm install --frozen-lockfile
+pnpm build
 Set-Location ..
 $env:CGO_ENABLED="0"
 go run ./cmd/goginx-admin build-deploy-bundle -output ./dist/windows-amd64-bundle -goos windows -goarch amd64
