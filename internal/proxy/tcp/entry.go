@@ -6,12 +6,12 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"strconv"
 
 	"github.com/simp-frp/go-ginx-2/internal/control"
 	"github.com/simp-frp/go-ginx-2/internal/domain"
+	"github.com/simp-frp/go-ginx-2/internal/proxy/tunnel"
 	"github.com/simp-frp/go-ginx-2/internal/session"
 	"github.com/simp-frp/go-ginx-2/internal/stats"
 	"github.com/simp-frp/go-ginx-2/internal/store"
@@ -103,7 +103,7 @@ func (listener *Listener) handleConn(ctx context.Context, conn net.Conn) {
 	if err := control.WriteMessage(stream, control.MessageOpenStream, control.OpenStream{ProxyID: proxy.ID, ConnectionID: connectionID, TargetHost: proxy.TargetHost, TargetPort: proxy.TargetPort}); err != nil {
 		return
 	}
-	uploadBytes, downloadBytes = copyBidirectional(conn, stream)
+	uploadBytes, downloadBytes = tunnel.CopyBidirectional(conn, stream)
 	failed = false
 }
 
@@ -128,26 +128,6 @@ func portFromAddr(addr net.Addr) int {
 		return 0
 	}
 	return parsed
-}
-
-func copyBidirectional(left io.ReadWriteCloser, right io.ReadWriteCloser) (int64, int64) {
-	type result struct {
-		bytes int64
-	}
-	done := make(chan result, 2)
-	go func() {
-		bytes, _ := io.Copy(left, right)
-		_ = left.Close()
-		done <- result{bytes: bytes}
-	}()
-	go func() {
-		bytes, _ := io.Copy(right, left)
-		_ = right.Close()
-		done <- result{bytes: bytes}
-	}()
-	first := <-done
-	second := <-done
-	return second.bytes, first.bytes
 }
 
 func Address(host string, port int) string {

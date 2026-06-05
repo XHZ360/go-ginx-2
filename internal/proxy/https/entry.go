@@ -21,6 +21,7 @@ import (
 
 	"github.com/simp-frp/go-ginx-2/internal/control"
 	"github.com/simp-frp/go-ginx-2/internal/domain"
+	"github.com/simp-frp/go-ginx-2/internal/proxy/tunnel"
 	"github.com/simp-frp/go-ginx-2/internal/session"
 	"github.com/simp-frp/go-ginx-2/internal/store"
 )
@@ -131,7 +132,7 @@ func (listener *Listener) handleConn(ctx context.Context, conn net.Conn) {
 	if err := control.WriteMessage(stream, control.MessageOpenStream, control.OpenStream{Kind: "tcp", ProxyID: proxy.ID, ConnectionID: connectionID, TargetHost: proxy.TargetHost, TargetPort: proxy.TargetPort}); err != nil {
 		return
 	}
-	copyBidirectional(&prefixedConn{Conn: conn, reader: bytes.NewReader(prefix)}, stream)
+	tunnel.CopyBidirectional(&prefixedConn{Conn: conn, reader: bytes.NewReader(prefix)}, stream)
 }
 
 func (listener *Listener) handleTerminatedConn(ctx context.Context, conn net.Conn, prefix []byte, proxy domain.Proxy, certificate tls.Certificate) {
@@ -140,7 +141,8 @@ func (listener *Listener) handleTerminatedConn(ctx context.Context, conn net.Con
 	if err := tlsConn.Handshake(); err != nil {
 		return
 	}
-	request, err := http.ReadRequest(bufio.NewReader(tlsConn))
+	requestReader := bufio.NewReader(tlsConn)
+	request, err := http.ReadRequest(requestReader)
 	if err != nil {
 		return
 	}
@@ -180,34 +182,47 @@ func (listener *Listener) handleTerminatedConn(ctx context.Context, conn net.Con
 		_ = writeSimpleResponse(tlsConn, http.StatusBadGateway, "write proxy request failed\n")
 		return
 	}
-	response, err := readResponseWithTimeout(stream, request, httpsReadTimeout)
+	response, responseReader, err := readResponseWithTimeout(stream, request, httpsReadTimeout)
 	if err != nil {
 		_ = writeSimpleResponse(tlsConn, http.StatusBadGateway, "read proxy response failed\n")
 		return
 	}
 	defer response.Body.Close()
+	if tunnel.IsWebSocketUpgrade(request.Header) && response.StatusCode == http.StatusSwitchingProtocols {
+		_ = tlsConn.SetDeadline(time.Now().Add(httpsReadTimeout))
+		if err := response.Write(tlsConn); err != nil {
+			return
+		}
+		_ = tlsConn.SetDeadline(time.Time{})
+		publicSide := tunnel.WithBufferedReader(tlsConn, requestReader)
+		streamSide := tunnel.WithBufferedReader(stream, responseReader)
+		tunnel.CopyBidirectional(publicSide, streamSide)
+		return
+	}
 	_ = writeResponseWithTimeout(tlsConn, stream, response, httpsReadTimeout)
 }
 
 type responseResult struct {
 	response *http.Response
+	reader   *bufio.Reader
 	err      error
 }
 
-func readResponseWithTimeout(stream io.ReadWriteCloser, request *http.Request, timeout time.Duration) (*http.Response, error) {
+func readResponseWithTimeout(stream io.ReadWriteCloser, request *http.Request, timeout time.Duration) (*http.Response, *bufio.Reader, error) {
 	result := make(chan responseResult, 1)
 	go func() {
-		response, err := http.ReadResponse(bufio.NewReader(stream), request)
-		result <- responseResult{response: response, err: err}
+		reader := bufio.NewReader(stream)
+		response, err := http.ReadResponse(reader, request)
+		result <- responseResult{response: response, reader: reader, err: err}
 	}()
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
 	select {
 	case response := <-result:
-		return response.response, response.err
+		return response.response, response.reader, response.err
 	case <-timer.C:
 		_ = stream.Close()
-		return nil, context.DeadlineExceeded
+		return nil, nil, context.DeadlineExceeded
 	}
 }
 
@@ -474,20 +489,4 @@ func (conn *prefixedConn) Read(p []byte) (int, error) {
 		return conn.reader.Read(p)
 	}
 	return conn.Conn.Read(p)
-}
-
-func copyBidirectional(left io.ReadWriteCloser, right io.ReadWriteCloser) {
-	done := make(chan struct{}, 2)
-	go func() {
-		_, _ = io.Copy(left, right)
-		_ = left.Close()
-		done <- struct{}{}
-	}()
-	go func() {
-		_, _ = io.Copy(right, left)
-		_ = right.Close()
-		done <- struct{}{}
-	}()
-	<-done
-	<-done
 }

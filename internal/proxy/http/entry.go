@@ -14,6 +14,7 @@ import (
 
 	"github.com/simp-frp/go-ginx-2/internal/control"
 	"github.com/simp-frp/go-ginx-2/internal/domain"
+	"github.com/simp-frp/go-ginx-2/internal/proxy/tunnel"
 	"github.com/simp-frp/go-ginx-2/internal/session"
 	"github.com/simp-frp/go-ginx-2/internal/stats"
 	"github.com/simp-frp/go-ginx-2/internal/store"
@@ -125,13 +126,35 @@ func (server *Server) ServeHTTP(w nethttp.ResponseWriter, r *nethttp.Request) {
 		nethttp.Error(w, "write proxy request failed", nethttp.StatusBadGateway)
 		return
 	}
-	response, err := nethttp.ReadResponse(bufio.NewReader(stream), r)
+	responseReader := bufio.NewReader(stream)
+	response, err := nethttp.ReadResponse(responseReader, r)
 	if err != nil {
 		nethttp.Error(w, "read proxy response failed", nethttp.StatusBadGateway)
 		return
 	}
 	defer response.Body.Close()
 	statusCode = response.StatusCode
+	if tunnel.IsWebSocketUpgrade(r.Header) && response.StatusCode == nethttp.StatusSwitchingProtocols {
+		failed = false
+		conn, rw, err := nethttp.NewResponseController(w).Hijack()
+		if err != nil {
+			return
+		}
+		if err := response.Write(rw); err != nil {
+			_ = conn.Close()
+			return
+		}
+		if err := rw.Flush(); err != nil {
+			_ = conn.Close()
+			return
+		}
+		publicSide := tunnel.WithBufferedReader(conn, rw.Reader)
+		streamSide := tunnel.WithBufferedReader(stream, responseReader)
+		tunnelUploadBytes, tunnelDownloadBytes := tunnel.CopyBidirectional(publicSide, streamSide)
+		uploadBytes += tunnelUploadBytes
+		downloadBytes += tunnelDownloadBytes
+		return
+	}
 	copyHeader(w.Header(), response.Header)
 	w.WriteHeader(response.StatusCode)
 	bytes, err := io.Copy(w, response.Body)

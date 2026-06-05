@@ -1,6 +1,7 @@
 package control
 
 import (
+	"bufio"
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
@@ -12,6 +13,7 @@ import (
 	"io"
 	"math/big"
 	"net"
+	"net/http"
 	"sync"
 	"testing"
 	"time"
@@ -381,6 +383,146 @@ func TestTCPTLSMuxServesProxyStream(t *testing.T) {
 	}
 }
 
+func TestHandleHTTPStreamWebSocketUpgradeForwardsHeadersAndTunnels(t *testing.T) {
+	target := startWebSocketTarget(t, func(t *testing.T, request *http.Request, targetAuthority string) {
+		if request.Proto != "HTTP/1.1" {
+			t.Fatalf("expected HTTP/1.1 target request, got %s", request.Proto)
+		}
+		if request.Host != targetAuthority {
+			t.Fatalf("expected target Host %q, got %q", targetAuthority, request.Host)
+		}
+		if got := request.Header.Get("Origin"); got != "http://"+targetAuthority {
+			t.Fatalf("expected rewritten Origin, got %q", got)
+		}
+		if got := request.Header.Get("Upgrade"); got != "websocket" {
+			t.Fatalf("expected Upgrade websocket, got %q", got)
+		}
+		if got := request.Header.Get("Connection"); got != "Upgrade" {
+			t.Fatalf("expected normalized Connection Upgrade, got %q", got)
+		}
+		if got := request.Header.Get("Sec-WebSocket-Protocol"); got != "chat" {
+			t.Fatalf("expected subprotocol header to pass through, got %q", got)
+		}
+	}, func(conn net.Conn, reader *bufio.Reader) {
+		payload := make([]byte, 4)
+		if _, err := io.ReadFull(reader, payload); err != nil {
+			return
+		}
+		if string(payload) == "ping" {
+			_, _ = conn.Write([]byte("pong"))
+		}
+	})
+	targetHost, targetPortText, err := net.SplitHostPort(target.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	targetPort, ok := parseTestPort(targetPortText)
+	if !ok {
+		t.Fatalf("parse target port %q", targetPortText)
+	}
+
+	client, stream := net.Pipe()
+	t.Cleanup(func() { _ = client.Close() })
+	go handleHTTPStream(stream, OpenStream{TargetHost: targetHost, TargetPort: targetPort})
+
+	request := "GET /ws HTTP/1.1\r\n" +
+		"Host: app.example.com\r\n" +
+		"Origin: https://app.example.com\r\n" +
+		"Upgrade: WebSocket\r\n" +
+		"Connection: keep-alive, Upgrade\r\n" +
+		"Sec-WebSocket-Key: key\r\n" +
+		"Sec-WebSocket-Version: 13\r\n" +
+		"Sec-WebSocket-Protocol: chat\r\n\r\n"
+	if _, err := client.Write([]byte(request)); err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+	reader := bufio.NewReader(client)
+	response, err := http.ReadResponse(reader, &http.Request{Method: http.MethodGet})
+	if err != nil {
+		t.Fatalf("read upgrade response: %v", err)
+	}
+	if response.StatusCode != http.StatusSwitchingProtocols || response.Header.Get("Sec-WebSocket-Accept") != "target-accept" || response.Header.Get("Sec-WebSocket-Protocol") != "chat" || response.Header.Get("Sec-WebSocket-Extensions") != "permessage-deflate" {
+		t.Fatalf("unexpected upgrade response status=%d headers=%v", response.StatusCode, response.Header)
+	}
+	if _, err := client.Write([]byte("ping")); err != nil {
+		t.Fatalf("write tunneled payload: %v", err)
+	}
+	payload := make([]byte, 4)
+	if _, err := io.ReadFull(reader, payload); err != nil {
+		t.Fatalf("read tunneled payload: %v", err)
+	}
+	if string(payload) != "pong" {
+		t.Fatalf("unexpected tunneled payload %q", string(payload))
+	}
+}
+
+func TestHandleHTTPStreamWebSocketNon101FallsBackToHTTPResponse(t *testing.T) {
+	target := startHTTPResponseTarget(t, "HTTP/1.1 403 Forbidden\r\nContent-Length: 9\r\nX-Reason: denied\r\n\r\nforbidden")
+	targetHost, targetPortText, err := net.SplitHostPort(target.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	targetPort, ok := parseTestPort(targetPortText)
+	if !ok {
+		t.Fatalf("parse target port %q", targetPortText)
+	}
+
+	client, stream := net.Pipe()
+	t.Cleanup(func() { _ = client.Close() })
+	go handleHTTPStream(stream, OpenStream{TargetHost: targetHost, TargetPort: targetPort})
+
+	request := "GET /ws HTTP/1.1\r\nHost: app.example.com\r\nUpgrade: websocket\r\nConnection: upgrade\r\n\r\n"
+	if _, err := client.Write([]byte(request)); err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+	response, err := http.ReadResponse(bufio.NewReader(client), &http.Request{Method: http.MethodGet})
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.StatusCode != http.StatusForbidden || response.Header.Get("X-Reason") != "denied" || string(body) != "forbidden" {
+		t.Fatalf("unexpected response status=%d headers=%v body=%q", response.StatusCode, response.Header, string(body))
+	}
+}
+
+func TestHandleHTTPStreamWebSocketTargetUnreachableReturnsBadGateway(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	targetAddr := listener.Addr().String()
+	_ = listener.Close()
+	targetHost, targetPortText, err := net.SplitHostPort(targetAddr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	targetPort, ok := parseTestPort(targetPortText)
+	if !ok {
+		t.Fatalf("parse target port %q", targetPortText)
+	}
+
+	client, stream := net.Pipe()
+	t.Cleanup(func() { _ = client.Close() })
+	go handleHTTPStream(stream, OpenStream{TargetHost: targetHost, TargetPort: targetPort})
+
+	request := "GET /ws HTTP/1.1\r\nHost: app.example.com\r\nUpgrade: websocket\r\nConnection: upgrade\r\n\r\n"
+	if _, err := client.Write([]byte(request)); err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+	response, err := http.ReadResponse(bufio.NewReader(client), &http.Request{Method: http.MethodGet})
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusBadGateway {
+		t.Fatalf("expected 502 response, got %d", response.StatusCode)
+	}
+}
+
 func startTestListener(t *testing.T, authenticator Authenticator) (*Listener, *session.Manager) {
 	t.Helper()
 	sessions := session.NewManager()
@@ -439,6 +581,63 @@ func startEchoTarget(t *testing.T) net.Listener {
 			go func(conn net.Conn) {
 				defer conn.Close()
 				_, _ = io.Copy(conn, conn)
+			}(conn)
+		}
+	}()
+	return listener
+}
+
+func startWebSocketTarget(t *testing.T, assertRequest func(*testing.T, *http.Request, string), afterUpgrade func(net.Conn, *bufio.Reader)) net.Listener {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen websocket target: %v", err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	targetAuthority := listener.Addr().String()
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			go func(conn net.Conn) {
+				defer conn.Close()
+				reader := bufio.NewReader(conn)
+				request, err := http.ReadRequest(reader)
+				if err != nil {
+					return
+				}
+				if assertRequest != nil {
+					assertRequest(t, request, targetAuthority)
+				}
+				_, _ = conn.Write([]byte("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: target-accept\r\nSec-WebSocket-Protocol: chat\r\nSec-WebSocket-Extensions: permessage-deflate\r\n\r\n"))
+				if afterUpgrade != nil {
+					afterUpgrade(conn, reader)
+				}
+			}(conn)
+		}
+	}()
+	return listener
+}
+
+func startHTTPResponseTarget(t *testing.T, response string) net.Listener {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen response target: %v", err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			go func(conn net.Conn) {
+				defer conn.Close()
+				_, _ = http.ReadRequest(bufio.NewReader(conn))
+				_, _ = conn.Write([]byte(response))
 			}(conn)
 		}
 	}()

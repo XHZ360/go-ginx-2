@@ -21,12 +21,15 @@ import (
 
 	"github.com/quic-go/quic-go"
 	"github.com/simp-frp/go-ginx-2/internal/domain"
+	"github.com/simp-frp/go-ginx-2/internal/proxy/tunnel"
 	"github.com/simp-frp/go-ginx-2/internal/session"
 )
 
 const ControlALPN = "go-ginx-control/1"
 
 const controlAuthTimeout = 10 * time.Second
+const httpTargetDialTimeout = 10 * time.Second
+const httpUpgradeHandshakeTimeout = 30 * time.Second
 
 type Server struct {
 	Authenticator Authenticator
@@ -540,11 +543,12 @@ func handleTCPStream(stream io.ReadWriteCloser, request OpenStream) {
 		return
 	}
 	defer target.Close()
-	copyBidirectional(stream, target)
+	tunnel.CopyBidirectional(stream, target)
 }
 
 func handleHTTPStream(stream io.ReadWriteCloser, request OpenStream) {
-	inbound, err := http.ReadRequest(bufio.NewReader(stream))
+	inboundReader := bufio.NewReader(stream)
+	inbound, err := http.ReadRequest(inboundReader)
 	if err != nil {
 		return
 	}
@@ -555,12 +559,56 @@ func handleHTTPStream(stream io.ReadWriteCloser, request OpenStream) {
 	inbound.URL.Host = targetAuthority
 	inbound.Host = targetAuthority
 	rewriteHTTPOrigin(inbound.Header, targetAuthority)
+	if tunnel.IsWebSocketUpgrade(inbound.Header) {
+		handleHTTPUpgradeStream(stream, inboundReader, inbound, targetAuthority)
+		return
+	}
 	response, err := http.DefaultTransport.RoundTrip(inbound)
 	if err != nil {
 		response = &http.Response{StatusCode: http.StatusBadGateway, Status: "502 Bad Gateway", Body: io.NopCloser(strings.NewReader("target unreachable\n")), Header: make(http.Header)}
 	}
 	defer response.Body.Close()
 	_ = response.Write(stream)
+}
+
+func handleHTTPUpgradeStream(stream io.ReadWriteCloser, inboundReader *bufio.Reader, inbound *http.Request, targetAuthority string) {
+	tunnel.NormalizeWebSocketRequest(inbound)
+	ctx, cancel := context.WithTimeout(context.Background(), httpTargetDialTimeout)
+	defer cancel()
+	dialer := net.Dialer{Timeout: httpTargetDialTimeout}
+	target, err := dialer.DialContext(ctx, "tcp", targetAuthority)
+	if err != nil {
+		_ = writeBadGateway(stream)
+		return
+	}
+	defer target.Close()
+	_ = target.SetDeadline(time.Now().Add(httpUpgradeHandshakeTimeout))
+	if err := inbound.Write(target); err != nil {
+		_ = writeBadGateway(stream)
+		return
+	}
+	targetReader := bufio.NewReader(target)
+	response, err := http.ReadResponse(targetReader, inbound)
+	if err != nil {
+		_ = writeBadGateway(stream)
+		return
+	}
+	defer response.Body.Close()
+	if err := response.Write(stream); err != nil {
+		return
+	}
+	if response.StatusCode != http.StatusSwitchingProtocols {
+		return
+	}
+	_ = target.SetDeadline(time.Time{})
+	controlSide := tunnel.WithBufferedReader(stream, inboundReader)
+	targetSide := tunnel.WithBufferedReader(target, targetReader)
+	tunnel.CopyBidirectional(controlSide, targetSide)
+}
+
+func writeBadGateway(writer io.Writer) error {
+	response := &http.Response{StatusCode: http.StatusBadGateway, Status: "502 Bad Gateway", Body: io.NopCloser(strings.NewReader("target unreachable\n")), Header: make(http.Header)}
+	return response.Write(writer)
 }
 
 func rewriteHTTPOrigin(header http.Header, targetAuthority string) {
@@ -651,21 +699,6 @@ func (client *ClientConn) Close() error {
 		return client.stream.Close()
 	}
 	return client.conn.CloseWithError(0, "closed")
-}
-
-func copyBidirectional(left io.ReadWriteCloser, right io.ReadWriteCloser) {
-	done := make(chan struct{}, 2)
-	go func() {
-		_, _ = io.Copy(left, right)
-		_ = left.Close()
-		done <- struct{}{}
-	}()
-	go func() {
-		_, _ = io.Copy(right, left)
-		_ = right.Close()
-		done <- struct{}{}
-	}()
-	<-done
 }
 
 func (server Server) newSessionID() (string, error) {
