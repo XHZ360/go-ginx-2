@@ -23,6 +23,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/quic-go/quic-go"
 	"github.com/simp-frp/go-ginx-2/internal/control"
 	"github.com/simp-frp/go-ginx-2/internal/domain"
 	"github.com/simp-frp/go-ginx-2/internal/session"
@@ -501,6 +502,140 @@ func TestHTTPEntryUpgradeLikeNonWebSocketUsesHTTPPath(t *testing.T) {
 	}
 }
 
+func TestHTTPEntryPendingWhenQUICStreamCapacityIsExhausted(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	releaseOrigin := make(chan struct{})
+	originStarted := make(chan struct{}, 8)
+	origin := httptest.NewServer(nethttp.HandlerFunc(func(w nethttp.ResponseWriter, r *nethttp.Request) {
+		originStarted <- struct{}{}
+		<-releaseOrigin
+		_, _ = w.Write([]byte("origin-response"))
+	}))
+	t.Cleanup(origin.Close)
+	originURL, err := url.Parse(origin.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	originHost, originPortText, err := net.SplitHostPort(originURL.Host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	originPort, err := strconv.Atoi(originPortText)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const streamLimit = 4
+	entry, _ := startHTTPProxyRuntimeWithQUICConfig(t, ctx, domain.ProtocolQUIC, originHost, originPort, &quic.Config{MaxIncomingStreams: streamLimit})
+
+	heldDone := make(chan error, streamLimit)
+	for i := range streamLimit {
+		go func(index int) {
+			request, err := nethttp.NewRequestWithContext(ctx, nethttp.MethodGet, "http://"+entry.Addr().String()+"/hold-"+strconv.Itoa(index), nil)
+			if err != nil {
+				heldDone <- err
+				return
+			}
+			request.Host = "app.example.com"
+			response, err := nethttp.DefaultClient.Do(request)
+			if err != nil {
+				heldDone <- err
+				return
+			}
+			defer response.Body.Close()
+			body, err := io.ReadAll(response.Body)
+			if err != nil {
+				heldDone <- err
+				return
+			}
+			if response.StatusCode != nethttp.StatusOK || string(body) != "origin-response" {
+				heldDone <- errors.New("unexpected held response")
+				return
+			}
+			heldDone <- nil
+		}(i)
+	}
+	for i := 0; i < streamLimit; i++ {
+		select {
+		case <-originStarted:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("origin saw only %d held requests before deadline", i)
+		}
+	}
+
+	pendingCtx, cancelPending := context.WithTimeout(ctx, 150*time.Millisecond)
+	defer cancelPending()
+	pendingRequest, err := nethttp.NewRequestWithContext(pendingCtx, nethttp.MethodGet, "http://"+entry.Addr().String()+"/after-capacity", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pendingRequest.Host = "app.example.com"
+	pendingResponse, err := nethttp.DefaultClient.Do(pendingRequest)
+	if err == nil {
+		pendingResponse.Body.Close()
+		t.Fatal("expected request to remain pending until its context expired")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) && !strings.Contains(err.Error(), "context deadline exceeded") {
+		t.Fatalf("expected context deadline from saturated stream capacity, got %v", err)
+	}
+
+	close(releaseOrigin)
+	for i := 0; i < streamLimit; i++ {
+		if err := <-heldDone; err != nil {
+			t.Fatalf("held request %d: %v", i, err)
+		}
+	}
+}
+
+func TestHTTPEntryReleasesQUICStreamsAfterShortRequests(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	origin := httptest.NewServer(nethttp.HandlerFunc(func(w nethttp.ResponseWriter, r *nethttp.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = w.Write([]byte("origin-response"))
+	}))
+	t.Cleanup(origin.Close)
+	originURL, err := url.Parse(origin.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	originHost, originPortText, err := net.SplitHostPort(originURL.Host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	originPort, err := strconv.Atoi(originPortText)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const streamLimit = 4
+	entry, _ := startHTTPProxyRuntimeWithQUICConfig(t, ctx, domain.ProtocolQUIC, originHost, originPort, &quic.Config{MaxIncomingStreams: streamLimit})
+	client := &nethttp.Client{Timeout: 2 * time.Second}
+
+	for i := range streamLimit * 3 {
+		request, err := nethttp.NewRequestWithContext(ctx, nethttp.MethodGet, "http://"+entry.Addr().String()+"/ok-"+strconv.Itoa(i), nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		request.Host = "app.example.com"
+		response, err := client.Do(request)
+		if err != nil {
+			t.Fatalf("short proxy request %d: %v", i, err)
+		}
+		body, err := io.ReadAll(response.Body)
+		_ = response.Body.Close()
+		if err != nil {
+			t.Fatalf("read short proxy response %d: %v", i, err)
+		}
+		if response.StatusCode != nethttp.StatusOK || string(body) != "origin-response" {
+			t.Fatalf("unexpected short proxy response %d status=%d body=%q", i, response.StatusCode, string(body))
+		}
+	}
+}
+
 func stringPtr(value string) *string {
 	return &value
 }
@@ -522,6 +657,10 @@ func seedHTTPProxy(t *testing.T, ctx context.Context, db *sqlite.Store, targetHo
 }
 
 func startHTTPProxyRuntime(t *testing.T, ctx context.Context, protocol domain.Protocol, targetHost string, targetPort int) (*Server, *stats.Memory) {
+	return startHTTPProxyRuntimeWithQUICConfig(t, ctx, protocol, targetHost, targetPort, nil)
+}
+
+func startHTTPProxyRuntimeWithQUICConfig(t *testing.T, ctx context.Context, protocol domain.Protocol, targetHost string, targetPort int, clientQUICConfig *quic.Config) (*Server, *stats.Memory) {
 	t.Helper()
 	db, err := sqlite.Open(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
@@ -545,7 +684,7 @@ func startHTTPProxyRuntime(t *testing.T, ctx context.Context, protocol domain.Pr
 		t.Cleanup(func() { _ = controlListener.Close() })
 		go func() { _ = controlListener.Serve(ctx) }()
 		var response control.AuthResponse
-		client, response, err = control.DialAndAuthenticate(ctx, controlListener.Addr().String(), testClientTLSConfig(t), nil, control.AuthRequest{ClientID: "client-1", Credential: "secret", Timestamp: time.Now().UTC(), Protocols: []domain.Protocol{domain.ProtocolQUIC}})
+		client, response, err = control.DialAndAuthenticate(ctx, controlListener.Addr().String(), testClientTLSConfig(t), clientQUICConfig, control.AuthRequest{ClientID: "client-1", Credential: "secret", Timestamp: time.Now().UTC(), Protocols: []domain.Protocol{domain.ProtocolQUIC}})
 		if err != nil {
 			t.Fatalf("dial authenticate: %v", err)
 		}

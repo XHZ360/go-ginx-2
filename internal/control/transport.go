@@ -517,7 +517,7 @@ func (client *ClientConn) ServeProxyStreams(ctx context.Context) error {
 }
 
 func handleProxyStream(stream io.ReadWriteCloser) {
-	defer stream.Close()
+	defer CloseStream(stream)
 	envelope, err := ReadMessage(stream)
 	if err != nil || envelope.Type != MessageOpenStream {
 		return
@@ -699,6 +699,16 @@ func (client *ClientConn) Close() error {
 		return client.stream.Close()
 	}
 	return client.conn.CloseWithError(0, "closed")
+}
+
+func CloseStream(stream io.ReadWriteCloser) error {
+	if stream == nil {
+		return nil
+	}
+	if canceler, ok := stream.(interface{ CancelRead(quic.StreamErrorCode) }); ok {
+		canceler.CancelRead(0)
+	}
+	return stream.Close()
 }
 
 func (server Server) newSessionID() (string, error) {

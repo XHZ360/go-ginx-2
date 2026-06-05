@@ -109,7 +109,7 @@ func (server *Server) ServeHTTP(w nethttp.ResponseWriter, r *nethttp.Request) {
 		nethttp.Error(w, "open proxy stream failed", nethttp.StatusBadGateway)
 		return
 	}
-	defer stream.Close()
+	defer control.CloseStream(stream)
 	requestID, err := server.requestID()
 	if err != nil {
 		nethttp.Error(w, "request id failed", nethttp.StatusInternalServerError)

@@ -124,7 +124,7 @@ func (listener *Listener) handleConn(ctx context.Context, conn net.Conn) {
 		log.Printf("https proxy route failed: bind_host=%s port=%d sni=%s proxy_id=%s category=open_stream_failed error=%v", displayBindHost(listener.entry.EntryBindHost), listener.entry.EntryPort, serverName, proxy.ID, err)
 		return
 	}
-	defer stream.Close()
+	defer control.CloseStream(stream)
 	connectionID, err := listener.connectionID()
 	if err != nil {
 		return
@@ -165,7 +165,7 @@ func (listener *Listener) handleTerminatedConn(ctx context.Context, conn net.Con
 		_ = writeSimpleResponse(tlsConn, http.StatusBadGateway, "open proxy stream failed\n")
 		return
 	}
-	defer stream.Close()
+	defer control.CloseStream(stream)
 	connectionID, err := listener.connectionID()
 	if err != nil {
 		_ = writeSimpleResponse(tlsConn, http.StatusInternalServerError, "request id failed\n")
@@ -221,12 +221,12 @@ func readResponseWithTimeout(stream io.ReadWriteCloser, request *http.Request, t
 	case response := <-result:
 		return response.response, response.reader, response.err
 	case <-timer.C:
-		_ = stream.Close()
+		_ = control.CloseStream(stream)
 		return nil, nil, context.DeadlineExceeded
 	}
 }
 
-func writeResponseWithTimeout(conn net.Conn, stream io.Closer, response *http.Response, timeout time.Duration) error {
+func writeResponseWithTimeout(conn net.Conn, stream io.ReadWriteCloser, response *http.Response, timeout time.Duration) error {
 	result := make(chan error, 1)
 	_ = conn.SetDeadline(time.Now().Add(timeout))
 	go func() {
@@ -238,7 +238,7 @@ func writeResponseWithTimeout(conn net.Conn, stream io.Closer, response *http.Re
 	case err := <-result:
 		return err
 	case <-timer.C:
-		_ = stream.Close()
+		_ = control.CloseStream(stream)
 		_ = conn.Close()
 		return context.DeadlineExceeded
 	}
