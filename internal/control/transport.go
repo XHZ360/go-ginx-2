@@ -66,7 +66,11 @@ type quicStreamOpener struct {
 }
 
 func (opener quicStreamOpener) OpenStream(ctx context.Context) (io.ReadWriteCloser, error) {
-	return opener.conn.OpenStreamSync(ctx)
+	stream, err := opener.conn.OpenStreamSync(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return wrapProxyStream(stream), nil
 }
 
 func ListenAddr(addr string, server Server) (*Listener, error) {
@@ -497,7 +501,7 @@ func (client *ClientConn) ServeProxyStreams(ctx context.Context) error {
 				}
 				return err
 			}
-			go handleProxyStream(stream)
+			go handleProxyStream(wrapProxyStream(stream))
 		}
 	}
 	if client.conn == nil {
@@ -512,12 +516,12 @@ func (client *ClientConn) ServeProxyStreams(ctx context.Context) error {
 			}
 			return err
 		}
-		go handleProxyStream(stream)
+		go handleProxyStream(wrapProxyStream(stream))
 	}
 }
 
 func handleProxyStream(stream io.ReadWriteCloser) {
-	defer CloseStream(stream)
+	defer stream.Close()
 	envelope, err := ReadMessage(stream)
 	if err != nil || envelope.Type != MessageOpenStream {
 		return
@@ -701,14 +705,30 @@ func (client *ClientConn) Close() error {
 	return client.conn.CloseWithError(0, "closed")
 }
 
-func CloseStream(stream io.ReadWriteCloser) error {
+type proxyStream struct {
+	io.ReadWriteCloser
+	closeOnce sync.Once
+	closeErr  error
+}
+
+func wrapProxyStream(stream io.ReadWriteCloser) io.ReadWriteCloser {
 	if stream == nil {
 		return nil
 	}
-	if canceler, ok := stream.(interface{ CancelRead(quic.StreamErrorCode) }); ok {
-		canceler.CancelRead(0)
+	if _, ok := stream.(*proxyStream); ok {
+		return stream
 	}
-	return stream.Close()
+	return &proxyStream{ReadWriteCloser: stream}
+}
+
+func (stream *proxyStream) Close() error {
+	stream.closeOnce.Do(func() {
+		if canceler, ok := stream.ReadWriteCloser.(interface{ CancelRead(quic.StreamErrorCode) }); ok {
+			canceler.CancelRead(0)
+		}
+		stream.closeErr = stream.ReadWriteCloser.Close()
+	})
+	return stream.closeErr
 }
 
 func (server Server) newSessionID() (string, error) {

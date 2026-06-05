@@ -70,7 +70,7 @@ func (listener *Listener) Addr() net.Addr { return listener.conn.LocalAddr() }
 func (listener *Listener) Close() error {
 	listener.mu.Lock()
 	for key, session := range listener.sessions {
-		_ = control.CloseStream(session.stream)
+		_ = session.stream.Close()
 		delete(listener.sessions, key)
 	}
 	listener.mu.Unlock()
@@ -135,18 +135,18 @@ func (listener *Listener) session(ctx context.Context, proxy domain.Proxy, remot
 	}
 	connectionID, err := listener.sessionID()
 	if err != nil {
-		_ = control.CloseStream(stream)
+		_ = stream.Close()
 		return nil, err
 	}
 	if err := control.WriteMessage(stream, control.MessageOpenStream, control.OpenStream{Kind: "udp", ProxyID: proxy.ID, ConnectionID: connectionID, TargetHost: proxy.TargetHost, TargetPort: proxy.TargetPort}); err != nil {
-		_ = control.CloseStream(stream)
+		_ = stream.Close()
 		return nil, err
 	}
 	session := &udpSession{proxyID: proxy.ID, remoteAddr: remoteAddr, stream: stream, lastSeen: time.Now()}
 	listener.mu.Lock()
 	if existing, ok := listener.sessions[key]; ok {
 		listener.mu.Unlock()
-		_ = control.CloseStream(stream)
+		_ = stream.Close()
 		return existing, nil
 	}
 	listener.sessions[key] = session
@@ -188,7 +188,7 @@ func (listener *Listener) cleanupIdle() {
 	listener.mu.Lock()
 	for key, session := range listener.sessions {
 		if session.lastSeen.Before(deadline) {
-			_ = control.CloseStream(session.stream)
+			_ = session.stream.Close()
 			delete(listener.sessions, key)
 		}
 	}
@@ -203,7 +203,7 @@ func (listener *Listener) removeKey(key string) {
 	listener.mu.Lock()
 	session, ok := listener.sessions[key]
 	if ok {
-		_ = control.CloseStream(session.stream)
+		_ = session.stream.Close()
 		delete(listener.sessions, key)
 	}
 	listener.mu.Unlock()

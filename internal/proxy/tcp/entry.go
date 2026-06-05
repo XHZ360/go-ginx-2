@@ -95,7 +95,7 @@ func (listener *Listener) handleConn(ctx context.Context, conn net.Conn) {
 	if err != nil {
 		return
 	}
-	defer control.CloseStream(stream)
+	defer stream.Close()
 	connectionID, err := listener.connectionID()
 	if err != nil {
 		return

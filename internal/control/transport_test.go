@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/quic-go/quic-go"
 	"github.com/simp-frp/go-ginx-2/internal/domain"
 	"github.com/simp-frp/go-ginx-2/internal/session"
 )
@@ -521,6 +522,49 @@ func TestHandleHTTPStreamWebSocketTargetUnreachableReturnsBadGateway(t *testing.
 	if response.StatusCode != http.StatusBadGateway {
 		t.Fatalf("expected 502 response, got %d", response.StatusCode)
 	}
+}
+
+func TestProxyStreamCloseCancelsReadAndClosesOnce(t *testing.T) {
+	recorder := &cancelReadCloseRecorder{}
+	stream := wrapProxyStream(recorder)
+
+	if err := stream.Close(); err != nil {
+		t.Fatalf("close stream: %v", err)
+	}
+	if err := stream.Close(); err != nil {
+		t.Fatalf("second close stream: %v", err)
+	}
+
+	if recorder.cancelReads != 1 || recorder.cancelCode != 0 {
+		t.Fatalf("expected one CancelRead(0), got count=%d code=%d", recorder.cancelReads, recorder.cancelCode)
+	}
+	if recorder.closes != 1 {
+		t.Fatalf("expected one underlying close, got %d", recorder.closes)
+	}
+}
+
+type cancelReadCloseRecorder struct {
+	cancelReads int
+	cancelCode  quic.StreamErrorCode
+	closes      int
+}
+
+func (recorder *cancelReadCloseRecorder) Read([]byte) (int, error) {
+	return 0, io.EOF
+}
+
+func (recorder *cancelReadCloseRecorder) Write(p []byte) (int, error) {
+	return len(p), nil
+}
+
+func (recorder *cancelReadCloseRecorder) Close() error {
+	recorder.closes++
+	return nil
+}
+
+func (recorder *cancelReadCloseRecorder) CancelRead(code quic.StreamErrorCode) {
+	recorder.cancelReads++
+	recorder.cancelCode = code
 }
 
 func startTestListener(t *testing.T, authenticator Authenticator) (*Listener, *session.Manager) {
