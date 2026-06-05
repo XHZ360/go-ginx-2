@@ -705,6 +705,8 @@ func (client *ClientConn) Close() error {
 	return client.conn.CloseWithError(0, "closed")
 }
 
+// proxyStream deliberately exposes only io.ReadWriteCloser while making Close
+// release the QUIC read side so incoming stream credit is returned.
 type proxyStream struct {
 	io.ReadWriteCloser
 	closeOnce sync.Once
