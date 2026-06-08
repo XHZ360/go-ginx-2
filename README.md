@@ -2,7 +2,7 @@
 
 `go-ginx-2` 是 Simp-Frp/go-ginx 设计的新实现目标。当前仓库已经完成里程碑一运行时和首个部署基线，重点覆盖控制面、反向代理、管理 API/UI、证书管理、SQLite 持久化和可复现部署包。
 
-> 状态说明：这还不是完整生产平台。核心 TCP/UDP/HTTP/HTTPS 反向代理路径、QUIC 与 TCP+TLS 控制通道、无配置启动、客户端加入流程、管理后台和 `systemd` 部署模板已经实现并有本地测试覆盖；配额、限速、普通用户自助、备份恢复和更完整的运维能力仍在后续范围内。
+> 状态说明：这还不是完整生产平台。核心 TCP/UDP/HTTP/HTTPS 反向代理路径、QUIC 与 TCP+TLS 控制通道、无配置启动、客户端加入流程、管理后台、Linux `systemd` 部署模板和 Windows 原生服务命令已经实现并有本地测试覆盖；配额、限速、普通用户自助、备份恢复和更完整的运维能力仍在后续范围内。
 
 ## 目录
 
@@ -44,7 +44,7 @@
 | 管理能力 | `goginx-admin` 可创建管理员、用户、客户端、可重复查看的 join token、代理记录和部署包。 |
 | 管理监听器 | 提供 8 小时 JWT 登录、会话引导、登出、GraphQL 管理操作、客户端注册和同源管理前端。 |
 | 管理前端 | 默认使用部署根目录 `admin-ui/` 静态资源；`admin_frontend_dir` 可覆盖为自定义构建目录。 |
-| 部署构建 | `build-deploy-bundle` 可生成 Linux `systemd` 部署包或 Windows 发布包。 |
+| 部署构建 | `build-deploy-bundle` 可生成 Linux `systemd` 部署包或带原生服务辅助脚本的 Windows 发布包。 |
 
 ## 仓库结构
 
@@ -558,7 +558,7 @@ go run ./cmd/goginx-admin build-deploy-bundle -output ./dist/windows-amd64-bundl
 
 `build-deploy-bundle` 会把 `admin-ui/dist` 复制为发布包根目录下的 `admin-ui/`，并在 `config/` 下生成 `server.example.json` 和 `client.example.json` 作为显式配置参考。
 
-Windows 产物不包含 `systemd/`，但保留 `bin/`、`config/`、`data/`、`logs/` 和 `admin-ui/` 目录，适合解压后直接运行 `.\bin\goginx-server.exe`、`.\bin\goginx-client.exe` 和 `.\bin\goginx-admin.exe`。
+Windows 产物不包含 `systemd/`，但保留 `bin/`、`config/`、`data/`、`logs/`、`admin-ui/` 和 `scripts/` 目录。可以直接运行 `.\bin\goginx-server.exe`、`.\bin\goginx-client.exe` 和 `.\bin\goginx-admin.exe`，也可以使用内置 Windows Service 命令或 `scripts/` 下的 PowerShell 辅助脚本安装为原生 Windows 服务。
 
 ## Release 部署包部署
 
@@ -626,6 +626,74 @@ sudo systemctl enable --now goginx-client
 
 如果不是 `systemd` 环境，也可以直接在 Release 包根目录运行 `./bin/goginx-server` 或 `./bin/goginx-client`，并由外部进程管理器负责守护进程生命周期。
 
+### Windows 服务部署流程
+
+Windows 发布包支持原生 Windows Service，不需要 WinSW 或 NSSM。以下示例假设发布包解压到 `C:\go-ginx`，并在管理员 PowerShell 中执行。
+
+远程客户端部署时，推荐先写 `config/server.json` 并配置客户端可访问的 `join_service_host`。不要只依赖当前 PowerShell 中的临时环境变量，因为 Windows 服务运行环境不会稳定继承它们：
+
+```powershell
+cd C:\go-ginx
+Copy-Item .\config\server.example.json .\config\server.json
+# 编辑 config\server.json，把 join_service_host 设置为 control.example.com
+```
+
+安装并启动服务端服务：
+
+```powershell
+.\scripts\goginx-server-service.ps1 -Action install -Config config\server.json
+.\scripts\goginx-server-service.ps1 -Action start
+.\scripts\goginx-server-service.ps1 -Action status
+```
+
+也可以不用脚本，直接调用内置命令：
+
+```powershell
+.\bin\goginx-server.exe service install -config config\server.json
+.\bin\goginx-server.exe service start
+.\bin\goginx-server.exe service status
+```
+
+初始化管理员并生成客户端 join token 时，建议使用同一个 server 配置：
+
+```powershell
+.\bin\goginx-admin.exe init-admin -id admin-1 -username admin -password "<password>"
+$token = .\bin\goginx-admin.exe create-client-join -server-config config\server.json -id client-1 -user admin-1 -name home
+```
+
+如果 enrollment 入口经过 HTTPS 反向代理，或控制通道端口不是默认值，请改用显式地址参数生成 token。
+
+客户端机器上先执行 join，确认受管状态已写入，再安装服务：
+
+```powershell
+cd C:\go-ginx
+.\bin\goginx-client.exe join "$token"
+Test-Path .\data\client-state.json
+.\scripts\goginx-client-service.ps1 -Action install
+.\scripts\goginx-client-service.ps1 -Action start
+.\scripts\goginx-client-service.ps1 -Action status
+```
+
+对应的内置命令是：
+
+```powershell
+.\bin\goginx-client.exe service install
+.\bin\goginx-client.exe service start
+.\bin\goginx-client.exe service status
+```
+
+常用服务操作：
+
+```powershell
+.\scripts\goginx-server-service.ps1 -Action restart
+.\scripts\goginx-server-service.ps1 -Action stop
+.\scripts\goginx-server-service.ps1 -Action uninstall
+```
+
+Windows 服务日志仍写入部署根目录下的 `logs/server.log` 和 `logs/client.log`，首版不注册 Windows Event Log source。首版安装命令也不提供自定义服务账户参数；如需自定义账户，可在服务安装后使用 Windows 原生服务管理工具调整。
+
+升级 Windows 发布包时，先停止服务，替换 `bin/`、`admin-ui/`、`scripts/` 和示例配置等发布文件，保留 `data/`、已有 `config/server.json`、`config/client.json` 和证书/JWT 状态，然后再启动服务。回滚也按同样流程处理。
+
 ### 日志轮换与平台处理
 
 默认日志轮换配置为单个当前文件 50 MiB、最多保留 10 个归档、归档保留 7 天并启用 gzip 压缩。Linux `systemd` 部署中，进程仍会写 stderr，journald 可以捕获服务日志；同时 `logs/server.log` 和 `logs/client.log` 由应用内轮换保护，通常不需要额外 `logrotate` 去重命名打开中的文件。Windows 部署默认依赖应用内轮换，因为外部 rename 型日志轮换工具通常不能稳定处理进程打开中的文件。Docker 或 Kubernetes 部署更推荐依赖 stdout/stderr 和容器运行时日志轮换，文件日志可作为显式部署选择或排障辅助。
@@ -660,7 +728,7 @@ curl -i http://127.0.0.1:8080/api/admin/session
 
 - 尚未实现 forward proxy。
 - 尚未实现配额、限速、普通用户自助、备份恢复、容量校验和高级告警。
-- 原生安装器和非 `systemd` 进程管理模板尚未实现。
+- 原生安装器、包管理器分发和更完整的跨平台服务编排尚未实现。
 - 通配域名/平台域名所有权校验尚未实现。
 - 管理后台当前以管理员能力为主，普通用户自助和更完整的运维页面仍在后续范围内。
 

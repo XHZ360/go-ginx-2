@@ -25,6 +25,7 @@ type BundleOptions struct {
 
 const (
 	bundledAdminFrontendDir        = "admin-ui"
+	bundledScriptsDir              = "scripts"
 	bundledServerExampleConfigName = "server.example.json"
 	bundledClientExampleConfigName = "client.example.json"
 )
@@ -57,6 +58,11 @@ func BuildBundle(ctx context.Context, options BundleOptions) error {
 	}
 	if options.GoOS == "linux" {
 		if err := os.MkdirAll(filepath.Join(options.OutputDir, "systemd"), 0o755); err != nil {
+			return err
+		}
+	}
+	if options.GoOS == "windows" {
+		if err := os.MkdirAll(filepath.Join(options.OutputDir, bundledScriptsDir), 0o755); err != nil {
 			return err
 		}
 	}
@@ -99,6 +105,11 @@ func BuildBundle(ctx context.Context, options BundleOptions) error {
 			if err := os.WriteFile(filepath.Join(options.OutputDir, "systemd", serviceName), content, 0o644); err != nil {
 				return err
 			}
+		}
+	}
+	if options.GoOS == "windows" {
+		if err := copyWindowsServiceScripts(options); err != nil {
+			return err
 		}
 	}
 	return nil
@@ -282,6 +293,17 @@ func renderSystemdTemplate(options BundleOptions, serviceName string) ([]byte, e
 	}
 	rendered := strings.ReplaceAll(string(content), "{{INSTALL_ROOT}}", filepath.ToSlash(options.InstallRoot))
 	return []byte(rendered), nil
+}
+
+func copyWindowsServiceScripts(options BundleOptions) error {
+	for _, scriptName := range []string{"goginx-server-service.ps1", "goginx-client-service.ps1"} {
+		sourcePath := filepath.Join(options.RepoRoot, "deploy", "windows", scriptName)
+		destPath := filepath.Join(options.OutputDir, bundledScriptsDir, scriptName)
+		if err := copyFile(sourcePath, destPath); err != nil {
+			return fmt.Errorf("copy windows service script %s: %w", scriptName, err)
+		}
+	}
+	return nil
 }
 
 func binaryName(name string, goos string) string {

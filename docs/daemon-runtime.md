@@ -1,6 +1,6 @@
 # Daemon Runtime Deployment
 
-This guide covers the implemented milestone-one daemon runtime plus the first supported deployment baseline: a reproducible bundle with `systemd` service templates for single-node Linux-style deployment. It does not describe native installers, non-`systemd` supervisors, backup/restore tooling, or other features that are still out of scope.
+This guide covers the implemented milestone-one daemon runtime plus the first supported deployment baselines: a reproducible bundle with `systemd` service templates for single-node Linux-style deployment, and native Windows Service commands for Windows hosts. It does not describe native installers, package-manager distribution, backup/restore tooling, or other features that are still out of scope.
 
 ## Implemented Features
 
@@ -17,7 +17,8 @@ This guide covers the implemented milestone-one daemon runtime plus the first su
 11. External process smoke tests for real server and client binaries.
 12. SQLite-backed cumulative stats persistence for TCP, UDP, and HTTP traffic.
 13. Reproducible deployment bundle generation for server, client, and admin binaries.
-14. Checked-in `systemd` service templates for supervised server and client execution.
+14. Checked-in `systemd` service templates for supervised Linux server and client execution.
+15. Native Windows Service commands and PowerShell helper scripts for supervised Windows server and client execution.
 15. Configless server startup with managed `data/` state and generated control-channel TLS material.
 16. One-time client join tokens that write managed client state for later no-`-config` startup.
 17. Optional administrator-only management listener with 8-hour JWT login, session bootstrap, logout, GraphQL operations, client enrollment, and same-origin dedicated frontend delivery from the runtime `admin-ui/` directory or an explicit frontend directory override.
@@ -202,7 +203,7 @@ $env:CGO_ENABLED="0"
 go run ./cmd/goginx-admin build-deploy-bundle -output ./.tmp/windows-amd64-bundle -goos windows -goarch amd64
 ```
 
-The Windows bundle keeps `bin/`, `config/`, `data/`, `logs/`, and `admin-ui/`, but does not include `systemd/`. Run the generated `.exe` files from the unpacked bundle root.
+The Windows bundle keeps `bin/`, `config/`, `data/`, `logs/`, `admin-ui/`, and `scripts/`, but does not include `systemd/`. Run the generated `.exe` files from the unpacked bundle root, or install server/client as native Windows Services using the built-in `service` subcommands or the PowerShell helpers under `scripts/`.
 
 Run the server from the desired state directory:
 
@@ -217,6 +218,49 @@ After `goginx-client join <token>`, run the client:
 ```
 
 If the client exits with a missing `data/client-state.json` error, it was started before the join flow wrote managed state, or a custom path was used inconsistently. Run `goginx-client join <new-token>`, confirm `data/client-state.json` exists under the deployment root, then start the client service.
+
+For the supported native Windows Service model, run commands from an Administrator PowerShell. For remote clients, prefer a persistent `config/server.json` with `join_service_host` set before installing and starting the server service; do not rely on a temporary PowerShell environment variable for service-mode join defaults.
+
+Server service using helper script:
+
+```powershell
+Set-Location C:\go-ginx
+Copy-Item .\config\server.example.json .\config\server.json
+# Edit config\server.json and set join_service_host to a client-reachable host.
+.\scripts\goginx-server-service.ps1 -Action install -Config config\server.json
+.\scripts\goginx-server-service.ps1 -Action start
+.\scripts\goginx-server-service.ps1 -Action status
+```
+
+Equivalent built-in commands:
+
+```powershell
+.\bin\goginx-server.exe service install -config config\server.json
+.\bin\goginx-server.exe service start
+.\bin\goginx-server.exe service status
+```
+
+Generate join tokens with the same server config, or pass explicit enrollment/control addresses:
+
+```powershell
+.\bin\goginx-admin.exe init-admin -id admin-1 -username admin -password "<password>"
+$token = .\bin\goginx-admin.exe create-client-join -server-config config\server.json -id client-1 -user admin-1 -name home
+```
+
+Client service installation must happen after join writes managed state:
+
+```powershell
+Set-Location C:\go-ginx
+.\bin\goginx-client.exe join "$token"
+Test-Path .\data\client-state.json
+.\scripts\goginx-client-service.ps1 -Action install
+.\scripts\goginx-client-service.ps1 -Action start
+.\scripts\goginx-client-service.ps1 -Action status
+```
+
+The equivalent built-in commands are `.\bin\goginx-client.exe service install`, `service start`, and `service status`. Stop, restart, and uninstall use the same verb shape. Windows service mode continues using `logs/server.log` and `logs/client.log`; the first native service release does not register Windows Event Log sources and does not expose custom service-account parameters. If a custom account is required, install the service first and adjust the account using Windows service management tools.
+
+For Windows upgrades or rollback, stop services first, replace release files such as `bin/`, `admin-ui/`, `scripts/`, and examples, preserve `data/` plus existing `config/server.json` and `config/client.json`, then start services again.
 
 For the supported `systemd` deployment model:
 
@@ -293,5 +337,5 @@ $env:CF_DNS_API_TOKEN="<cloudflare-token>"
 1. Forward proxying.
 2. Quotas and rate limits.
 3. Wildcard/platform-domain ownership verification.
-4. Native installers and non-`systemd` service managers.
+4. Native installers, package-manager distribution, and broader cross-platform service orchestration.
 5. Ordinary-user self-service, quota/settings UI, log search, advanced alerts, backup/restore, and broader production hardening.

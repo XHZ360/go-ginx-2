@@ -15,11 +15,19 @@ import (
 	"github.com/simp-frp/go-ginx-2/internal/daemon"
 	"github.com/simp-frp/go-ginx-2/internal/deploypath"
 	"github.com/simp-frp/go-ginx-2/internal/logging"
+	"github.com/simp-frp/go-ginx-2/internal/winservice"
 )
 
 var executablePath = os.Executable
+var runWindowsServiceCommand = winservice.RunCommand
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "service" {
+		if err := runServiceCommand(os.Args[2:]); err != nil {
+			log.Fatalf("service: %v", err)
+		}
+		return
+	}
 	if len(os.Args) > 1 && os.Args[1] == "join" {
 		closeLog := setupLogOutput("client.log", config.DefaultClient().LogRotation())
 		defer closeLog()
@@ -32,20 +40,26 @@ func main() {
 	configPath := flag.String("config", "", "client config path; when omitted, managed client state is used")
 	flag.Parse()
 
-	cfg, err := loadClientConfig(*configPath)
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	if err := runClient(ctx, *configPath); err != nil {
+		log.Fatalf("%v", err)
+	}
+}
+
+func runClient(ctx context.Context, configPath string) error {
+	cfg, err := loadClientConfig(configPath)
 	if err != nil {
-		log.Fatalf("load client config: %v", err)
+		return fmt.Errorf("load client config: %w", err)
 	}
 	closeLog := setupLogOutput("client.log", cfg.LogRotation())
 	defer closeLog()
-
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
 	log.Printf("go-ginx client starting: client_id=%s server_address=%s server_tls_address=%s server_name=%s ca_file=%s", cfg.ClientID, cfg.ServerAddress, cfg.ServerTLSAddress, cfg.ServerName, cfg.ServerCAFile)
 	if err := daemon.RunClient(ctx, cfg); err != nil {
-		log.Fatalf("run client: %v", err)
+		return fmt.Errorf("run client: %w", err)
 	}
 	log.Printf("go-ginx client stopped")
+	return nil
 }
 
 func loadClientConfig(configPath string) (config.Client, error) {
@@ -149,4 +163,24 @@ func setupLogOutput(name string, rotation config.LogRotation) func() {
 		return func() {}
 	}
 	return closeLog
+}
+
+func runServiceCommand(args []string) error {
+	return runWindowsServiceCommand(args, winservice.Options{
+		Args: args,
+		Definition: winservice.Definition{
+			DefaultName: "goginx-client",
+			DisplayName: "go-ginx client",
+			Description: "go-ginx client daemon",
+		},
+		Runner:          runClient,
+		ValidateInstall: validateClientServiceInstall,
+		ExecutablePath:  executablePath,
+		Stdout:          os.Stdout,
+	})
+}
+
+func validateClientServiceInstall(configPath string) error {
+	_, err := loadClientConfig(configPath)
+	return err
 }

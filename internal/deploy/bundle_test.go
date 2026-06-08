@@ -101,6 +101,8 @@ func TestBuildBundleCreatesWindowsLayoutWithoutSystemd(t *testing.T) {
 		filepath.Join(outputDir, "data", "certs", "managed"),
 		filepath.Join(outputDir, "logs"),
 		filepath.Join(outputDir, bundledAdminFrontendDir, "index.html"),
+		filepath.Join(outputDir, bundledScriptsDir, "goginx-server-service.ps1"),
+		filepath.Join(outputDir, bundledScriptsDir, "goginx-client-service.ps1"),
 	} {
 		if _, err := os.Stat(path); err != nil {
 			t.Fatalf("expected %s: %v", path, err)
@@ -193,6 +195,7 @@ func testBundleRepoRoot(t *testing.T, includeFrontendDist bool) string {
 	mustMkdirAll(t, filepath.Join(tempRoot, "cmd", "goginx-client"))
 	mustMkdirAll(t, filepath.Join(tempRoot, "cmd", "goginx-admin"))
 	mustMkdirAll(t, filepath.Join(tempRoot, "deploy", "systemd"))
+	mustMkdirAll(t, filepath.Join(tempRoot, "deploy", "windows"))
 	copyFileForTest(t, filepath.Join(root, "go.mod"), filepath.Join(tempRoot, "go.mod"))
 	copyFileForTest(t, filepath.Join(root, "go.sum"), filepath.Join(tempRoot, "go.sum"))
 	copyFileForTest(t, filepath.Join(root, "cmd", "goginx-server", "main.go"), filepath.Join(tempRoot, "cmd", "goginx-server", "main.go"))
@@ -200,6 +203,8 @@ func testBundleRepoRoot(t *testing.T, includeFrontendDist bool) string {
 	copyFileForTest(t, filepath.Join(root, "cmd", "goginx-admin", "main.go"), filepath.Join(tempRoot, "cmd", "goginx-admin", "main.go"))
 	copyFileForTest(t, filepath.Join(root, "deploy", "systemd", "goginx-server.service"), filepath.Join(tempRoot, "deploy", "systemd", "goginx-server.service"))
 	copyFileForTest(t, filepath.Join(root, "deploy", "systemd", "goginx-client.service"), filepath.Join(tempRoot, "deploy", "systemd", "goginx-client.service"))
+	copyFileForTest(t, filepath.Join(root, "deploy", "windows", "goginx-server-service.ps1"), filepath.Join(tempRoot, "deploy", "windows", "goginx-server-service.ps1"))
+	copyFileForTest(t, filepath.Join(root, "deploy", "windows", "goginx-client-service.ps1"), filepath.Join(tempRoot, "deploy", "windows", "goginx-client-service.ps1"))
 	if err := os.Symlink(filepath.Join(root, "internal"), filepath.Join(tempRoot, "internal")); err != nil {
 		t.Skipf("symlink internal package tree: %v", err)
 	}

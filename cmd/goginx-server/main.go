@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log"
 	"os"
 	"os/signal"
@@ -12,28 +13,40 @@ import (
 	"github.com/simp-frp/go-ginx-2/internal/daemon"
 	"github.com/simp-frp/go-ginx-2/internal/deploypath"
 	"github.com/simp-frp/go-ginx-2/internal/logging"
+	"github.com/simp-frp/go-ginx-2/internal/winservice"
 )
 
 var executablePath = os.Executable
+var runWindowsServiceCommand = winservice.RunCommand
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "service" {
+		if err := runServiceCommand(os.Args[2:]); err != nil {
+			log.Fatalf("service: %v", err)
+		}
+		return
+	}
 	configPath := flag.String("config", "", "server config path; when omitted, managed defaults are used")
 	flag.Parse()
 
-	cfg, err := loadServerConfig(*configPath)
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	if err := runServer(ctx, *configPath); err != nil {
+		log.Fatalf("%v", err)
+	}
+}
+
+func runServer(ctx context.Context, configPath string) error {
+	cfg, err := loadServerConfig(configPath)
 	if err != nil {
-		log.Fatalf("load server config: %v", err)
+		return fmt.Errorf("load server config: %w", err)
 	}
 	closeLog := setupLogOutput("server.log", cfg.LogRotation())
 	defer closeLog()
-
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
 	runtime, err := daemon.StartServer(ctx, cfg)
 	if err != nil {
-		log.Fatalf("start server: %v", err)
+		return fmt.Errorf("start server: %w", err)
 	}
-	defer func() { _ = runtime.Close() }()
 	adminAddress := "disabled"
 	if runtime.AdminServer != nil {
 		adminAddress = runtime.AdminServer.Addr().String()
@@ -56,6 +69,7 @@ func main() {
 	}
 	log.Printf("go-ginx server started: admin=%s enrollment=%s control_quic=%s control_tls=%s http=%s https=%s join_service_host=%s join_service_source=%s join_server_address=%s join_server_tls_address=%s join_enrollment_url=%s tcp_proxy_listeners=%d udp_proxy_listeners=%d http_proxy_listeners=%d https_proxy_listeners=%d", adminAddress, enrollmentAddress, runtime.ControlListener.Addr(), controlTLSAddress, httpAddress, httpsAddress, runtime.JoinService.Host, runtime.JoinService.Source, runtime.JoinService.ServerAddress, runtime.JoinService.ServerTLSAddress, runtime.JoinService.EnrollmentURL, runtime.TCPProxyListenerCount(), runtime.UDPProxyListenerCount(), runtime.HTTPProxyListenerCount(), runtime.HTTPSProxyListenerCount())
 	<-ctx.Done()
+	return runtime.Close()
 }
 
 func loadServerConfig(configPath string) (config.Server, error) {
@@ -96,4 +110,27 @@ func setupLogOutput(name string, rotation config.LogRotation) func() {
 		return func() {}
 	}
 	return closeLog
+}
+
+func runServiceCommand(args []string) error {
+	return runWindowsServiceCommand(args, winservice.Options{
+		Args: args,
+		Definition: winservice.Definition{
+			DefaultName: "goginx-server",
+			DisplayName: "go-ginx server",
+			Description: "go-ginx server daemon",
+		},
+		Runner:          runServer,
+		ValidateInstall: validateServerServiceInstall,
+		ExecutablePath:  executablePath,
+		Stdout:          os.Stdout,
+	})
+}
+
+func validateServerServiceInstall(configPath string) error {
+	if configPath == "" {
+		return nil
+	}
+	_, err := loadServerConfig(configPath)
+	return err
 }

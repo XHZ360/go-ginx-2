@@ -1,12 +1,14 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/simp-frp/go-ginx-2/internal/config"
+	"github.com/simp-frp/go-ginx-2/internal/winservice"
 )
 
 func TestLoadServerConfigDefaultsToDeploymentRoot(t *testing.T) {
@@ -73,6 +75,39 @@ func TestLoadServerConfigResolvesRelativeConfigAndPathsFromDeploymentRoot(t *tes
 	}
 	if loaded.AdminJWTSecretFile != filepath.Join(deploymentRoot, "data", "admin-jwt.key") {
 		t.Fatalf("expected deployment-root admin jwt secret path, got %q", loaded.AdminJWTSecretFile)
+	}
+}
+
+func TestRunServiceCommandUsesServerDefaults(t *testing.T) {
+	oldRun := runWindowsServiceCommand
+	var gotArgs []string
+	var gotOptions winservice.Options
+	runWindowsServiceCommand = func(args []string, options winservice.Options) error {
+		gotArgs = append([]string(nil), args...)
+		gotOptions = options
+		return nil
+	}
+	t.Cleanup(func() { runWindowsServiceCommand = oldRun })
+
+	if err := runServiceCommand([]string{"status"}); err != nil {
+		t.Fatalf("run service command: %v", err)
+	}
+
+	if len(gotArgs) != 1 || gotArgs[0] != "status" {
+		t.Fatalf("unexpected args: %+v", gotArgs)
+	}
+	if gotOptions.Definition.DefaultName != "goginx-server" || gotOptions.Definition.DisplayName != "go-ginx server" {
+		t.Fatalf("unexpected service definition: %+v", gotOptions.Definition)
+	}
+	if gotOptions.Runner == nil || gotOptions.ValidateInstall == nil || gotOptions.ExecutablePath == nil || gotOptions.Stdout == nil {
+		t.Fatalf("expected service options to be populated: %+v", gotOptions)
+	}
+}
+
+func TestRunServerReturnsConfigError(t *testing.T) {
+	err := runServer(context.Background(), filepath.Join(t.TempDir(), "missing.json"))
+	if err == nil {
+		t.Fatal("expected config error")
 	}
 }
 
