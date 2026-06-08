@@ -1,4 +1,6 @@
 import { useState } from 'react';
+import { DesktopOutlined, KeyOutlined } from '@ant-design/icons';
+import { Button } from 'antd';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { ConfirmButton } from '../components/ConfirmButton';
@@ -77,12 +79,12 @@ export function UserDetailPage() {
         description={`User ID: ${userId}`}
         actions={
           <>
-            <button type="button" className="button button--secondary" onClick={() => navigate(`/clients?userId=${encodeURIComponent(userId)}`)}>
+            <Button type="default" icon={<DesktopOutlined aria-hidden="true" />} onClick={() => navigate(`/clients?userId=${encodeURIComponent(userId)}`)}>
               View clients
-            </button>
-            <button type="button" className="button button--secondary" onClick={() => setPasswordDialog(true)}>
+            </Button>
+            <Button type="default" icon={<KeyOutlined aria-hidden="true" />} onClick={() => setPasswordDialog(true)}>
               Set password
-            </button>
+            </Button>
             <ConfirmButton
               label="Disable user"
               confirmLabel="Disable this user?"
@@ -121,12 +123,11 @@ export function UserDetailPage() {
         onClose={() => setPasswordDialog(false)}
         footer={
           <>
-            <button type="button" className="button button--secondary" onClick={() => setPasswordDialog(false)}>
+            <Button type="default" onClick={() => setPasswordDialog(false)}>
               Cancel
-            </button>
-            <button
-              type="button"
-              className="button"
+            </Button>
+            <Button
+              type="primary"
               disabled={passwordMutation.isPending}
               onClick={() => {
                 setFieldErrors(undefined);
@@ -139,7 +140,7 @@ export function UserDetailPage() {
               }}
             >
               {passwordMutation.isPending ? 'Saving...' : 'Save password'}
-            </button>
+            </Button>
           </>
         }
       >

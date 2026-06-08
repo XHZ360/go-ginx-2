@@ -1,4 +1,6 @@
 import { useState } from 'react';
+import { DeploymentUnitOutlined } from '@ant-design/icons';
+import { Button } from 'antd';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { ConfirmButton } from '../components/ConfirmButton';
@@ -85,13 +87,13 @@ export function ClientDetailPage() {
         actions={
           <>
             <StatusBadge value={client.status} />
-            <button
-              type="button"
-              className="button button--secondary"
+            <Button
+              type="default"
+              icon={<DeploymentUnitOutlined aria-hidden="true" />}
               onClick={() => navigate(`/proxies?create=1&userId=${encodeURIComponent(client.userId)}&clientId=${encodeURIComponent(client.id)}`)}
             >
               Create proxy
-            </button>
+            </Button>
             <ConfirmButton
               label="Rotate credential"
               confirmLabel="Rotate this client credential?"

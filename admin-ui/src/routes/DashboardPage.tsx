@@ -1,3 +1,5 @@
+import { Button } from 'antd';
+import { ReloadOutlined } from '@ant-design/icons';
 import { useAuthedQuery } from '../hooks/useAuthedQuery';
 import { queryDashboard } from '../lib/admin-graphql';
 import { formatBytes, formatCount } from '../lib/format';
@@ -38,9 +40,9 @@ export function DashboardPage() {
         title="Dashboard"
         description="Runtime summary for the current admin surface."
         actions={
-          <button type="button" className="button button--secondary" onClick={() => query.refetch()}>
+          <Button type="default" icon={<ReloadOutlined aria-hidden="true" />} onClick={() => query.refetch()}>
             Refresh
-          </button>
+          </Button>
         }
       />
       <div className="metric-grid">

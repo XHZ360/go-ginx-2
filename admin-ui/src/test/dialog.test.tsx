@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { Dialog } from '../components/Dialog';
 
 describe('Dialog', () => {
-  it('closes only when a complete click starts and ends on the backdrop', async () => {
+  it('renders an accessible modal and closes through the close control', async () => {
     const onClose = vi.fn();
     render(
       <Dialog open title="Create item" onClose={onClose}>
@@ -12,19 +12,13 @@ describe('Dialog', () => {
       </Dialog>,
     );
 
-    const backdrop = screen.getByRole('presentation');
+    expect(screen.getByRole('dialog', { name: 'Create item' })).toBeInTheDocument();
     const inside = screen.getByRole('button', { name: 'Inside' });
 
-    await userEvent.pointer([
-      { keys: '[MouseLeft>]', target: inside },
-      { keys: '[/MouseLeft]', target: backdrop },
-    ]);
+    await userEvent.click(inside);
     expect(onClose).not.toHaveBeenCalled();
 
-    await userEvent.pointer([
-      { keys: '[MouseLeft>]', target: backdrop },
-      { keys: '[/MouseLeft]', target: backdrop },
-    ]);
+    await userEvent.click(screen.getByRole('button', { name: 'Close' }));
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 });

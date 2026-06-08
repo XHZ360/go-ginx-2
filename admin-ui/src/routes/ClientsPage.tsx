@@ -1,4 +1,6 @@
 import { useEffect, useState } from 'react';
+import { CopyOutlined, DeploymentUnitOutlined, PlusOutlined, ReloadOutlined } from '@ant-design/icons';
+import { Button } from 'antd';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { Dialog } from '../components/Dialog';
@@ -288,15 +290,15 @@ export function ClientsPage() {
         description="Live runtime view for managed clients."
         actions={
           <>
-            <button type="button" className="button button--secondary" onClick={() => query.refetch()}>
+            <Button type="default" icon={<ReloadOutlined aria-hidden="true" />} onClick={() => query.refetch()}>
               Refresh
-            </button>
-            <button type="button" className="button button--secondary" onClick={openJoinDialog}>
+            </Button>
+            <Button type="default" icon={<DeploymentUnitOutlined aria-hidden="true" />} onClick={openJoinDialog}>
               Create join token
-            </button>
-            <button type="button" className="button" onClick={openCreateDialog}>
+            </Button>
+            <Button type="primary" icon={<PlusOutlined aria-hidden="true" />} onClick={openCreateDialog}>
               Create client
-            </button>
+            </Button>
           </>
         }
       />
@@ -361,9 +363,9 @@ export function ClientsPage() {
                     <td><Timestamp value={client.runtime.lastHeartbeat} /></td>
                     <td>
                       <div className="inline-actions" onClick={(event) => event.stopPropagation()}>
-                        <button type="button" className="button button--secondary" onClick={() => createProxyForClient(client.id, client.userId)}>
+                        <Button type="default" icon={<DeploymentUnitOutlined aria-hidden="true" />} onClick={() => createProxyForClient(client.id, client.userId)}>
                           Create proxy
-                        </button>
+                        </Button>
                         <ConfirmButton
                           label="Delete"
                           confirmLabel="Delete this client?"
@@ -387,17 +389,17 @@ export function ClientsPage() {
         onClose={closeCreateDialog}
         footer={
           <>
-            <button type="button" className="button button--secondary" onClick={closeCreateDialog}>
+            <Button type="default" onClick={closeCreateDialog}>
               Close
-            </button>
+            </Button>
             {dialogMode === 'join' ? (
-              <button type="button" className="button" onClick={() => createJoinMutation.mutate(undefined)} disabled={createJoinMutation.isPending}>
+              <Button type="primary" onClick={() => createJoinMutation.mutate(undefined)} disabled={createJoinMutation.isPending}>
                 {createJoinMutation.isPending ? 'Creating...' : 'Create join token'}
-              </button>
+              </Button>
             ) : (
-              <button type="button" className="button" onClick={() => createMutation.mutate(undefined)} disabled={createMutation.isPending}>
+              <Button type="primary" onClick={() => createMutation.mutate(undefined)} disabled={createMutation.isPending}>
                 {createMutation.isPending ? 'Creating...' : 'Create client'}
-              </button>
+              </Button>
             )}
           </>
         }
@@ -415,9 +417,9 @@ export function ClientsPage() {
             <strong>Client join token</strong>
             <p>This value is shown once and expires after the configured TTL.</p>
             <code className="secret-value">{createdJoinToken}</code>
-            <button type="button" className="button button--secondary secret-action" onClick={copyJoinToken}>
+            <Button type="default" className="secret-action" icon={<CopyOutlined aria-hidden="true" />} onClick={copyJoinToken}>
               Copy token
-            </button>
+            </Button>
             {copyStatus ? <span className="field__hint">{copyStatus}</span> : null}
           </div>
         ) : null}

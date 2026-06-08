@@ -1,6 +1,21 @@
+import { Button, Space, Tag, Typography } from 'antd';
+import { LeftOutlined, RightOutlined } from '@ant-design/icons';
 import type { ReactNode } from 'react';
 import { Link } from 'react-router-dom';
 import { formatDateTime, formatTitle } from '../lib/format';
+
+const statusColors: Record<string, string> = {
+  enabled: 'success',
+  online: 'success',
+  valid: 'success',
+  success: 'success',
+  disabled: 'error',
+  offline: 'error',
+  failed: 'error',
+  danger: 'error',
+  pending: 'warning',
+  unknown: 'default',
+};
 
 export function PageHeader({
   title,
@@ -14,10 +29,10 @@ export function PageHeader({
   return (
     <div className="page-header">
       <div>
-        <h1>{title}</h1>
-        {description ? <p className="muted">{description}</p> : null}
+        <Typography.Title level={1}>{title}</Typography.Title>
+        {description ? <Typography.Text type="secondary">{description}</Typography.Text> : null}
       </div>
-      {actions ? <div className="toolbar-actions">{actions}</div> : null}
+      {actions ? <Space className="toolbar-actions" wrap>{actions}</Space> : null}
     </div>
   );
 }
@@ -33,26 +48,29 @@ export function Pagination({
 }) {
   return (
     <div className="pagination">
-      <button type="button" className="button button--secondary" disabled={page <= 1} onClick={() => onPageChange(page - 1)}>
+      <Button type="default" icon={<LeftOutlined aria-hidden="true" />} disabled={page <= 1} onClick={() => onPageChange(page - 1)}>
         Previous
-      </button>
+      </Button>
       <span>
         Page {page} / {totalPages}
       </span>
-      <button type="button" className="button button--secondary" disabled={page >= totalPages} onClick={() => onPageChange(page + 1)}>
+      <Button type="default" disabled={page >= totalPages} onClick={() => onPageChange(page + 1)}>
         Next
-      </button>
+        <RightOutlined aria-hidden="true" />
+      </Button>
     </div>
   );
 }
 
 export function StatusBadge({ value }: { value?: string | null }) {
-  return <span className={`badge badge--${(value ?? 'unknown').toLowerCase()}`}>{formatTitle(value ?? 'unknown')}</span>;
+  const status = (value ?? 'unknown').toLowerCase();
+  return <Tag className="status-tag" color={statusColors[status] ?? 'processing'}>{formatTitle(value ?? 'unknown')}</Tag>;
 }
 
 export function DetailBackLink({ to, label }: { to: string; label: string }) {
   return (
     <Link className="back-link" to={to}>
+      <LeftOutlined aria-hidden="true" />
       {label}
     </Link>
   );

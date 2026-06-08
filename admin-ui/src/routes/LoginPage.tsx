@@ -1,4 +1,6 @@
 import { useMemo, useState } from 'react';
+import { LoginOutlined } from '@ant-design/icons';
+import { Button } from 'antd';
 import { Navigate, useNavigate } from 'react-router-dom';
 import { TextField } from '../components/FormField';
 import { ValidationBanner } from '../components/PageStates';
@@ -84,9 +86,9 @@ export function LoginPage() {
             disabled={checking || submitting}
             onChange={(event) => setPassword(event.target.value)}
           />
-          <button type="submit" className="button" disabled={checking || submitting}>
+          <Button htmlType="submit" type="primary" icon={<LoginOutlined aria-hidden="true" />} disabled={checking || submitting}>
             {submitting ? 'Signing in...' : 'Sign in'}
-          </button>
+          </Button>
         </form>
       </div>
     </div>

@@ -1,4 +1,6 @@
 import { useState } from 'react';
+import { ReloadOutlined } from '@ant-design/icons';
+import { Button } from 'antd';
 import { useQueryClient } from '@tanstack/react-query';
 import { ConfirmButton } from '../components/ConfirmButton';
 import { EmptyState, ErrorState, FilteredEmptyState, PageLoading } from '../components/PageStates';
@@ -64,9 +66,9 @@ export function CertificatesPage() {
         title="Certificates"
         description="Managed certificate status for HTTPS proxies."
         actions={
-          <button type="button" className="button button--secondary" onClick={() => query.refetch()}>
+          <Button type="default" icon={<ReloadOutlined aria-hidden="true" />} onClick={() => query.refetch()}>
             Refresh
-          </button>
+          </Button>
         }
       />
 
