@@ -1,4 +1,6 @@
 import { useState } from 'react';
+import { PlusOutlined, ReloadOutlined } from '@ant-design/icons';
+import { Button } from 'antd';
 import { useNavigate } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { Dialog } from '../components/Dialog';
@@ -68,12 +70,12 @@ export function UsersPage() {
         description="Manage administrator-visible user accounts."
         actions={
           <>
-            <button type="button" className="button button--secondary" onClick={() => query.refetch()}>
+            <Button type="default" icon={<ReloadOutlined aria-hidden="true" />} onClick={() => query.refetch()}>
               Refresh
-            </button>
-            <button type="button" className="button" onClick={() => setShowDialog(true)}>
+            </Button>
+            <Button type="primary" icon={<PlusOutlined aria-hidden="true" />} onClick={() => setShowDialog(true)}>
               Create user
-            </button>
+            </Button>
           </>
         }
       />
@@ -131,16 +133,15 @@ export function UsersPage() {
                     <td><Timestamp value={user.lastActivityAt} /></td>
                     <td><Timestamp value={user.updatedAt} /></td>
                     <td>
-                      <button
-                        type="button"
-                        className="link-button"
+                      <Button
+                        type="link"
                         onClick={(event) => {
                           event.stopPropagation();
                           navigate(`/clients?userId=${encodeURIComponent(user.id)}`);
                         }}
                       >
                         Clients
-                      </button>
+                      </Button>
                     </td>
                   </tr>
                 ))}
@@ -157,12 +158,12 @@ export function UsersPage() {
         onClose={() => setShowDialog(false)}
         footer={
           <>
-            <button type="button" className="button button--secondary" onClick={() => setShowDialog(false)}>
+            <Button type="default" onClick={() => setShowDialog(false)}>
               Cancel
-            </button>
-            <button type="button" className="button" onClick={() => createMutation.mutate(undefined)} disabled={createMutation.isPending}>
+            </Button>
+            <Button type="primary" onClick={() => createMutation.mutate(undefined)} disabled={createMutation.isPending}>
               {createMutation.isPending ? 'Creating...' : 'Create user'}
-            </button>
+            </Button>
           </>
         }
       >

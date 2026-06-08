@@ -1,4 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
+import { LinkOutlined, PlusOutlined, ReloadOutlined, ThunderboltOutlined } from '@ant-design/icons';
+import { Button } from 'antd';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { Dialog } from '../components/Dialog';
@@ -280,12 +282,12 @@ export function ProxiesPage() {
         description="Manage TCP, UDP, HTTP, and HTTPS proxy resources."
         actions={
           <>
-            <button type="button" className="button button--secondary" onClick={() => query.refetch()}>
+            <Button type="default" icon={<ReloadOutlined aria-hidden="true" />} onClick={() => query.refetch()}>
               Refresh
-            </button>
-            <button type="button" className="button" onClick={openCreateDialog}>
+            </Button>
+            <Button type="primary" icon={<PlusOutlined aria-hidden="true" />} onClick={openCreateDialog}>
               Create proxy
-            </button>
+            </Button>
           </>
         }
       />
@@ -339,7 +341,7 @@ export function ProxiesPage() {
               <tbody>
                 {data.items.map((proxy) => (
                   <tr key={proxy.id}>
-                    <td><button type="button" className="link-button" onClick={() => navigate(`/proxies/${proxy.id}`)}>{proxy.name}</button></td>
+                    <td><Button type="link" icon={<LinkOutlined aria-hidden="true" />} onClick={() => navigate(`/proxies/${proxy.id}`)}>{proxy.name}</Button></td>
                     <td>{proxy.type}</td>
                     <td>{proxy.userId}</td>
                     <td>{proxy.clientId}</td>
@@ -352,9 +354,9 @@ export function ProxiesPage() {
                     <td>
                       <div className="inline-actions">
                         {proxy.status === 'disabled' ? (
-                          <button type="button" className="button button--secondary" onClick={() => enableMutation.mutate(proxy.id)}>
+                          <Button type="default" icon={<ThunderboltOutlined aria-hidden="true" />} onClick={() => enableMutation.mutate(proxy.id)}>
                             Enable
-                          </button>
+                          </Button>
                         ) : (
                           <ConfirmButton label="Disable" confirmLabel="Disable this proxy?" onConfirm={() => disableMutation.mutate(proxy.id)} tone="secondary" />
                         )}
@@ -375,12 +377,12 @@ export function ProxiesPage() {
         onClose={closeCreateDialog}
         footer={
           <>
-            <button type="button" className="button button--secondary" onClick={closeCreateDialog}>
+            <Button type="default" onClick={closeCreateDialog}>
               Cancel
-            </button>
-            <button type="button" className="button" onClick={() => createMutation.mutate(undefined)} disabled={createMutation.isPending || clientSelectionMismatch}>
+            </Button>
+            <Button type="primary" onClick={() => createMutation.mutate(undefined)} disabled={createMutation.isPending || clientSelectionMismatch}>
               {createMutation.isPending ? 'Creating...' : 'Create proxy'}
-            </button>
+            </Button>
           </>
         }
       >

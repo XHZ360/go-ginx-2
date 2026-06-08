@@ -1,4 +1,5 @@
-import { useState } from 'react';
+import { Button, Popconfirm } from 'antd';
+import { DeleteOutlined, ExclamationCircleOutlined } from '@ant-design/icons';
 
 export function ConfirmButton({
   label,
@@ -13,26 +14,23 @@ export function ConfirmButton({
   disabled?: boolean;
   tone?: 'danger' | 'secondary';
 }) {
-  const [confirming, setConfirming] = useState(false);
-  const className = tone === 'danger' ? 'button button--danger' : 'button button--secondary';
-
-  if (!confirming) {
-    return (
-      <button type="button" className={className} disabled={disabled} onClick={() => setConfirming(true)}>
-        {label}
-      </button>
-    );
-  }
-
   return (
-    <div className="confirm-inline">
-      <span>{confirmLabel}</span>
-      <button type="button" className={className} disabled={disabled} onClick={onConfirm}>
-        Confirm
-      </button>
-      <button type="button" className="button button--ghost" onClick={() => setConfirming(false)}>
-        Cancel
-      </button>
-    </div>
+    <Popconfirm
+      title={confirmLabel}
+      okText="Confirm"
+      cancelText="Cancel"
+      onConfirm={onConfirm}
+      disabled={disabled}
+      icon={<ExclamationCircleOutlined aria-hidden="true" />}
+    >
+      <Button
+        type={tone === 'danger' ? 'primary' : 'default'}
+        danger={tone === 'danger'}
+        disabled={disabled}
+        icon={tone === 'danger' ? <DeleteOutlined aria-hidden="true" /> : undefined}
+      >
+        {label}
+      </Button>
+    </Popconfirm>
   );
 }

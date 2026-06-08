@@ -1,4 +1,6 @@
 import { useEffect, useState } from 'react';
+import { EditOutlined, ThunderboltOutlined } from '@ant-design/icons';
+import { Button } from 'antd';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { ConfirmButton } from '../components/ConfirmButton';
@@ -188,13 +190,13 @@ export function ProxyDetailPage() {
         description={`Proxy ID: ${proxy.id}`}
         actions={
           <>
-            <button type="button" className="button button--secondary" onClick={() => setEditing(true)}>
+            <Button type="default" icon={<EditOutlined aria-hidden="true" />} onClick={() => setEditing(true)}>
               Edit proxy
-            </button>
+            </Button>
             {proxy.status === 'disabled' ? (
-                <button type="button" className="button button--secondary" onClick={() => enableMutation.mutate(undefined)}>
+              <Button type="default" icon={<ThunderboltOutlined aria-hidden="true" />} onClick={() => enableMutation.mutate(undefined)}>
                 Enable
-              </button>
+              </Button>
             ) : (
               <ConfirmButton label="Disable proxy" confirmLabel="Disable this proxy?" onConfirm={() => disableMutation.mutate(undefined)} />
             )}
@@ -252,12 +254,12 @@ export function ProxyDetailPage() {
         onClose={() => setEditing(false)}
         footer={
           <>
-            <button type="button" className="button button--secondary" onClick={() => setEditing(false)}>
+            <Button type="default" onClick={() => setEditing(false)}>
               Cancel
-            </button>
-            <button type="button" className="button" onClick={() => updateMutation.mutate(localForm)} disabled={updateMutation.isPending}>
+            </Button>
+            <Button type="primary" onClick={() => updateMutation.mutate(localForm)} disabled={updateMutation.isPending}>
               {updateMutation.isPending ? 'Saving...' : 'Save changes'}
-            </button>
+            </Button>
           </>
         }
       >

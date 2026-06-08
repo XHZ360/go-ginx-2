@@ -1,4 +1,5 @@
-import type { InputHTMLAttributes, ReactNode, SelectHTMLAttributes, TextareaHTMLAttributes } from 'react';
+import { Input } from 'antd';
+import type { ComponentProps, ReactNode, SelectHTMLAttributes } from 'react';
 
 type FieldWrapperProps = {
   label: string;
@@ -18,15 +19,13 @@ function FieldWrapper({ label, error, hint, children }: FieldWrapperProps) {
   );
 }
 
-export function TextField({
-  label,
-  error,
-  hint,
-  ...props
-}: InputHTMLAttributes<HTMLInputElement> & { label: string; error?: string; hint?: string }) {
+type TextFieldProps = ComponentProps<typeof Input> & { label: string; error?: string; hint?: string };
+type TextAreaFieldProps = ComponentProps<typeof Input.TextArea> & { label: string; error?: string; hint?: string };
+
+export function TextField({ label, error, hint, ...props }: TextFieldProps) {
   return (
     <FieldWrapper label={label} error={error} hint={hint}>
-      <input className="input" {...props} />
+      <Input className="input" status={error ? 'error' : undefined} {...props} />
     </FieldWrapper>
   );
 }
@@ -40,22 +39,17 @@ export function SelectField({
 }: SelectHTMLAttributes<HTMLSelectElement> & { label: string; error?: string; hint?: string; children: ReactNode }) {
   return (
     <FieldWrapper label={label} error={error} hint={hint}>
-      <select className="input" {...props}>
+      <select className="input native-select" aria-invalid={Boolean(error) || undefined} {...props}>
         {children}
       </select>
     </FieldWrapper>
   );
 }
 
-export function TextAreaField({
-  label,
-  error,
-  hint,
-  ...props
-}: TextareaHTMLAttributes<HTMLTextAreaElement> & { label: string; error?: string; hint?: string }) {
+export function TextAreaField({ label, error, hint, ...props }: TextAreaFieldProps) {
   return (
     <FieldWrapper label={label} error={error} hint={hint}>
-      <textarea className="input textarea" {...props} />
+      <Input.TextArea className="input textarea" status={error ? 'error' : undefined} {...props} />
     </FieldWrapper>
   );
 }

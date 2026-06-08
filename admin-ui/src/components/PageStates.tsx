@@ -1,3 +1,5 @@
+import { Alert, Button, Card, Spin } from 'antd';
+import { ClearOutlined, ReloadOutlined } from '@ant-design/icons';
 import type { ReactNode } from 'react';
 
 type StateCardProps = {
@@ -8,20 +10,20 @@ type StateCardProps = {
 
 function StateCard({ title, message, action }: StateCardProps) {
   return (
-    <div className="state-card" role="status">
+    <Card className="state-card" role="status">
       <h2>{title}</h2>
       <p>{message}</p>
       {action ? <div className="state-card__action">{action}</div> : null}
-    </div>
+    </Card>
   );
 }
 
 export function PageLoading({ label = 'Loading page...' }: { label?: string }) {
   return (
-    <div className="state-card state-card--loading" aria-busy="true">
-      <div className="spinner" />
+    <Card className="state-card state-card--loading" aria-busy="true">
+      <Spin size="small" />
       <span>{label}</span>
-    </div>
+    </Card>
   );
 }
 
@@ -35,9 +37,9 @@ export function FilteredEmptyState({ onClear }: { onClear: () => void }) {
       title="No matching results"
       message="The current filters returned no records."
       action={
-        <button type="button" className="button button--secondary" onClick={onClear}>
+        <Button type="default" icon={<ClearOutlined aria-hidden="true" />} onClick={onClear}>
           Clear filters
-        </button>
+        </Button>
       }
     />
   );
@@ -62,9 +64,9 @@ export function ErrorState({
       message={message}
       action={
         retry ? (
-          <button type="button" className="button button--secondary" onClick={retry}>
+          <Button type="default" icon={<ReloadOutlined aria-hidden="true" />} onClick={retry}>
             Retry
-          </button>
+          </Button>
         ) : undefined
       }
     />
@@ -82,16 +84,22 @@ export function ValidationBanner({
     return null;
   }
   return (
-    <div className="banner banner--danger" role="alert">
-      <strong>{title}</strong>
-      <ul className="field-errors-list">
-        {Object.entries(fields).map(([field, message]) => (
-          <li key={field}>
-            <span>{field}</span>
-            <span>{message}</span>
-          </li>
-        ))}
-      </ul>
-    </div>
+    <Alert
+      className="banner"
+      type="error"
+      showIcon
+      role="alert"
+      title={title}
+      description={
+        <ul className="field-errors-list">
+          {Object.entries(fields).map(([field, message]) => (
+            <li key={field}>
+              <span>{field}</span>
+              <span>{message}</span>
+            </li>
+          ))}
+        </ul>
+      }
+    />
   );
 }
