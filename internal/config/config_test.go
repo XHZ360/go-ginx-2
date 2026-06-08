@@ -55,8 +55,19 @@ func TestDefaultServerUsesSeparatedEnrollmentAndWebEntryPorts(t *testing.T) {
 	if cfg.AdminJWTSecretFile != "data/admin-jwt.key" {
 		t.Fatalf("unexpected admin jwt secret file %q", cfg.AdminJWTSecretFile)
 	}
+	if cfg.LogRotation() != DefaultLogRotation() {
+		t.Fatalf("unexpected default log rotation: %+v", cfg.LogRotation())
+	}
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("validate default server: %v", err)
+	}
+}
+
+func TestDefaultClientIncludesLogRotationDefaults(t *testing.T) {
+	cfg := DefaultClient()
+
+	if cfg.LogRotation() != DefaultLogRotation() {
+		t.Fatalf("unexpected default client log rotation: %+v", cfg.LogRotation())
 	}
 }
 
@@ -125,7 +136,7 @@ func TestServerValidateAcceptsConfiguredACME(t *testing.T) {
 
 func TestLoadServerAcceptsAdminFrontendDir(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "server.json")
-	content := `{"admin_listen":"127.0.0.1:8080","admin_credentials_file":"admins.json","admin_frontend_dir":"web/admin","client_enrollment_listen":"127.0.0.1:18081","control_quic_listen":"127.0.0.1:8443","control_tls_listen":"127.0.0.1:9443","control_tls_cert_file":"control.crt","control_tls_key_file":"control.key","join_service_host":"server.example.com","tcp_entry_host":"127.0.0.1","http_entry_listen":"127.0.0.1:8081","sqlite_path":"data/go-ginx.db","data_dir":"data","certificate_dir":"data/certs","heartbeat_timeout":1000000000,"log_retention_days":7}`
+	content := `{"admin_listen":"127.0.0.1:8080","admin_credentials_file":"admins.json","admin_frontend_dir":"web/admin","client_enrollment_listen":"127.0.0.1:18081","control_quic_listen":"127.0.0.1:8443","control_tls_listen":"127.0.0.1:9443","control_tls_cert_file":"control.crt","control_tls_key_file":"control.key","join_service_host":"server.example.com","tcp_entry_host":"127.0.0.1","http_entry_listen":"127.0.0.1:8081","sqlite_path":"data/go-ginx.db","data_dir":"data","certificate_dir":"data/certs","heartbeat_timeout":1000000000,"log_max_size_mb":25,"log_max_backups":4,"log_retention_days":9,"log_compress":false}`
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -142,6 +153,29 @@ func TestLoadServerAcceptsAdminFrontendDir(t *testing.T) {
 	}
 	if cfg.ClientEnrollmentListen != "127.0.0.1:18081" {
 		t.Fatalf("unexpected client enrollment listen %q", cfg.ClientEnrollmentListen)
+	}
+	if cfg.LogRotation() != (LogRotation{MaxSizeMB: 25, MaxBackups: 4, RetentionDays: 9, Compress: false}) {
+		t.Fatalf("unexpected log rotation config: %+v", cfg.LogRotation())
+	}
+}
+
+func TestServerValidateRejectsInvalidLogRotation(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*Server)
+	}{
+		{name: "max size", mutate: func(cfg *Server) { cfg.LogMaxSizeMB = 0 }},
+		{name: "max backups", mutate: func(cfg *Server) { cfg.LogMaxBackups = -1 }},
+		{name: "retention", mutate: func(cfg *Server) { cfg.LogRetentionDays = 0 }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := DefaultServer()
+			tt.mutate(&cfg)
+			if err := cfg.Validate(); err == nil {
+				t.Fatal("expected invalid log rotation validation error")
+			}
+		})
 	}
 }
 
@@ -331,6 +365,36 @@ func TestLoadClientRejectsUnknownFields(t *testing.T) {
 
 	if _, err := LoadClient(path); err == nil {
 		t.Fatal("expected unknown field error")
+	}
+}
+
+func TestLoadClientAcceptsLogRotationConfig(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "client.json")
+	content := `{"server_address":"example.com:8443","server_name":"example.com","server_ca_file":"ca.pem","client_id":"client-1","credential":"secret","allowed_protocols":["quic"],"reconnect":{"initial_delay":1000000000,"max_delay":30000000000},"log_max_size_mb":12,"log_max_backups":3,"log_retention_days":5,"log_compress":false}`
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadClient(path)
+	if err != nil {
+		t.Fatalf("load client with log rotation config: %v", err)
+	}
+	if cfg.LogRotation() != (LogRotation{MaxSizeMB: 12, MaxBackups: 3, RetentionDays: 5, Compress: false}) {
+		t.Fatalf("unexpected log rotation config: %+v", cfg.LogRotation())
+	}
+}
+
+func TestClientValidateRejectsInvalidLogRotation(t *testing.T) {
+	cfg := DefaultClient()
+	cfg.ServerAddress = "127.0.0.1:8443"
+	cfg.ServerName = "localhost"
+	cfg.ServerCAFile = "ca.pem"
+	cfg.ClientID = "client-1"
+	cfg.Credential = "secret"
+	cfg.LogMaxSizeMB = 0
+
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected invalid log rotation validation error")
 	}
 }
 

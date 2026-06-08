@@ -25,6 +25,7 @@ func (err permanentClientError) Error() string { return err.err.Error() }
 func (err permanentClientError) Unwrap() error { return err.err }
 
 func RunClient(ctx context.Context, cfg config.Client) error {
+	cfg = cfg.WithLogRotationDefaults()
 	if err := cfg.Validate(); err != nil {
 		return err
 	}

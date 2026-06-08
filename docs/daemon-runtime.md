@@ -105,7 +105,10 @@ Explicit JSON config remains supported for advanced deployments. Create `server.
   "acme_renewal_window": 2592000000000000,
   "acme_cloudflare_token_env": "CF_DNS_API_TOKEN",
   "heartbeat_timeout": 45000000000,
-  "log_retention_days": 7
+  "log_max_size_mb": 50,
+  "log_max_backups": 10,
+  "log_retention_days": 7,
+  "log_compress": true
 }
 ```
 
@@ -133,11 +136,23 @@ The default client path is `goginx-client join <token>`. Explicit `client.json` 
   "reconnect": {
     "initial_delay": 1000000000,
     "max_delay": 30000000000
-  }
+  },
+  "log_max_size_mb": 50,
+  "log_max_backups": 10,
+  "log_retention_days": 7,
+  "log_compress": true
 }
 ```
 
 Duration fields are JSON numbers in nanoseconds because the config structs use `time.Duration`. `reconnect.initial_delay` and `reconnect.max_delay` control client retries after transient dial or runtime failures. Authentication rejection still returns immediately instead of retrying forever.
+
+## Runtime Log Rotation
+
+Both daemons write local runtime logs to stable files under the deployment root: `logs/server.log` and `logs/client.log`. The same messages are also written to stderr, so service managers, foreground shells, and container runtimes can keep capturing process output. Runtime errors are not split into a separate error file; they remain in the same rotated log stream with error level/category context and without credentials, tokens, cookies, private keys, request bodies, or other sensitive values.
+
+By default, each current log file rotates at 50 MiB, keeps up to 10 archives, removes archives older than 7 days, and compresses rotated archives with gzip. Archive names use timestamps such as `server-20260608-153000.log` or `client-20260608-153000.log.gz`; if several rotations happen within the same second, the archive name gets a numeric suffix.
+
+Linux `systemd` deployments should keep relying on stderr/journald for service capture while the application manages files in `logs/`. Windows deployments should rely on the built-in application rotation instead of external rename-based logrotate tools, because open files cannot always be renamed or removed externally. Docker and Kubernetes deployments should prefer stdout/stderr plus the container runtime's log rotation, with file logs used only when the deployment explicitly wants local files or troubleshooting artifacts.
 
 ## Build And Run
 
@@ -169,7 +184,7 @@ The core bundle layout is stable and contains:
 2. `admin-ui/` with the management frontend build output used by default at runtime.
 3. `config/` with optional sample `server.example.json`, `client.example.json`, and environment examples.
 4. `data/` with SQLite, certificate directories, and the administrator JWT signing key.
-5. `logs/` for operator-managed log files.
+5. `logs/` for application-rotated runtime log files.
 6. `systemd/` with rendered `goginx-server.service` and `goginx-client.service` units.
 7. `config/admin-credentials.json.example` for the optional administrator management surface.
 
@@ -271,6 +286,7 @@ $env:CF_DNS_API_TOKEN="<cloudflare-token>"
 21. Missing administrator bootstrap: configless management login has no default password. Run `goginx-admin init-admin` before logging in. By default the CLI writes to `data/go-ginx.db` under the deployment root derived from the `goginx-admin` binary location; use `-db` when targeting a custom server SQLite path.
 22. Join token failures: expired, already-used, tampered, revoked, or admin-listener-era join tokens are rejected by `/api/client/enroll`; generate a new token with `goginx-admin create-client-join`.
 23. Client managed state damage: if `data/client-state.json` or `data/certs/server-ca.crt` is missing on the client host, run `goginx-client join <new-token>` again.
+24. Runtime log growth: check `log_max_size_mb`, `log_max_backups`, `log_retention_days`, `log_compress`, the deployment-root `logs/` directory, and service-account permissions when current or archived logs grow beyond the expected bounds. Compression failures are diagnostic only; current logging should continue.
 
 ## Not Implemented
 

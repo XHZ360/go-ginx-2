@@ -69,6 +69,7 @@ type ServerRuntime struct {
 }
 
 func StartServer(ctx context.Context, cfg config.Server) (*ServerRuntime, error) {
+	cfg = cfg.WithLogRotationDefaults()
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}

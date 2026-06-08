@@ -9,6 +9,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/simp-frp/go-ginx-2/internal/config"
 )
 
 func TestBuildBundleCreatesExpectedLayout(t *testing.T) {
@@ -58,9 +60,15 @@ func TestBuildBundleCreatesExpectedLayout(t *testing.T) {
 	if serverConfig.AdminJWTSecretFile != "data/admin-jwt.key" {
 		t.Fatalf("unexpected admin jwt secret path: %+v", serverConfig)
 	}
+	if serverConfig.LogRotation() != config.DefaultLogRotation() {
+		t.Fatalf("unexpected bundled server log rotation: %+v", serverConfig.LogRotation())
+	}
 	clientConfig := readBundledClientConfig(t, filepath.Join(outputDir, "config", bundledClientExampleConfigName))
 	if clientConfig.ServerName != "go-ginx-control.local" || clientConfig.ServerCAFile != "data/certs/server-ca.crt" {
 		t.Fatalf("unexpected client trust config: %+v", clientConfig)
+	}
+	if clientConfig.LogRotation() != config.DefaultLogRotation() {
+		t.Fatalf("unexpected bundled client log rotation: %+v", clientConfig.LogRotation())
 	}
 	serverService, err := os.ReadFile(filepath.Join(outputDir, "systemd", "goginx-server.service"))
 	if err != nil {
@@ -156,9 +164,15 @@ func TestBuildBundleCopiesAdminFrontendAssetsWhenPresent(t *testing.T) {
 	if serverConfig.AdminJWTSecretFile != "data/admin-jwt.key" {
 		t.Fatalf("unexpected admin jwt secret path: %+v", serverConfig)
 	}
+	if serverConfig.LogRotation() != config.DefaultLogRotation() {
+		t.Fatalf("unexpected bundled server log rotation: %+v", serverConfig.LogRotation())
+	}
 	clientConfig := readBundledClientConfig(t, filepath.Join(outputDir, "config", bundledClientExampleConfigName))
 	if clientConfig.ServerName != "go-ginx-control.local" || clientConfig.ServerCAFile != "data/certs/server-ca.crt" {
 		t.Fatalf("unexpected client trust config: %+v", clientConfig)
+	}
+	if clientConfig.LogRotation() != config.DefaultLogRotation() {
+		t.Fatalf("unexpected bundled client log rotation: %+v", clientConfig.LogRotation())
 	}
 }
 
@@ -217,6 +231,19 @@ type bundledServerConfig struct {
 	ControlTLSCAFile   string `json:"control_tls_ca_file"`
 	ControlTLSCertFile string `json:"control_tls_cert_file"`
 	ControlTLSKeyFile  string `json:"control_tls_key_file"`
+	LogMaxSizeMB       int    `json:"log_max_size_mb"`
+	LogMaxBackups      int    `json:"log_max_backups"`
+	LogRetentionDays   int    `json:"log_retention_days"`
+	LogCompress        bool   `json:"log_compress"`
+}
+
+func (cfg bundledServerConfig) LogRotation() config.LogRotation {
+	return config.LogRotation{
+		MaxSizeMB:     cfg.LogMaxSizeMB,
+		MaxBackups:    cfg.LogMaxBackups,
+		RetentionDays: cfg.LogRetentionDays,
+		Compress:      cfg.LogCompress,
+	}
 }
 
 func readBundledClientConfig(t *testing.T, path string) bundledClientConfig {
@@ -233,8 +260,21 @@ func readBundledClientConfig(t *testing.T, path string) bundledClientConfig {
 }
 
 type bundledClientConfig struct {
-	ServerName   string `json:"server_name"`
-	ServerCAFile string `json:"server_ca_file"`
+	ServerName       string `json:"server_name"`
+	ServerCAFile     string `json:"server_ca_file"`
+	LogMaxSizeMB     int    `json:"log_max_size_mb"`
+	LogMaxBackups    int    `json:"log_max_backups"`
+	LogRetentionDays int    `json:"log_retention_days"`
+	LogCompress      bool   `json:"log_compress"`
+}
+
+func (cfg bundledClientConfig) LogRotation() config.LogRotation {
+	return config.LogRotation{
+		MaxSizeMB:     cfg.LogMaxSizeMB,
+		MaxBackups:    cfg.LogMaxBackups,
+		RetentionDays: cfg.LogRetentionDays,
+		Compress:      cfg.LogCompress,
+	}
 }
 
 func copyFileForTest(t *testing.T, sourcePath string, destPath string) {

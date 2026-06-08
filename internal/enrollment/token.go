@@ -167,16 +167,16 @@ func (service Service) now() time.Time {
 }
 
 func ConfigFromResponse(response RedeemResponse, caFile string) config.Client {
-	return config.Client{
-		ServerAddress:    response.ServerAddress,
-		ServerTLSAddress: response.ServerTLSAddress,
-		ServerName:       response.ServerName,
-		ServerCAFile:     caFile,
-		ClientID:         response.ClientID,
-		Credential:       response.Credential,
-		AllowedProtocols: append([]domain.Protocol(nil), response.AllowedProtocols...),
-		Reconnect:        response.Reconnect,
-	}
+	cfg := config.DefaultClient()
+	cfg.ServerAddress = response.ServerAddress
+	cfg.ServerTLSAddress = response.ServerTLSAddress
+	cfg.ServerName = response.ServerName
+	cfg.ServerCAFile = caFile
+	cfg.ClientID = response.ClientID
+	cfg.Credential = response.Credential
+	cfg.AllowedProtocols = append([]domain.Protocol(nil), response.AllowedProtocols...)
+	cfg.Reconnect = response.Reconnect
+	return cfg
 }
 
 func HashSecret(secret string) string {

@@ -41,7 +41,10 @@ type Server struct {
 	ACMERenewalWindow      time.Duration `json:"acme_renewal_window"`
 	ACMECloudflareTokenEnv string        `json:"acme_cloudflare_token_env"`
 	HeartbeatTimeout       time.Duration `json:"heartbeat_timeout"`
+	LogMaxSizeMB           int           `json:"log_max_size_mb"`
+	LogMaxBackups          int           `json:"log_max_backups"`
 	LogRetentionDays       int           `json:"log_retention_days"`
+	LogCompress            bool          `json:"log_compress"`
 }
 
 type JoinServiceDefaults struct {
@@ -64,6 +67,10 @@ type Client struct {
 	Credential       string            `json:"credential"`
 	AllowedProtocols []domain.Protocol `json:"allowed_protocols"`
 	Reconnect        Reconnect         `json:"reconnect"`
+	LogMaxSizeMB     int               `json:"log_max_size_mb"`
+	LogMaxBackups    int               `json:"log_max_backups"`
+	LogRetentionDays int               `json:"log_retention_days"`
+	LogCompress      bool              `json:"log_compress"`
 }
 
 type Reconnect struct {
@@ -71,7 +78,15 @@ type Reconnect struct {
 	MaxDelay     time.Duration `json:"max_delay"`
 }
 
+type LogRotation struct {
+	MaxSizeMB     int
+	MaxBackups    int
+	RetentionDays int
+	Compress      bool
+}
+
 func DefaultServer() Server {
+	logRotation := DefaultLogRotation()
 	return Server{
 		AdminEnabled:           false,
 		AdminListen:            "127.0.0.1:8080",
@@ -96,17 +111,34 @@ func DefaultServer() Server {
 		ACMERenewalWindow:      30 * 24 * time.Hour,
 		ACMECloudflareTokenEnv: "CF_DNS_API_TOKEN",
 		HeartbeatTimeout:       45 * time.Second,
-		LogRetentionDays:       7,
+		LogMaxSizeMB:           logRotation.MaxSizeMB,
+		LogMaxBackups:          logRotation.MaxBackups,
+		LogRetentionDays:       logRotation.RetentionDays,
+		LogCompress:            logRotation.Compress,
 	}
 }
 
 func DefaultClient() Client {
+	logRotation := DefaultLogRotation()
 	return Client{
 		AllowedProtocols: []domain.Protocol{domain.ProtocolQUIC, domain.ProtocolTCPTLS},
 		Reconnect: Reconnect{
 			InitialDelay: time.Second,
 			MaxDelay:     30 * time.Second,
 		},
+		LogMaxSizeMB:     logRotation.MaxSizeMB,
+		LogMaxBackups:    logRotation.MaxBackups,
+		LogRetentionDays: logRotation.RetentionDays,
+		LogCompress:      logRotation.Compress,
+	}
+}
+
+func DefaultLogRotation() LogRotation {
+	return LogRotation{
+		MaxSizeMB:     50,
+		MaxBackups:    10,
+		RetentionDays: 7,
+		Compress:      true,
 	}
 }
 
@@ -198,8 +230,8 @@ func (cfg Server) Validate() error {
 	if cfg.HeartbeatTimeout <= 0 {
 		return errors.New("heartbeat_timeout must be positive")
 	}
-	if cfg.LogRetentionDays <= 0 {
-		return errors.New("log_retention_days must be positive")
+	if err := cfg.LogRotation().Validate(); err != nil {
+		return err
 	}
 	return nil
 }
@@ -278,6 +310,72 @@ func (cfg Client) Validate() error {
 	}
 	if cfg.Reconnect.MaxDelay < cfg.Reconnect.InitialDelay {
 		return errors.New("reconnect.max_delay must be greater than or equal to reconnect.initial_delay")
+	}
+	if err := cfg.LogRotation().Validate(); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (cfg Server) LogRotation() LogRotation {
+	return LogRotation{
+		MaxSizeMB:     cfg.LogMaxSizeMB,
+		MaxBackups:    cfg.LogMaxBackups,
+		RetentionDays: cfg.LogRetentionDays,
+		Compress:      cfg.LogCompress,
+	}
+}
+
+func (cfg Server) WithLogRotationDefaults() Server {
+	rotation := cfg.LogRotation().WithDefaults()
+	cfg.LogMaxSizeMB = rotation.MaxSizeMB
+	cfg.LogMaxBackups = rotation.MaxBackups
+	cfg.LogRetentionDays = rotation.RetentionDays
+	cfg.LogCompress = rotation.Compress
+	return cfg
+}
+
+func (cfg Client) LogRotation() LogRotation {
+	return LogRotation{
+		MaxSizeMB:     cfg.LogMaxSizeMB,
+		MaxBackups:    cfg.LogMaxBackups,
+		RetentionDays: cfg.LogRetentionDays,
+		Compress:      cfg.LogCompress,
+	}
+}
+
+func (cfg Client) WithLogRotationDefaults() Client {
+	rotation := cfg.LogRotation().WithDefaults()
+	cfg.LogMaxSizeMB = rotation.MaxSizeMB
+	cfg.LogMaxBackups = rotation.MaxBackups
+	cfg.LogRetentionDays = rotation.RetentionDays
+	cfg.LogCompress = rotation.Compress
+	return cfg
+}
+
+func (rotation LogRotation) WithDefaults() LogRotation {
+	defaults := DefaultLogRotation()
+	if rotation.MaxSizeMB == 0 && rotation.MaxBackups == 0 && rotation.RetentionDays == 0 && !rotation.Compress {
+		return defaults
+	}
+	if rotation.MaxSizeMB == 0 {
+		rotation.MaxSizeMB = defaults.MaxSizeMB
+	}
+	if rotation.RetentionDays == 0 {
+		rotation.RetentionDays = defaults.RetentionDays
+	}
+	return rotation
+}
+
+func (rotation LogRotation) Validate() error {
+	if rotation.MaxSizeMB <= 0 {
+		return errors.New("log_max_size_mb must be positive")
+	}
+	if rotation.MaxBackups < 0 {
+		return errors.New("log_max_backups must be zero or positive")
+	}
+	if rotation.RetentionDays <= 0 {
+		return errors.New("log_retention_days must be positive")
 	}
 	return nil
 }
