@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"bufio"
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
@@ -26,6 +27,7 @@ import (
 	"github.com/simp-frp/go-ginx-2/internal/config"
 	"github.com/simp-frp/go-ginx-2/internal/domain"
 	httpsproxy "github.com/simp-frp/go-ginx-2/internal/proxy/https"
+	"github.com/simp-frp/go-ginx-2/internal/store"
 	"github.com/simp-frp/go-ginx-2/internal/store/sqlite"
 )
 
@@ -492,17 +494,27 @@ func TestReconcileHTTPSProxyCustomListenerWithoutRestart(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	serverCert, serverKey, caFile := writeTestTLSFiles(t)
-	target, originPool := startTLSEchoTarget(t, "custom.example.com")
+	target := startHTTPTextTarget(t, "hello custom https listener")
 	targetPort := portNumber(t, target.Addr())
 	customPort := reservePort(t)
+	certificateDir := t.TempDir()
+	certPEM, keyPEM := daemonTestCertificatePEM(t, "custom.example.com", time.Now().Add(time.Hour))
+	certFile := filepath.Join(certificateDir, "custom.crt")
+	keyFile := filepath.Join(certificateDir, "custom.key")
+	writeFile(t, certFile, certPEM)
+	writeFile(t, keyFile, keyPEM)
+	originPool := x509.NewCertPool()
+	if !originPool.AppendCertsFromPEM(certPEM) {
+		t.Fatal("append custom https certificate")
+	}
 	dbPath := filepath.Join(t.TempDir(), "https-custom-listener.db")
 	seedDatabase(t, dbPath, nil)
-	runtime, err := StartServer(ctx, config.Server{AdminListen: "127.0.0.1:0", ClientEnrollmentListen: "127.0.0.1:0", ControlQUICListen: "127.0.0.1:0", ControlTLSListen: "127.0.0.1:0", ControlTLSCertFile: serverCert, ControlTLSKeyFile: serverKey, TCPEntryHost: "127.0.0.1", HTTPEntryListen: "127.0.0.1:0", HTTPSEntryListen: "127.0.0.1:0", SQLitePath: dbPath, DataDir: t.TempDir(), CertificateDir: t.TempDir(), HeartbeatTimeout: time.Second, LogRetentionDays: 1})
+	runtime, err := StartServer(ctx, config.Server{AdminListen: "127.0.0.1:0", ClientEnrollmentListen: "127.0.0.1:0", ControlQUICListen: "127.0.0.1:0", ControlTLSListen: "127.0.0.1:0", ControlTLSCertFile: serverCert, ControlTLSKeyFile: serverKey, TCPEntryHost: "127.0.0.1", HTTPEntryListen: "127.0.0.1:0", HTTPSEntryListen: "127.0.0.1:0", SQLitePath: dbPath, DataDir: t.TempDir(), CertificateDir: certificateDir, HeartbeatTimeout: time.Second, LogRetentionDays: 1})
 	if err != nil {
 		t.Fatalf("start server: %v", err)
 	}
 	t.Cleanup(func() { _ = runtime.Close() })
-	proxy := domain.Proxy{ID: "https-custom", UserID: "user-1", ClientID: "client-1", Name: "secure", Type: domain.ProxyHTTPS, Status: domain.ProxyEnabled, EntryBindHost: "127.0.0.1", EntryHost: "custom.example.com", EntryPort: customPort, TargetHost: "127.0.0.1", TargetPort: targetPort}
+	proxy := domain.Proxy{ID: "https-custom", UserID: "user-1", ClientID: "client-1", Name: "secure", Type: domain.ProxyHTTPS, Status: domain.ProxyEnabled, EntryBindHost: "127.0.0.1", EntryHost: "custom.example.com", EntryPort: customPort, TargetHost: "127.0.0.1", TargetPort: targetPort, CertFile: certFile, KeyFile: keyFile}
 	if err := runtime.Store.Proxies().Create(ctx, proxy); err != nil {
 		t.Fatalf("create proxy: %v", err)
 	}
@@ -525,15 +537,20 @@ func TestReconcileHTTPSProxyCustomListenerWithoutRestart(t *testing.T) {
 		t.Fatalf("dial custom https entry: %v", err)
 	}
 	t.Cleanup(func() { _ = conn.Close() })
-	if _, err := conn.Write([]byte("ping\n")); err != nil {
+	if _, err := conn.Write([]byte("GET / HTTP/1.1\r\nHost: custom.example.com\r\nConnection: close\r\n\r\n")); err != nil {
 		t.Fatalf("write custom https entry: %v", err)
 	}
-	payload := make([]byte, len("ping\n"))
-	if _, err := io.ReadFull(conn, payload); err != nil {
-		t.Fatalf("read custom https entry: %v", err)
+	response, err := nethttp.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil {
+		t.Fatalf("read custom https response: %v", err)
 	}
-	if string(payload) != "ping\n" {
-		t.Fatalf("unexpected https payload %q", string(payload))
+	defer response.Body.Close()
+	payload, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatalf("read custom https body: %v", err)
+	}
+	if response.StatusCode != nethttp.StatusOK || string(payload) != "hello custom https listener" {
+		t.Fatalf("unexpected https response status=%d body=%q", response.StatusCode, string(payload))
 	}
 	if err := runtime.Store.Proxies().SetStatus(ctx, proxy.ID, domain.ProxyDisabled); err != nil {
 		t.Fatalf("disable proxy: %v", err)
@@ -723,6 +740,36 @@ func TestStartServerRenewsManagedCertificates(t *testing.T) {
 	t.Fatal("managed certificate was not renewed")
 }
 
+func TestManagedCertificateControllerSkipsBackoff(t *testing.T) {
+	ctx := context.Background()
+	db := openDaemonTestStore(t)
+	seedHTTPSProxyInStore(t, ctx, db)
+	now := time.Now().UTC().Truncate(time.Second)
+	notAfter := now.Add(10 * time.Minute)
+	nextAttempt := now.Add(time.Hour)
+	if err := db.Certificates().Create(ctx, domain.ManagedCertificate{ID: "cert-1", ProxyID: "proxy-1", Host: "app.example.com", Status: domain.CertificateValid, ServingStatus: domain.CertificateServingUsable, OperationStatus: domain.CertificateOperationIdle, Provider: "cloudflare", CertFile: "active.crt", KeyFile: "active.key", NotAfter: &notAfter, NextAttemptAt: &nextAttempt}); err != nil {
+		t.Fatalf("create certificate: %v", err)
+	}
+	certPEM, keyPEM := daemonTestCertificatePEM(t, "app.example.com", now.Add(2*time.Hour))
+	issuer := &countingDaemonIssuer{certPEM: certPEM, keyPEM: keyPEM}
+	service := certmanager.Service{Store: db, Issuer: issuer, DNSProvider: daemonFakeDNSProvider{}, Storage: httpsproxy.ManagedCertificateStorage{CertificateDir: t.TempDir()}, Settings: domain.ACMEProviderSettings{AccountEmail: "ops@example.com", TermsAccepted: true, DNSProvider: "cloudflare", RenewalWindow: time.Hour}}
+	controller := newManagedCertificateController(db, service, time.Hour, time.Hour)
+	controller.now = func() time.Time { return now }
+
+	controller.RenewDue(ctx)
+	if issuer.count != 0 {
+		t.Fatalf("expected backoff to skip renewal, got %d attempts", issuer.count)
+	}
+	pastAttempt := now.Add(-time.Minute)
+	if err := db.Certificates().UpdateFailure(ctx, "cert-1", store.CertificateFailure{Status: domain.CertificateRenewalFailed, ServingStatus: domain.CertificateServingUsable, OperationStatus: domain.CertificateOperationRenewalFailed, LastError: "previous failure", NextAttemptAt: &pastAttempt, FailureCount: 1, CompletedAt: now}); err != nil {
+		t.Fatalf("move next attempt into past: %v", err)
+	}
+	controller.RenewDue(ctx)
+	if issuer.count != 1 {
+		t.Fatalf("expected due renewal after backoff elapsed, got %d attempts", issuer.count)
+	}
+}
+
 type daemonFakeDNSProvider struct{}
 
 func (daemonFakeDNSProvider) Present(context.Context, string, string) error { return nil }
@@ -734,6 +781,43 @@ func (daemonFakeIssuer) Issue(context.Context, certmanager.IssueRequest) (certma
 	notAfter := time.Now().Add(2 * time.Hour)
 	certPEM, keyPEM := daemonTestCertificatePEMBytes("app.example.com", notAfter)
 	return certmanager.IssuedCertificate{CertPEM: certPEM, KeyPEM: keyPEM, NotAfter: notAfter}, nil
+}
+
+type countingDaemonIssuer struct {
+	certPEM []byte
+	keyPEM  []byte
+	count   int
+}
+
+func (issuer *countingDaemonIssuer) Issue(context.Context, certmanager.IssueRequest) (certmanager.IssuedCertificate, error) {
+	issuer.count++
+	return certmanager.IssuedCertificate{CertPEM: issuer.certPEM, KeyPEM: issuer.keyPEM}, nil
+}
+
+func openDaemonTestStore(t *testing.T) *sqlite.Store {
+	t.Helper()
+	db, err := sqlite.Open(filepath.Join(t.TempDir(), "daemon.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	return db
+}
+
+func seedHTTPSProxyInStore(t *testing.T, ctx context.Context, db *sqlite.Store) {
+	t.Helper()
+	user := domain.User{ID: "user-1", Username: "alice", Role: domain.RoleUser, Status: domain.UserEnabled}
+	client := domain.Client{ID: "client-1", UserID: user.ID, Name: "home", Status: domain.ClientOffline, CredentialHash: domain.HashCredential("secret")}
+	proxy := domain.Proxy{ID: "proxy-1", UserID: user.ID, ClientID: client.ID, Name: "secure", Type: domain.ProxyHTTPS, Status: domain.ProxyEnabled, EntryHost: "app.example.com", TargetHost: "127.0.0.1", TargetPort: 8080}
+	if err := db.Users().Create(ctx, user); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	if err := db.Clients().Create(ctx, client); err != nil {
+		t.Fatalf("create client: %v", err)
+	}
+	if err := db.Proxies().Create(ctx, proxy); err != nil {
+		t.Fatalf("create proxy: %v", err)
+	}
 }
 
 func seedDatabase(t *testing.T, path string, proxies []domain.Proxy) {

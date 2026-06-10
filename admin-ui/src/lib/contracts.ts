@@ -94,10 +94,40 @@ export type ManagedCertificate = {
   certificateId?: string | null;
   host?: string | null;
   status?: string | null;
+  servingStatus?: string | null;
+  operationStatus?: string | null;
+  providerType?: string | null;
+  providerName?: string | null;
+  credentialId?: string | null;
+  providerStatus?: string | null;
+  cloudflareCertificateId?: string | null;
+  hostnames?: string[];
+  requestType?: string | null;
+  requestedValidity?: number | null;
+  lastSyncedAt?: string | null;
+  deploymentHints?: string[];
   notAfter?: string | null;
   lastIssuedAt?: string | null;
   lastRenewedAt?: string | null;
+  lastCheckedAt?: string | null;
+  lastAttemptedAt?: string | null;
+  nextAttemptAt?: string | null;
+  failureCount?: number | null;
+  fingerprint?: string | null;
   lastError?: string | null;
+};
+
+export type ProviderCredential = {
+  id: string;
+  name: string;
+  providerType: string;
+  scope?: string | null;
+  tokenFingerprint?: string | null;
+  status: string;
+  lastVerifiedAt?: string | null;
+  lastError?: string | null;
+  createdAt: string;
+  updatedAt: string;
 };
 
 export type ProxyConfig = {

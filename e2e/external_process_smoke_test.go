@@ -12,6 +12,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
 	"math/big"
@@ -190,14 +191,41 @@ func TestExternalProcessesProxyHTTPS(t *testing.T) {
 
 	smokeCtx, cancelSmoke := context.WithTimeout(context.Background(), 20*time.Second)
 	t.Cleanup(cancelSmoke)
-	originAddress, originPool := startTLSEchoOrigin(t, smokeCtx, "secure.example.com")
-	originHost, originPort := splitAddress(t, originAddress)
+	origin := httptest.NewServer(nethttp.HandlerFunc(func(w nethttp.ResponseWriter, r *nethttp.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read origin body: %v", err)
+			return
+		}
+		if r.URL.Path != "/hello" || string(body) != "request-body" || r.Header.Get("X-Smoke") != "yes" {
+			t.Errorf("unexpected origin request path=%s body=%q header=%s", r.URL.Path, string(body), r.Header.Get("X-Smoke"))
+			return
+		}
+		w.Header().Set("X-Origin", "ok")
+		w.WriteHeader(nethttp.StatusCreated)
+		_, _ = w.Write([]byte("origin-response"))
+	}))
+	t.Cleanup(origin.Close)
+	originURL, err := url.Parse(origin.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	originHost, originPort := splitAddress(t, originURL.Host)
 	controlPort := reservePort(t)
 	httpEntryPort := reservePort(t)
 	httpsEntryPort := reservePort(t)
 	certFile, keyFile, caFile := writeTLSFiles(t, workDir)
+	entryCertPEM, entryKeyPEM, entryCAPEM := generateCertificateFor(t, "secure.example.com")
+	entryCertDir := filepath.Join(workDir, "certs")
+	if err := os.MkdirAll(entryCertDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	entryCertFile := filepath.Join(entryCertDir, "secure.crt")
+	entryKeyFile := filepath.Join(entryCertDir, "secure.key")
+	writeFile(t, entryCertFile, entryCertPEM)
+	writeFile(t, entryKeyFile, entryKeyPEM)
 	dbPath := filepath.Join(workDir, "go-ginx.db")
-	seedSQLite(t, dbPath, domain.Proxy{ID: "https-1", UserID: "user-1", ClientID: "client-1", Name: "secure", Type: domain.ProxyHTTPS, Status: domain.ProxyEnabled, EntryHost: "secure.example.com", TargetHost: originHost, TargetPort: originPort})
+	seedSQLite(t, dbPath, domain.Proxy{ID: "https-1", UserID: "user-1", ClientID: "client-1", Name: "secure", Type: domain.ProxyHTTPS, Status: domain.ProxyEnabled, EntryHost: "secure.example.com", TargetHost: originHost, TargetPort: originPort, CertFile: entryCertFile, KeyFile: entryKeyFile})
 	serverConfig := writeJSON(t, filepath.Join(workDir, "server.json"), map[string]any{
 		"admin_listen":             "127.0.0.1:0",
 		"client_enrollment_listen": "127.0.0.1:0",
@@ -230,9 +258,18 @@ func TestExternalProcessesProxyHTTPS(t *testing.T) {
 	waitForTCPAccept(t, smokeCtx, net.JoinHostPort("127.0.0.1", strconv.Itoa(httpsEntryPort)))
 	client := startProcess(t, root, clientBin, "-config", clientConfig)
 
-	entryAddress := net.JoinHostPort("127.0.0.1", strconv.Itoa(httpsEntryPort))
-	if err := waitForTLSEcho(smokeCtx, entryAddress, "secure.example.com", originPool, "ping\n"); err != nil {
+	entryURL := "https://" + net.JoinHostPort("127.0.0.1", strconv.Itoa(httpsEntryPort)) + "/hello"
+	response, err := waitForHTTPSHTTP(smokeCtx, entryURL, "secure.example.com", entryCAPEM, "request-body")
+	if err != nil {
 		t.Fatalf("external process HTTPS smoke failed: %v\nserver output:\n%s\nclient output:\n%s", err, server.Output(), client.Output())
+	}
+	defer response.Body.Close()
+	responseBody, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.StatusCode != nethttp.StatusCreated || response.Header.Get("X-Origin") != "ok" || string(responseBody) != "origin-response" {
+		t.Fatalf("unexpected HTTPS response status=%d header=%s body=%q", response.StatusCode, response.Header.Get("X-Origin"), string(responseBody))
 	}
 }
 
@@ -697,6 +734,40 @@ func waitForEcho(ctx context.Context, address string, payload string) error {
 func waitForHTTP(ctx context.Context, url string, host string, body string) (*nethttp.Response, error) {
 	var lastErr error
 	client := &nethttp.Client{Timeout: 500 * time.Millisecond}
+	for ctx.Err() == nil {
+		request, err := nethttp.NewRequestWithContext(ctx, nethttp.MethodPost, url, strings.NewReader(body))
+		if err != nil {
+			return nil, err
+		}
+		request.Host = host
+		request.Header.Set("X-Smoke", "yes")
+		response, err := client.Do(request)
+		if err == nil && response.StatusCode == nethttp.StatusCreated {
+			return response, nil
+		}
+		if response != nil {
+			_ = response.Body.Close()
+			lastErr = fmt.Errorf("unexpected status %d", response.StatusCode)
+		} else {
+			lastErr = err
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if lastErr != nil {
+		return nil, lastErr
+	}
+	return nil, ctx.Err()
+}
+
+func waitForHTTPSHTTP(ctx context.Context, url string, host string, caPEM []byte, body string) (*nethttp.Response, error) {
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(caPEM) {
+		return nil, errors.New("append HTTPS entry CA")
+	}
+	transport := &nethttp.Transport{TLSClientConfig: &tls.Config{RootCAs: pool, ServerName: host, MinVersion: tls.VersionTLS12}}
+	defer transport.CloseIdleConnections()
+	client := &nethttp.Client{Timeout: 500 * time.Millisecond, Transport: transport}
+	var lastErr error
 	for ctx.Err() == nil {
 		request, err := nethttp.NewRequestWithContext(ctx, nethttp.MethodPost, url, strings.NewReader(body))
 		if err != nil {

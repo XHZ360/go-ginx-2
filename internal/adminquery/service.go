@@ -7,15 +7,19 @@ import (
 	"time"
 
 	"github.com/simp-frp/go-ginx-2/internal/domain"
+	httpsproxy "github.com/simp-frp/go-ginx-2/internal/proxy/https"
 	"github.com/simp-frp/go-ginx-2/internal/session"
 	"github.com/simp-frp/go-ginx-2/internal/stats"
 	"github.com/simp-frp/go-ginx-2/internal/store"
 )
 
 type Service struct {
-	Store    store.Store
-	Sessions *session.Manager
-	Stats    *stats.Memory
+	Store                  store.Store
+	Sessions               *session.Manager
+	Stats                  *stats.Memory
+	CertificateDir         string
+	RenewalWindow          time.Duration
+	OriginCARotationWindow time.Duration
 }
 
 type DashboardSummary struct {
@@ -189,16 +193,52 @@ type ClientPage struct {
 }
 
 type ManagedCertificateSummary struct {
-	ProxyID       string
-	CertificateID string
-	Host          string
-	Status        domain.CertificateStatus
-	NotAfter      *time.Time
-	LastIssuedAt  *time.Time
-	LastRenewedAt *time.Time
-	LastError     string
-	CreatedAt     time.Time
-	UpdatedAt     time.Time
+	ProxyID                 string
+	CertificateID           string
+	Host                    string
+	Status                  domain.CertificateStatus
+	ServingStatus           domain.CertificateServingStatus
+	OperationStatus         domain.CertificateOperationStatus
+	ProviderType            domain.CertificateProviderType
+	ProviderName            string
+	CredentialID            string
+	ProviderStatus          domain.CertificateProviderStatus
+	CloudflareCertificateID string
+	Hostnames               []string
+	RequestType             string
+	RequestedValidity       int
+	LastSyncedAt            *time.Time
+	DeploymentHints         []string
+	NotAfter                *time.Time
+	LastIssuedAt            *time.Time
+	LastRenewedAt           *time.Time
+	LastCheckedAt           *time.Time
+	LastAttemptedAt         *time.Time
+	NextAttemptAt           *time.Time
+	FailureCount            int
+	Fingerprint             string
+	LastError               string
+	CreatedAt               time.Time
+	UpdatedAt               time.Time
+}
+
+type ProviderCredentialSummary struct {
+	ID               string
+	Name             string
+	ProviderType     domain.CertificateProviderType
+	Scope            string
+	TokenFingerprint string
+	Status           domain.ProviderCredentialStatus
+	LastVerifiedAt   *time.Time
+	LastError        string
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
+}
+
+type ProviderCredentialPage struct {
+	Items      []ProviderCredentialSummary
+	TotalCount int
+	PageInfo   PageInfo
 }
 
 type ManagedCertificatePage struct {
@@ -421,9 +461,14 @@ func (service Service) ClientDetail(ctx context.Context, clientID string) (Clien
 	}
 	statsByProxy := service.statsByProxy()
 	latestByClient := latestByClientID(service.latestSessions())
+	certificatesByProxy, err := service.certificatesByProxy(ctx)
+	if err != nil {
+		return ClientDetail{}, err
+	}
 	managedProxies := make([]ProxySummary, 0, len(proxies))
 	for _, proxy := range proxies {
-		summary := proxySummaryFromDomain(proxy, latestByClient[proxy.ClientID], statsByProxy[proxy.ID])
+		certificate := service.certificateSummaryForProxy(ctx, proxy, certificatesByProxy[proxy.ID])
+		summary := proxySummaryFromDomain(proxy, latestByClient[proxy.ClientID], statsByProxy[proxy.ID], certificate)
 		managedProxies = append(managedProxies, summary)
 	}
 	sort.Slice(managedProxies, func(i, j int) bool { return managedProxies[i].Name < managedProxies[j].Name })
@@ -444,7 +489,8 @@ func (service Service) ListProxies(ctx context.Context, input ProxyListInput) (P
 	}
 	items := make([]ProxyListItem, 0, len(proxies))
 	for _, proxy := range proxies {
-		item := proxyListItemFromDomain(proxy, latestByClient[proxy.ClientID], statsByProxy[proxy.ID], certificatesByProxy[proxy.ID])
+		certificate := service.certificateSummaryForProxy(ctx, proxy, certificatesByProxy[proxy.ID])
+		item := proxyListItemFromDomain(proxy, latestByClient[proxy.ClientID], statsByProxy[proxy.ID], certificate)
 		if !matchesProxyFilter(item, input.Filter) {
 			continue
 		}
@@ -466,7 +512,8 @@ func (service Service) ProxyDetail(ctx context.Context, proxyID string) (ProxyDe
 	if err != nil {
 		return ProxyDetail{}, err
 	}
-	item := proxyListItemFromDomain(proxy, latestByClient[proxy.ClientID], statsByProxy[proxy.ID], certificatesByProxy[proxy.ID])
+	certificate := service.certificateSummaryForProxy(ctx, proxy, certificatesByProxy[proxy.ID])
+	item := proxyListItemFromDomain(proxy, latestByClient[proxy.ClientID], statsByProxy[proxy.ID], certificate)
 	return ProxyDetail{ID: item.ID, UserID: item.UserID, ClientID: item.ClientID, Name: item.Name, Type: item.Type, Status: item.Status, Description: item.Description, RuntimeStatus: item.RuntimeStatus, ActiveTCPConnections: item.ActiveTCPConnections, UploadBytes: item.UploadBytes, DownloadBytes: item.DownloadBytes, TCPErrorCount: item.TCPErrorCount, UDPErrorCount: item.UDPErrorCount, HTTPErrorCount: item.HTTPErrorCount, Config: item.Config, Certificate: item.Certificate, CreatedAt: proxy.CreatedAt, UpdatedAt: proxy.UpdatedAt}, nil
 }
 
@@ -486,7 +533,9 @@ func (service Service) ListManagedCertificates(ctx context.Context, input Certif
 		}
 		item, ok := certificatesByProxy[proxy.ID]
 		if !ok {
-			item = &ManagedCertificateSummary{ProxyID: proxy.ID, Host: proxy.EntryHost}
+			item = service.certificateSummaryForProxy(ctx, proxy, nil)
+		} else {
+			item = service.certificateSummaryForProxy(ctx, proxy, item)
 		}
 		if !matchesCertificateFilter(*item, input.Filter) {
 			continue
@@ -496,6 +545,31 @@ func (service Service) ListManagedCertificates(ctx context.Context, input Certif
 	sortCertificates(items, normalizeSort(input.Sort, "host", "asc"))
 	paged, info := pageSlice(items, input.Page)
 	return ManagedCertificatePage{Items: paged, TotalCount: len(items), PageInfo: info, Filter: input.Filter, Sort: normalizeSort(input.Sort, "host", "asc")}, nil
+}
+
+func (service Service) ListProviderCredentials(ctx context.Context, input PageInput) (ProviderCredentialPage, error) {
+	if service.Store == nil {
+		return ProviderCredentialPage{}, nil
+	}
+	credentials, err := service.Store.ProviderCredentials().List(ctx)
+	if err != nil {
+		return ProviderCredentialPage{}, err
+	}
+	items := make([]ProviderCredentialSummary, 0, len(credentials))
+	for _, credential := range credentials {
+		items = append(items, providerCredentialSummary(credential))
+	}
+	sort.Slice(items, func(i, j int) bool { return items[i].Name < items[j].Name })
+	paged, info := pageSlice(items, input)
+	return ProviderCredentialPage{Items: paged, TotalCount: len(items), PageInfo: info}, nil
+}
+
+func (service Service) ProviderCredential(ctx context.Context, id string) (ProviderCredentialSummary, error) {
+	credential, err := service.Store.ProviderCredentials().ByID(ctx, id)
+	if err != nil {
+		return ProviderCredentialSummary{}, err
+	}
+	return providerCredentialSummary(credential), nil
 }
 
 func (service Service) ListRecentAuditEvents(ctx context.Context, input AuditListInput) (AuditPage, error) {
@@ -548,7 +622,7 @@ func (service Service) certificatesByProxy(ctx context.Context) (map[string]*Man
 		return nil, err
 	}
 	for _, certificate := range certificates {
-		summary := certificateSummary(certificate)
+		summary := service.managedCertificateSummary(certificate)
 		byProxy[certificate.ProxyID] = &summary
 	}
 	return byProxy, nil
@@ -588,7 +662,9 @@ func clientListItemFromDomain(client domain.Client, runtimeSession session.Sessi
 func proxyListItemFromDomain(proxy domain.Proxy, runtimeSession session.Session, proxyStats stats.ProxyStats, certificate *ManagedCertificateSummary) ProxyListItem {
 	runtimeStatus := proxy.Status
 	if proxy.Status == domain.ProxyEnabled {
-		if runtimeSession.ID == "" {
+		if proxy.Type == domain.ProxyHTTPS && certificateInvalid(certificate) {
+			runtimeStatus = domain.ProxyNeedsConf
+		} else if runtimeSession.ID == "" {
 			runtimeStatus = domain.ProxyOffline
 		} else {
 			runtimeStatus = domain.ProxyOnline
@@ -597,10 +673,12 @@ func proxyListItemFromDomain(proxy domain.Proxy, runtimeSession session.Session,
 	return ProxyListItem{ID: proxy.ID, UserID: proxy.UserID, ClientID: proxy.ClientID, Name: proxy.Name, Type: proxy.Type, Status: proxy.Status, Description: proxy.Description, RuntimeStatus: runtimeStatus, ActiveTCPConnections: proxyStats.TCPCurrentConnections, UploadBytes: proxyStats.TCPUploadBytes + proxyStats.UDPUploadBytes + proxyStats.HTTPUploadBytes, DownloadBytes: proxyStats.TCPDownloadBytes + proxyStats.UDPDownloadBytes + proxyStats.HTTPDownloadBytes, TCPErrorCount: proxyStats.TCPErrors, UDPErrorCount: proxyStats.UDPErrors, HTTPErrorCount: proxyStats.HTTPErrors, Config: ProxyTypeConfig{EntryBindHost: proxy.EntryBindHost, EntryHost: proxy.EntryHost, EntryPort: proxy.EntryPort, TargetHost: proxy.TargetHost, TargetPort: proxy.TargetPort, CertFile: proxy.CertFile, KeyFile: proxy.KeyFile}, Certificate: certificate, CreatedAt: proxy.CreatedAt, UpdatedAt: proxy.UpdatedAt}
 }
 
-func proxySummaryFromDomain(proxy domain.Proxy, runtimeSession session.Session, proxyStats stats.ProxyStats) ProxySummary {
+func proxySummaryFromDomain(proxy domain.Proxy, runtimeSession session.Session, proxyStats stats.ProxyStats, certificate *ManagedCertificateSummary) ProxySummary {
 	runtimeStatus := proxy.Status
 	if proxy.Status == domain.ProxyEnabled {
-		if runtimeSession.ID == "" {
+		if proxy.Type == domain.ProxyHTTPS && certificateInvalid(certificate) {
+			runtimeStatus = domain.ProxyNeedsConf
+		} else if runtimeSession.ID == "" {
 			runtimeStatus = domain.ProxyOffline
 		} else {
 			runtimeStatus = domain.ProxyOnline
@@ -610,7 +688,115 @@ func proxySummaryFromDomain(proxy domain.Proxy, runtimeSession session.Session, 
 }
 
 func certificateSummary(certificate domain.ManagedCertificate) ManagedCertificateSummary {
-	return ManagedCertificateSummary{ProxyID: certificate.ProxyID, CertificateID: certificate.ID, Host: certificate.Host, Status: certificate.Status, NotAfter: certificate.NotAfter, LastIssuedAt: certificate.LastIssuedAt, LastRenewedAt: certificate.LastRenewedAt, LastError: certificate.LastError, CreatedAt: certificate.CreatedAt, UpdatedAt: certificate.UpdatedAt}
+	return ManagedCertificateSummary{ProxyID: certificate.ProxyID, CertificateID: certificate.ID, Host: certificate.Host, Status: certificate.Status, ServingStatus: certificate.ServingStatus, OperationStatus: certificate.OperationStatus, ProviderType: certificate.ProviderType, ProviderName: certificate.ProviderName, CredentialID: certificate.CredentialID, ProviderStatus: certificate.ProviderStatus, CloudflareCertificateID: certificate.CloudflareCertificateID, Hostnames: append([]string(nil), certificate.Hostnames...), RequestType: certificate.RequestType, RequestedValidity: certificate.RequestedValidity, LastSyncedAt: certificate.LastSyncedAt, DeploymentHints: deploymentHints(certificate.ProviderType), NotAfter: certificate.NotAfter, LastIssuedAt: certificate.LastIssuedAt, LastRenewedAt: certificate.LastRenewedAt, LastCheckedAt: certificate.LastCheckedAt, LastAttemptedAt: certificate.LastAttemptedAt, NextAttemptAt: certificate.NextAttemptAt, FailureCount: certificate.FailureCount, Fingerprint: certificate.Fingerprint, LastError: certificate.LastError, CreatedAt: certificate.CreatedAt, UpdatedAt: certificate.UpdatedAt}
+}
+
+func certificateInvalid(certificate *ManagedCertificateSummary) bool {
+	return certificate == nil || !certificate.ServingStatus.ServesTLS() || certificate.ProviderStatus.BlocksServing()
+}
+
+func (service Service) certificateSummaryForProxy(ctx context.Context, proxy domain.Proxy, managed *ManagedCertificateSummary) *ManagedCertificateSummary {
+	if proxy.Type != domain.ProxyHTTPS {
+		return managed
+	}
+	if proxy.CertFile != "" || proxy.KeyFile != "" {
+		return service.staticCertificateSummary(proxy)
+	}
+	if managed != nil {
+		summary := *managed
+		if summary.ServingStatus == "" {
+			summary.ServingStatus = domain.CertificateServingMissing
+		}
+		if summary.OperationStatus == "" {
+			summary.OperationStatus = domain.CertificateOperationIdle
+		}
+		return &summary
+	}
+	now := time.Now().UTC()
+	return &ManagedCertificateSummary{ProxyID: proxy.ID, Host: proxy.EntryHost, Status: domain.CertificatePending, ServingStatus: domain.CertificateServingMissing, OperationStatus: domain.CertificateOperationIdle, LastCheckedAt: &now, LastError: "certificate active material is missing", CreatedAt: proxy.CreatedAt, UpdatedAt: proxy.UpdatedAt}
+}
+
+func (service Service) staticCertificateSummary(proxy domain.Proxy) *ManagedCertificateSummary {
+	now := time.Now().UTC()
+	summary := &ManagedCertificateSummary{ProxyID: proxy.ID, Host: proxy.EntryHost, OperationStatus: domain.CertificateOperationIdle, CreatedAt: proxy.CreatedAt, UpdatedAt: proxy.UpdatedAt, LastCheckedAt: &now}
+	if proxy.CertFile == "" || proxy.KeyFile == "" {
+		summary.Status = domain.CertificatePending
+		summary.ServingStatus = domain.CertificateServingMissing
+		summary.LastError = "static certificate and key files must both be configured"
+		return summary
+	}
+	health := httpsproxy.CheckCertificateFiles(proxy.EntryHost, proxy.CertFile, proxy.KeyFile, service.CertificateDir, service.RenewalWindow, now)
+	summary.ServingStatus = health.ServingStatus
+	summary.Status = certificateStatusFromServing(health.ServingStatus)
+	summary.NotAfter = health.NotAfter
+	summary.Fingerprint = health.Fingerprint
+	summary.LastError = health.ErrorSummary
+	return summary
+}
+
+func (service Service) managedCertificateSummary(certificate domain.ManagedCertificate) ManagedCertificateSummary {
+	summary := certificateSummary(certificate)
+	if summary.ServingStatus == "" {
+		summary.ServingStatus = domain.CertificateServingMissing
+	}
+	if summary.OperationStatus == "" {
+		summary.OperationStatus = domain.CertificateOperationIdle
+	}
+	if certificate.CertFile == "" || certificate.KeyFile == "" {
+		return summary
+	}
+	now := time.Now().UTC()
+	window := service.RenewalWindow
+	if certificate.ProviderType == domain.CertificateProviderCloudflareOriginCA && service.OriginCARotationWindow > 0 {
+		window = service.OriginCARotationWindow
+	}
+	health := httpsproxy.CheckCertificateFiles(certificate.Host, certificate.CertFile, certificate.KeyFile, service.CertificateDir, window, now)
+	summary.ServingStatus = health.ServingStatus
+	if !certificateLifecycleFailed(certificate.Status) {
+		summary.Status = certificateStatusFromServing(health.ServingStatus)
+	}
+	summary.NotAfter = health.NotAfter
+	summary.Fingerprint = health.Fingerprint
+	summary.LastCheckedAt = &now
+	if !health.ServingStatus.ServesTLS() && health.ErrorSummary != "" && (!certificateLifecycleFailed(certificate.Status) || summary.LastError == "") {
+		summary.LastError = health.ErrorSummary
+	}
+	if certificate.ProviderStatus.BlocksServing() {
+		summary.LastError = "certificate provider marked active material unavailable"
+	}
+	return summary
+}
+
+func certificateLifecycleFailed(status domain.CertificateStatus) bool {
+	return status == domain.CertificateIssueFailed || status == domain.CertificateRenewalFailed
+}
+
+func providerCredentialSummary(credential domain.ProviderCredential) ProviderCredentialSummary {
+	return ProviderCredentialSummary{ID: credential.ID, Name: credential.Name, ProviderType: credential.ProviderType, Scope: credential.Scope, TokenFingerprint: credential.TokenFingerprint, Status: credential.Status, LastVerifiedAt: credential.LastVerifiedAt, LastError: credential.LastError, CreatedAt: credential.CreatedAt, UpdatedAt: credential.UpdatedAt}
+}
+
+func deploymentHints(providerType domain.CertificateProviderType) []string {
+	if providerType != domain.CertificateProviderCloudflareOriginCA {
+		return nil
+	}
+	return []string{
+		"Use this certificate only for Cloudflare to origin TLS.",
+		"DNS should be proxied and SSL mode should be Full (strict) or equivalent.",
+		"Direct browser connections to the origin will not trust Cloudflare Origin CA certificates.",
+	}
+}
+
+func certificateStatusFromServing(status domain.CertificateServingStatus) domain.CertificateStatus {
+	switch status {
+	case domain.CertificateServingUsable:
+		return domain.CertificateValid
+	case domain.CertificateServingExpiringSoon:
+		return domain.CertificateExpiringSoon
+	case domain.CertificateServingExpired:
+		return domain.CertificateExpired
+	default:
+		return domain.CertificatePending
+	}
 }
 
 func normalizePage(input PageInput) PageInput {
@@ -708,7 +894,7 @@ func matchesProxyFilter(item ProxyListItem, filter ProxyFilter) bool {
 }
 
 func matchesCertificateFilter(item ManagedCertificateSummary, filter CertificateFilter) bool {
-	if filter.Status != "" && string(item.Status) != filter.Status {
+	if filter.Status != "" && string(item.Status) != filter.Status && string(item.ServingStatus) != filter.Status && string(item.OperationStatus) != filter.Status && string(item.ProviderStatus) != filter.Status {
 		return false
 	}
 	query := strings.ToLower(strings.TrimSpace(filter.Query))
@@ -804,7 +990,7 @@ func sortCertificates(items []ManagedCertificateSummary, sortInput SortInput) {
 		less := false
 		switch sortInput.Field {
 		case "status":
-			less = left.Status < right.Status
+			less = left.ServingStatus < right.ServingStatus
 		case "notAfter":
 			less = timePtrBefore(left.NotAfter, right.NotAfter)
 		default:

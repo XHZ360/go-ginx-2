@@ -50,7 +50,7 @@ func main() {
 
 func run(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("usage: goginx-admin <tui|init-admin|create-user|create-client|create-client-join|client-join-command|create-tcp-proxy|create-udp-proxy|create-http-proxy|create-https-proxy|issue-managed-certificate|renew-managed-certificate|managed-certificate-status|build-deploy-bundle> [flags]")
+		return fmt.Errorf("usage: goginx-admin <tui|init-admin|create-user|create-client|create-client-join|client-join-command|create-tcp-proxy|create-udp-proxy|create-http-proxy|create-https-proxy|issue-managed-certificate|renew-managed-certificate|sync-origin-ca-certificate|revoke-origin-ca-certificate|managed-certificate-status|build-deploy-bundle> [flags]")
 	}
 	command := args[0]
 	flags := flag.NewFlagSet(command, flag.ContinueOnError)
@@ -152,6 +152,10 @@ func run(args []string) error {
 		return manageCertificate(flags, args[1:], "issue")
 	case "renew-managed-certificate":
 		return manageCertificate(flags, args[1:], "renew")
+	case "sync-origin-ca-certificate":
+		return manageCertificate(flags, args[1:], "sync")
+	case "revoke-origin-ca-certificate":
+		return manageCertificate(flags, args[1:], "revoke")
 	case "managed-certificate-status":
 		return manageCertificate(flags, args[1:], "status")
 	case "build-deploy-bundle":
@@ -450,20 +454,33 @@ func manageCertificate(flags *flag.FlagSet, args []string, action string) error 
 	acmeTermsAccepted := flags.Bool("acme-terms-accepted", false, "accept ACME terms of service")
 	acmeTokenEnv := flags.String("acme-cloudflare-token-env", "CF_DNS_API_TOKEN", "Cloudflare API token environment variable")
 	acmeRenewalWindow := flags.Duration("acme-renewal-window", 30*24*time.Hour, "managed certificate renewal window")
+	providerType := flags.String("provider", "", "certificate provider: acme_dns01 or cloudflare_origin_ca")
+	credentialID := flags.String("credential", "", "provider credential ID")
+	requestType := flags.String("origin-ca-request-type", "origin-ecc", "Cloudflare Origin CA request type")
+	requestedValidity := flags.Int("origin-ca-requested-validity", 5475, "Cloudflare Origin CA requested validity days")
+	originCASecretStore := flags.String("origin-ca-secret-store", "data/secrets/provider-credentials", "provider credential secret store directory")
+	originCARotationWindow := flags.Duration("origin-ca-rotation-window", 30*24*time.Hour, "Cloudflare Origin CA rotation window")
+	revokeHost := flags.String("host", "", "strong confirmation host for Origin CA revoke")
+	revokeCloudflareID := flags.String("cloudflare-certificate-id", "", "strong confirmation Cloudflare certificate ID for Origin CA revoke")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
 	dbPath := deploymentRelativePath(flags.Lookup("db").Value.String())
 	actorID := flags.Lookup("actor").Value.String()
 	*certificateDir = deploymentRelativePath(*certificateDir)
-	service, closeStore, err := openService(dbPath, certificateServiceConfig{CertificateDir: *certificateDir, DirectoryURL: *acmeDirectoryURL, AccountEmail: *acmeAccountEmail, TermsAccepted: *acmeTermsAccepted, TokenEnv: *acmeTokenEnv, RenewalWindow: *acmeRenewalWindow})
+	*originCASecretStore = deploymentRelativePath(*originCASecretStore)
+	acmeEnabled := action == "issue" || action == "renew"
+	if action == "issue" && domain.CertificateProviderType(*providerType) == domain.CertificateProviderCloudflareOriginCA {
+		acmeEnabled = false
+	}
+	service, closeStore, err := openService(dbPath, certificateServiceConfig{CertificateDir: *certificateDir, DirectoryURL: *acmeDirectoryURL, AccountEmail: *acmeAccountEmail, TermsAccepted: *acmeTermsAccepted, TokenEnv: *acmeTokenEnv, RenewalWindow: *acmeRenewalWindow, ACMEEnabled: acmeEnabled, OriginCAEnabled: true, OriginCASecretStore: *originCASecretStore, OriginCARequestType: *requestType, OriginCARequestedValidity: *requestedValidity, OriginCARotationWindow: *originCARotationWindow})
 	if err != nil {
 		return err
 	}
 	defer closeStore()
 	switch action {
 	case "issue":
-		certificate, err := service.IssueManagedCertificate(context.Background(), admin.CertificateInput{ProxyID: *proxyID, ActorID: actorID})
+		certificate, err := service.IssueManagedCertificate(context.Background(), admin.CertificateInput{ProxyID: *proxyID, ProviderType: domain.CertificateProviderType(*providerType), CredentialID: *credentialID, RequestType: *requestType, RequestedValidity: *requestedValidity, ActorID: actorID})
 		if err != nil {
 			return err
 		}
@@ -474,6 +491,18 @@ func manageCertificate(flags *flag.FlagSet, args []string, action string) error 
 			return err
 		}
 		fmt.Println(certificate.ID)
+	case "sync":
+		certificate, err := service.SyncOriginCACertificate(context.Background(), admin.CertificateInput{ProxyID: *proxyID, ActorID: actorID})
+		if err != nil {
+			return err
+		}
+		fmt.Println(certificate.ProviderStatus)
+	case "revoke":
+		certificate, err := service.RevokeOriginCACertificate(context.Background(), admin.RevokeOriginCACertificateInput{ProxyID: *proxyID, Host: *revokeHost, CloudflareCertificateID: *revokeCloudflareID, ActorID: actorID})
+		if err != nil {
+			return err
+		}
+		fmt.Println(certificate.ProviderStatus)
 	case "status":
 		status, err := service.ManagedCertificateStatus(context.Background(), *proxyID)
 		if err != nil {
@@ -489,12 +518,18 @@ func manageCertificate(flags *flag.FlagSet, args []string, action string) error 
 }
 
 type certificateServiceConfig struct {
-	CertificateDir string
-	DirectoryURL   string
-	AccountEmail   string
-	TermsAccepted  bool
-	TokenEnv       string
-	RenewalWindow  time.Duration
+	CertificateDir            string
+	DirectoryURL              string
+	AccountEmail              string
+	TermsAccepted             bool
+	TokenEnv                  string
+	RenewalWindow             time.Duration
+	ACMEEnabled               bool
+	OriginCAEnabled           bool
+	OriginCASecretStore       string
+	OriginCARequestType       string
+	OriginCARequestedValidity int
+	OriginCARotationWindow    time.Duration
 }
 
 func openService(dbPath string, certificateCfg ...certificateServiceConfig) (admin.Service, func(), error) {
@@ -507,12 +542,18 @@ func openService(dbPath string, certificateCfg ...certificateServiceConfig) (adm
 	}
 	service := admin.Service{Store: db}
 	if len(certificateCfg) > 0 {
-		provider, err := newDNSProvider(certificateCfg[0].TokenEnv)
-		if err != nil {
-			_ = db.Close()
-			return admin.Service{}, nil, err
+		var provider certmanager.DNSChallengeProvider
+		var issuer certmanager.Issuer
+		if certificateCfg[0].ACMEEnabled {
+			loadedProvider, err := newDNSProvider(certificateCfg[0].TokenEnv)
+			if err != nil {
+				_ = db.Close()
+				return admin.Service{}, nil, err
+			}
+			provider = loadedProvider
+			issuer = newACMEIssuer()
 		}
-		service.Certificates = certmanager.Service{Store: db, Issuer: newACMEIssuer(), DNSProvider: provider, Storage: httpsproxy.ManagedCertificateStorage{CertificateDir: certificateCfg[0].CertificateDir}, Settings: domain.ACMEProviderSettings{DirectoryURL: certificateCfg[0].DirectoryURL, AccountEmail: certificateCfg[0].AccountEmail, TermsAccepted: certificateCfg[0].TermsAccepted, RenewalWindow: certificateCfg[0].RenewalWindow, DNSProvider: "cloudflare", DNSProviderTokenEnv: certificateCfg[0].TokenEnv}}
+		service.Certificates = certmanager.Service{Store: db, Issuer: issuer, DNSProvider: provider, OriginCAClient: certmanager.CloudflareOriginCAClient{}, ProviderSecretStore: certmanager.FileSecretStore{Dir: certificateCfg[0].OriginCASecretStore}, Storage: httpsproxy.ManagedCertificateStorage{CertificateDir: certificateCfg[0].CertificateDir}, Settings: domain.ACMEProviderSettings{DirectoryURL: certificateCfg[0].DirectoryURL, AccountEmail: certificateCfg[0].AccountEmail, TermsAccepted: certificateCfg[0].TermsAccepted, RenewalWindow: certificateCfg[0].RenewalWindow, DNSProvider: "cloudflare", DNSProviderTokenEnv: certificateCfg[0].TokenEnv}, OriginCASettings: domain.OriginCAProviderSettings{Enabled: certificateCfg[0].OriginCAEnabled, SecretStorePath: certificateCfg[0].OriginCASecretStore, DefaultRequestType: certificateCfg[0].OriginCARequestType, RequestedValidity: certificateCfg[0].OriginCARequestedValidity, RotationWindow: certificateCfg[0].OriginCARotationWindow}}
 	}
 	return service, func() { _ = db.Close() }, nil
 }

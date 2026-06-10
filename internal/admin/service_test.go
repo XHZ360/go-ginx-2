@@ -11,6 +11,7 @@ import (
 	"math/big"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -489,6 +490,187 @@ func TestServiceIssuesRenewsAndReportsManagedCertificate(t *testing.T) {
 	}
 }
 
+func TestServiceManagesProviderCredentialsSecretSafe(t *testing.T) {
+	ctx := context.Background()
+	db := openTestStore(t)
+	secretStore := &adminMemorySecretStore{values: make(map[string]string)}
+	originClient := &adminOriginCAClient{}
+	service := Service{Store: db, Certificates: certmanager.Service{ProviderSecretStore: secretStore, OriginCAClient: originClient, OriginCASettings: domain.OriginCAProviderSettings{Enabled: true}}}
+
+	if _, err := service.CreateProviderCredential(ctx, ProviderCredentialInput{ID: "service-key", Name: "legacy", Token: "v1.0-legacy-service-key", ActorID: "admin-1"}); err == nil {
+		t.Fatal("expected legacy service key to be rejected")
+	}
+	created, err := service.CreateProviderCredential(ctx, ProviderCredentialInput{ID: "cred-1", Name: "Production Origin CA", Scope: "Zone SSL:Edit", Token: "cf-token-1", ActorID: "admin-1"})
+	if err != nil {
+		t.Fatalf("create provider credential: %v", err)
+	}
+	if created.ProviderType != domain.CertificateProviderCloudflareOriginCA || created.Status != domain.ProviderCredentialPending || created.SecretRef == "" || created.TokenFingerprint != certmanager.TokenFingerprint("cf-token-1") {
+		t.Fatalf("unexpected created credential metadata: %+v", created)
+	}
+	if secretStore.values[created.SecretRef] != "cf-token-1" {
+		t.Fatalf("expected token material in secret store, got %+v", secretStore.values)
+	}
+	if credentialContainsToken(created, "cf-token-1") {
+		t.Fatalf("credential metadata leaked token: %+v", created)
+	}
+
+	verified, err := service.VerifyProviderCredential(ctx, created.ID, "admin-1")
+	if err != nil {
+		t.Fatalf("verify provider credential: %v", err)
+	}
+	if verified.Status != domain.ProviderCredentialVerified || verified.LastVerifiedAt == nil || len(originClient.verifiedTokens) != 1 || originClient.verifiedTokens[0] != "cf-token-1" {
+		t.Fatalf("unexpected verified credential=%+v verifiedTokens=%+v", verified, originClient.verifiedTokens)
+	}
+
+	updated, err := service.UpdateProviderCredential(ctx, UpdateProviderCredentialInput{ID: created.ID, Name: "Rotated Origin CA", Scope: "Zone SSL:Read,Edit", Token: "cf-token-2", ActorID: "admin-1"})
+	if err != nil {
+		t.Fatalf("update provider credential: %v", err)
+	}
+	if updated.Name != "Rotated Origin CA" || updated.Status != domain.ProviderCredentialPending || updated.LastVerifiedAt != nil || updated.TokenFingerprint != certmanager.TokenFingerprint("cf-token-2") {
+		t.Fatalf("unexpected updated credential: %+v", updated)
+	}
+	if secretStore.values[updated.SecretRef] != "cf-token-2" || credentialContainsToken(updated, "cf-token-2") {
+		t.Fatalf("updated credential was not secret-safe: credential=%+v secrets=%+v", updated, secretStore.values)
+	}
+
+	disabled, err := service.DisableProviderCredential(ctx, created.ID, "admin-1")
+	if err != nil {
+		t.Fatalf("disable provider credential: %v", err)
+	}
+	if disabled.Status != domain.ProviderCredentialDisabled {
+		t.Fatalf("unexpected disabled credential: %+v", disabled)
+	}
+	if err := service.DeleteProviderCredential(ctx, created.ID, "admin-1"); err != nil {
+		t.Fatalf("delete provider credential: %v", err)
+	}
+	if _, ok := secretStore.values[created.SecretRef]; ok {
+		t.Fatalf("expected deleted secret ref %q", created.SecretRef)
+	}
+	if _, err := db.ProviderCredentials().ByID(ctx, created.ID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("expected credential to be deleted, got %v", err)
+	}
+
+	events, err := db.AuditEvents().ListRecent(ctx, 20)
+	if err != nil {
+		t.Fatalf("list audit events: %v", err)
+	}
+	actions := make(map[string]bool, len(events))
+	for _, event := range events {
+		actions[event.Action] = true
+		if strings.Contains(event.ErrorSummary, "cf-token") || strings.Contains(event.ResourceID, "cf-token") {
+			t.Fatalf("audit event leaked token: %+v", event)
+		}
+	}
+	for _, action := range []string{"create_provider_credential", "verify_provider_credential", "update_provider_credential", "disable_provider_credential", "delete_provider_credential"} {
+		if !actions[action] {
+			t.Fatalf("expected audit action %q in %+v", action, events)
+		}
+	}
+}
+
+func TestServiceRejectsDeletingReferencedProviderCredential(t *testing.T) {
+	ctx := context.Background()
+	db := openTestStore(t)
+	secretStore := &adminMemorySecretStore{values: make(map[string]string)}
+	service := Service{Store: db, Certificates: certmanager.Service{ProviderSecretStore: secretStore}}
+	user, client := createAdminTestOwnership(ctx, t, service)
+	proxy, err := service.CreateProxy(ctx, CreateProxyInput{ID: "proxy-https", UserID: user.ID, ClientID: client.ID, Name: "secure", Type: domain.ProxyHTTPS, EntryHost: "app.example.com", TargetHost: "127.0.0.1", TargetPort: 8080, ActorID: "admin-1"})
+	if err != nil {
+		t.Fatalf("create https proxy: %v", err)
+	}
+	credential, err := service.CreateProviderCredential(ctx, ProviderCredentialInput{ID: "cred-1", Name: "Production Origin CA", Token: "cf-token", ActorID: "admin-1"})
+	if err != nil {
+		t.Fatalf("create provider credential: %v", err)
+	}
+	if err := db.Certificates().Create(ctx, domain.ManagedCertificate{ID: "cert-1", ProxyID: proxy.ID, Host: proxy.EntryHost, Status: domain.CertificateValid, ProviderType: domain.CertificateProviderCloudflareOriginCA, ProviderName: "cloudflare", CredentialID: credential.ID, ProviderStatus: domain.CertificateProviderStatusActive}); err != nil {
+		t.Fatalf("create managed certificate: %v", err)
+	}
+
+	err = service.DeleteProviderCredential(ctx, credential.ID, "admin-1")
+	var contractError *contracterr.Error
+	if !errors.As(err, &contractError) || contractError.Code != contracterr.CodeConflict {
+		t.Fatalf("expected referenced credential conflict, got %v", err)
+	}
+	if secretStore.values[credential.SecretRef] != "cf-token" {
+		t.Fatalf("referenced credential secret should be retained, got %+v", secretStore.values)
+	}
+	if _, err := db.ProviderCredentials().ByID(ctx, credential.ID); err != nil {
+		t.Fatalf("referenced credential metadata should be retained: %v", err)
+	}
+	if _, err := service.UpdateProviderCredential(ctx, UpdateProviderCredentialInput{Name: "missing id", ActorID: "admin-1"}); !errors.As(err, &contractError) || contractError.Code != contracterr.CodeValidationFailed {
+		t.Fatalf("expected missing id validation error, got %v", err)
+	}
+}
+
+func TestServiceAuditsOriginCALifecycleActions(t *testing.T) {
+	ctx := context.Background()
+	db := openTestStore(t)
+	secretStore := &adminMemorySecretStore{values: make(map[string]string)}
+	now := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
+	createCount := 0
+	originClient := &adminOriginCAClient{
+		create: func(ctx context.Context, token string, request certmanager.OriginCACreateRequest) (certmanager.OriginCACertificate, error) {
+			createCount++
+			id := "cf-cert-1"
+			if createCount == 2 {
+				id = "cf-cert-2"
+			}
+			return certmanager.OriginCACertificate{ID: id, CertificatePEM: adminOriginCATestCertificateFromCSR(t, request.CSR, request.Hostnames, now.Add(time.Duration(createCount)*365*24*time.Hour)), Hostnames: request.Hostnames, RequestType: request.RequestType, RequestedValidity: request.RequestedValidity, Status: "active"}, nil
+		},
+		get: func(ctx context.Context, token string, certificateID string) (certmanager.OriginCACertificate, error) {
+			return certmanager.OriginCACertificate{ID: certificateID, Status: "active"}, nil
+		},
+		revoke: func(ctx context.Context, token string, certificateID string) error {
+			return nil
+		},
+	}
+	service := Service{Store: db, Certificates: certmanager.Service{ProviderSecretStore: secretStore, OriginCAClient: originClient, Storage: certmanagerTestStorage(t), OriginCASettings: domain.OriginCAProviderSettings{Enabled: true, DefaultRequestType: certmanager.OriginCARequestTypeECC, RequestedValidity: 365}, NewID: func() (string, error) { return "cert-1", nil }, Now: func() time.Time { return now }}}
+	user, client := createAdminTestOwnership(ctx, t, service)
+	proxy, err := service.CreateProxy(ctx, CreateProxyInput{ID: "proxy-https", UserID: user.ID, ClientID: client.ID, Name: "secure", Type: domain.ProxyHTTPS, EntryHost: "app.example.com", TargetHost: "127.0.0.1", TargetPort: 8080, ActorID: "admin-1"})
+	if err != nil {
+		t.Fatalf("create https proxy: %v", err)
+	}
+	credential, err := service.CreateProviderCredential(ctx, ProviderCredentialInput{ID: "cred-1", Name: "Production Origin CA", Token: "cf-token", ActorID: "admin-1"})
+	if err != nil {
+		t.Fatalf("create provider credential: %v", err)
+	}
+
+	issued, err := service.IssueManagedCertificate(ctx, CertificateInput{ProxyID: proxy.ID, ProviderType: domain.CertificateProviderCloudflareOriginCA, CredentialID: credential.ID, ActorID: "admin-1"})
+	if err != nil {
+		t.Fatalf("issue origin ca certificate: %v", err)
+	}
+	if issued.CloudflareCertificateID != "cf-cert-1" {
+		t.Fatalf("unexpected issued origin ca certificate: %+v", issued)
+	}
+	rotated, err := service.RotateOriginCACertificate(ctx, CertificateInput{ProxyID: proxy.ID, ActorID: "admin-1"})
+	if err != nil {
+		t.Fatalf("rotate origin ca certificate: %v", err)
+	}
+	if rotated.CloudflareCertificateID != "cf-cert-2" || rotated.PreviousCloudflareCertificateID != "cf-cert-1" {
+		t.Fatalf("unexpected rotated origin ca certificate: %+v", rotated)
+	}
+	if _, err := service.SyncOriginCACertificate(ctx, CertificateInput{ProxyID: proxy.ID, ActorID: "admin-1"}); err != nil {
+		t.Fatalf("sync origin ca certificate: %v", err)
+	}
+	if _, err := service.RevokeOriginCACertificate(ctx, RevokeOriginCACertificateInput{ProxyID: proxy.ID, Host: "app.example.com", CloudflareCertificateID: "cf-cert-1", ActorID: "admin-1"}); err != nil {
+		t.Fatalf("revoke previous origin ca certificate: %v", err)
+	}
+
+	events, err := db.AuditEvents().ListRecent(ctx, 30)
+	if err != nil {
+		t.Fatalf("list audit events: %v", err)
+	}
+	actions := make(map[string]bool, len(events))
+	for _, event := range events {
+		actions[event.Action] = true
+	}
+	for _, action := range []string{"issue_cloudflare_origin_certificate", "rotate_cloudflare_origin_certificate", "sync_cloudflare_origin_certificate", "revoke_cloudflare_origin_certificate"} {
+		if !actions[action] {
+			t.Fatalf("expected audit action %q in %+v", action, events)
+		}
+	}
+}
+
 func TestServiceDisablesUserAndSetsPassword(t *testing.T) {
 	ctx := context.Background()
 	db := openTestStore(t)
@@ -812,4 +994,99 @@ func adminTestCertificatePEM(host string, notAfter time.Time) ([]byte, []byte, t
 	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
 	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})
 	return certPEM, keyPEM, notAfter
+}
+
+type adminMemorySecretStore struct {
+	values map[string]string
+}
+
+func (store *adminMemorySecretStore) Write(_ context.Context, credentialID string, material string) (string, error) {
+	ref := credentialID + ".secret"
+	store.values[ref] = material
+	return ref, nil
+}
+
+func (store *adminMemorySecretStore) Read(_ context.Context, secretRef string) (string, error) {
+	value, ok := store.values[secretRef]
+	if !ok {
+		return "", errors.New("secret material is missing")
+	}
+	return value, nil
+}
+
+func (store *adminMemorySecretStore) Delete(_ context.Context, secretRef string) error {
+	delete(store.values, secretRef)
+	return nil
+}
+
+type adminOriginCAClient struct {
+	verifiedTokens []string
+	verifyErr      error
+	create         func(context.Context, string, certmanager.OriginCACreateRequest) (certmanager.OriginCACertificate, error)
+	get            func(context.Context, string, string) (certmanager.OriginCACertificate, error)
+	revoke         func(context.Context, string, string) error
+}
+
+func (client *adminOriginCAClient) Create(ctx context.Context, token string, request certmanager.OriginCACreateRequest) (certmanager.OriginCACertificate, error) {
+	if client.create != nil {
+		return client.create(ctx, token, request)
+	}
+	return certmanager.OriginCACertificate{}, errors.New("unexpected origin ca create")
+}
+
+func (client *adminOriginCAClient) Get(ctx context.Context, token string, certificateID string) (certmanager.OriginCACertificate, error) {
+	if client.get != nil {
+		return client.get(ctx, token, certificateID)
+	}
+	return certmanager.OriginCACertificate{}, errors.New("unexpected origin ca get")
+}
+
+func (client *adminOriginCAClient) List(context.Context, string) ([]certmanager.OriginCACertificate, error) {
+	return nil, errors.New("unexpected origin ca list")
+}
+
+func (client *adminOriginCAClient) Revoke(ctx context.Context, token string, certificateID string) error {
+	if client.revoke != nil {
+		return client.revoke(ctx, token, certificateID)
+	}
+	return errors.New("unexpected origin ca revoke")
+}
+
+func (client *adminOriginCAClient) VerifyToken(_ context.Context, token string) error {
+	client.verifiedTokens = append(client.verifiedTokens, token)
+	return client.verifyErr
+}
+
+func credentialContainsToken(credential domain.ProviderCredential, token string) bool {
+	return strings.Contains(credential.ID, token) ||
+		strings.Contains(credential.Name, token) ||
+		strings.Contains(credential.Scope, token) ||
+		strings.Contains(credential.TokenFingerprint, token) ||
+		strings.Contains(credential.SecretRef, token) ||
+		strings.Contains(credential.LastError, token)
+}
+
+func adminOriginCATestCertificateFromCSR(t *testing.T, csrPEM string, hostnames []string, notAfter time.Time) []byte {
+	t.Helper()
+	block, _ := pem.Decode([]byte(csrPEM))
+	if block == nil {
+		t.Fatal("decode csr")
+	}
+	csr, err := x509.ParseCertificateRequest(block.Bytes)
+	if err != nil {
+		t.Fatalf("parse csr: %v", err)
+	}
+	if err := csr.CheckSignature(); err != nil {
+		t.Fatalf("check csr signature: %v", err)
+	}
+	caKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	template := &x509.Certificate{SerialNumber: big.NewInt(time.Now().UnixNano()), Subject: pkix.Name{CommonName: hostnames[0]}, DNSNames: hostnames, NotBefore: time.Now().Add(-time.Hour), NotAfter: notAfter, KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, csr.PublicKey, caKey)
+	if err != nil {
+		t.Fatalf("create origin ca test certificate: %v", err)
+	}
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
 }

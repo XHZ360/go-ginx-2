@@ -111,8 +111,35 @@ type UpdateProxyInput struct {
 }
 
 type CertificateInput struct {
-	ProxyID string
+	ProxyID           string
+	ProviderType      domain.CertificateProviderType
+	CredentialID      string
+	RequestType       string
+	RequestedValidity int
+	ActorID           string
+}
+
+type ProviderCredentialInput struct {
+	ID      string
+	Name    string
+	Scope   string
+	Token   string
 	ActorID string
+}
+
+type UpdateProviderCredentialInput struct {
+	ID      string
+	Name    string
+	Scope   string
+	Token   string
+	ActorID string
+}
+
+type RevokeOriginCACertificateInput struct {
+	ProxyID                 string
+	Host                    string
+	CloudflareCertificateID string
+	ActorID                 string
 }
 
 type RotateClientCredentialInput struct {
@@ -645,11 +672,15 @@ func (service Service) IssueManagedCertificate(ctx context.Context, input Certif
 	if err != nil {
 		return domain.ManagedCertificate{}, err
 	}
-	certificate, err := manager.Issue(ctx, input.ProxyID)
+	certificate, err := manager.IssueWithProvider(ctx, certmanager.ManagedCertificateRequest{ProxyID: input.ProxyID, ProviderType: input.ProviderType, CredentialID: input.CredentialID, RequestType: input.RequestType, RequestedValidity: input.RequestedValidity})
 	if err != nil {
 		return domain.ManagedCertificate{}, err
 	}
-	return certificate, service.audit(ctx, input.ActorID, "certificate", certificate.ID, "issue_managed_certificate")
+	action := "issue_managed_certificate"
+	if input.ProviderType == domain.CertificateProviderCloudflareOriginCA {
+		action = "issue_cloudflare_origin_certificate"
+	}
+	return certificate, service.audit(ctx, input.ActorID, "certificate", certificate.ID, action)
 }
 
 func (service Service) RenewManagedCertificate(ctx context.Context, input CertificateInput) (domain.ManagedCertificate, error) {
@@ -662,6 +693,185 @@ func (service Service) RenewManagedCertificate(ctx context.Context, input Certif
 		return domain.ManagedCertificate{}, err
 	}
 	return certificate, service.audit(ctx, input.ActorID, "certificate", certificate.ID, "renew_managed_certificate")
+}
+
+func (service Service) RotateOriginCACertificate(ctx context.Context, input CertificateInput) (domain.ManagedCertificate, error) {
+	manager, err := service.certificateManager()
+	if err != nil {
+		return domain.ManagedCertificate{}, err
+	}
+	certificate, err := manager.RotateOriginCA(ctx, input.ProxyID)
+	if err != nil {
+		return domain.ManagedCertificate{}, err
+	}
+	return certificate, service.audit(ctx, input.ActorID, "certificate", certificate.ID, "rotate_cloudflare_origin_certificate")
+}
+
+func (service Service) SyncOriginCACertificate(ctx context.Context, input CertificateInput) (domain.ManagedCertificate, error) {
+	manager, err := service.certificateManager()
+	if err != nil {
+		return domain.ManagedCertificate{}, err
+	}
+	certificate, err := manager.SyncOriginCA(ctx, input.ProxyID)
+	if err != nil {
+		return domain.ManagedCertificate{}, err
+	}
+	return certificate, service.audit(ctx, input.ActorID, "certificate", certificate.ID, "sync_cloudflare_origin_certificate")
+}
+
+func (service Service) RevokeOriginCACertificate(ctx context.Context, input RevokeOriginCACertificateInput) (domain.ManagedCertificate, error) {
+	manager, err := service.certificateManager()
+	if err != nil {
+		return domain.ManagedCertificate{}, err
+	}
+	certificate, err := manager.RevokeOriginCA(ctx, certmanager.OriginCARevokeRequest{ProxyID: input.ProxyID, Host: input.Host, CloudflareCertificateID: input.CloudflareCertificateID})
+	if err != nil {
+		return domain.ManagedCertificate{}, err
+	}
+	return certificate, service.audit(ctx, input.ActorID, "certificate", certificate.ID, "revoke_cloudflare_origin_certificate")
+}
+
+func (service Service) CreateProviderCredential(ctx context.Context, input ProviderCredentialInput) (domain.ProviderCredential, error) {
+	if service.Store == nil {
+		return domain.ProviderCredential{}, errors.New("store is required")
+	}
+	if strings.TrimSpace(input.Name) == "" {
+		return domain.ProviderCredential{}, contracterr.Validation("validation failed", map[string]string{"name": "credential name is required"})
+	}
+	if strings.TrimSpace(input.Token) == "" {
+		return domain.ProviderCredential{}, contracterr.Validation("validation failed", map[string]string{"token": "cloudflare api token is required"})
+	}
+	if err := certmanager.RejectOriginCAServiceKey(input.Token); err != nil {
+		return domain.ProviderCredential{}, contracterr.Validation("validation failed", map[string]string{"token": err.Error()})
+	}
+	manager, err := service.certificateManager()
+	if err != nil {
+		return domain.ProviderCredential{}, err
+	}
+	if manager.ProviderSecretStore == nil {
+		return domain.ProviderCredential{}, errors.New("provider secret store is required")
+	}
+	id := strings.TrimSpace(input.ID)
+	if id == "" {
+		id = newID("cfcred")
+	}
+	secretRef, err := manager.ProviderSecretStore.Write(ctx, id, strings.TrimSpace(input.Token))
+	if err != nil {
+		return domain.ProviderCredential{}, err
+	}
+	now := time.Now().UTC()
+	credential := domain.ProviderCredential{ID: id, Name: input.Name, ProviderType: domain.CertificateProviderCloudflareOriginCA, Scope: input.Scope, TokenFingerprint: certmanager.TokenFingerprint(input.Token), SecretRef: secretRef, Status: domain.ProviderCredentialPending, CreatedAt: now, UpdatedAt: now}
+	if err := service.Store.ProviderCredentials().Create(ctx, credential); err != nil {
+		_ = manager.ProviderSecretStore.Delete(ctx, secretRef)
+		return domain.ProviderCredential{}, err
+	}
+	return credential, service.audit(ctx, input.ActorID, "provider_credential", credential.ID, "create_provider_credential")
+}
+
+func (service Service) UpdateProviderCredential(ctx context.Context, input UpdateProviderCredentialInput) (domain.ProviderCredential, error) {
+	if service.Store == nil {
+		return domain.ProviderCredential{}, errors.New("store is required")
+	}
+	id := strings.TrimSpace(input.ID)
+	if id == "" {
+		return domain.ProviderCredential{}, contracterr.Validation("validation failed", map[string]string{"id": "credential id is required"})
+	}
+	credential, err := service.Store.ProviderCredentials().ByID(ctx, id)
+	if err != nil {
+		return domain.ProviderCredential{}, err
+	}
+	if strings.TrimSpace(input.Name) != "" {
+		credential.Name = input.Name
+	}
+	credential.Scope = input.Scope
+	if strings.TrimSpace(input.Token) != "" {
+		if err := certmanager.RejectOriginCAServiceKey(input.Token); err != nil {
+			return domain.ProviderCredential{}, contracterr.Validation("validation failed", map[string]string{"token": err.Error()})
+		}
+		manager, err := service.certificateManager()
+		if err != nil {
+			return domain.ProviderCredential{}, err
+		}
+		if manager.ProviderSecretStore == nil {
+			return domain.ProviderCredential{}, errors.New("provider secret store is required")
+		}
+		secretRef, err := manager.ProviderSecretStore.Write(ctx, credential.ID, strings.TrimSpace(input.Token))
+		if err != nil {
+			return domain.ProviderCredential{}, err
+		}
+		credential.SecretRef = secretRef
+		credential.TokenFingerprint = certmanager.TokenFingerprint(input.Token)
+		credential.Status = domain.ProviderCredentialPending
+		credential.LastVerifiedAt = nil
+		credential.LastError = ""
+	}
+	credential.UpdatedAt = time.Now().UTC()
+	if err := service.Store.ProviderCredentials().Update(ctx, credential); err != nil {
+		return domain.ProviderCredential{}, err
+	}
+	return credential, service.audit(ctx, input.ActorID, "provider_credential", credential.ID, "update_provider_credential")
+}
+
+func (service Service) VerifyProviderCredential(ctx context.Context, credentialID string, actorID string) (domain.ProviderCredential, error) {
+	manager, err := service.certificateManager()
+	if err != nil {
+		return domain.ProviderCredential{}, err
+	}
+	verifyErr := manager.VerifyProviderCredential(ctx, credentialID)
+	credential, readErr := service.Store.ProviderCredentials().ByID(ctx, credentialID)
+	if readErr != nil {
+		return domain.ProviderCredential{}, readErr
+	}
+	auditErr := service.audit(ctx, actorID, "provider_credential", credential.ID, "verify_provider_credential")
+	if verifyErr != nil {
+		return credential, verifyErr
+	}
+	return credential, auditErr
+}
+
+func (service Service) DisableProviderCredential(ctx context.Context, credentialID string, actorID string) (domain.ProviderCredential, error) {
+	if service.Store == nil {
+		return domain.ProviderCredential{}, errors.New("store is required")
+	}
+	if err := service.Store.ProviderCredentials().SetStatus(ctx, credentialID, domain.ProviderCredentialDisabled, nil, ""); err != nil {
+		return domain.ProviderCredential{}, err
+	}
+	credential, err := service.Store.ProviderCredentials().ByID(ctx, credentialID)
+	if err != nil {
+		return domain.ProviderCredential{}, err
+	}
+	return credential, service.audit(ctx, actorID, "provider_credential", credential.ID, "disable_provider_credential")
+}
+
+func (service Service) DeleteProviderCredential(ctx context.Context, credentialID string, actorID string) error {
+	if service.Store == nil {
+		return errors.New("store is required")
+	}
+	credentialID = strings.TrimSpace(credentialID)
+	if credentialID == "" {
+		return contracterr.Validation("validation failed", map[string]string{"id": "credential id is required"})
+	}
+	credential, err := service.Store.ProviderCredentials().ByID(ctx, credentialID)
+	if err != nil {
+		return err
+	}
+	certificates, err := service.Store.Certificates().List(ctx)
+	if err != nil {
+		return err
+	}
+	for _, certificate := range certificates {
+		if certificate.CredentialID == credential.ID {
+			return contracterr.Conflict("provider credential is used by managed certificates; update or remove those certificates before deleting it", nil)
+		}
+	}
+	manager, _ := service.certificateManager()
+	if manager.ProviderSecretStore != nil {
+		_ = manager.ProviderSecretStore.Delete(ctx, credential.SecretRef)
+	}
+	if err := service.Store.ProviderCredentials().Delete(ctx, credentialID); err != nil {
+		return err
+	}
+	return service.audit(ctx, actorID, "provider_credential", credential.ID, "delete_provider_credential")
 }
 
 func (service Service) ManagedCertificateStatus(ctx context.Context, proxyID string) (certmanager.CertificateStatus, error) {

@@ -18,6 +18,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -28,56 +29,21 @@ import (
 	"github.com/simp-frp/go-ginx-2/internal/store/sqlite"
 )
 
-func TestHTTPSEntryPassesThroughTLSBySNI(t *testing.T) {
+func TestHTTPSEntryRejectsTLSWithoutCertificate(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-
-	originAddress, originPool := startTLSOrigin(t, ctx, "app.example.com")
-	originHost, originPortText, err := net.SplitHostPort(originAddress)
-	if err != nil {
-		t.Fatal(err)
-	}
-	originPort, err := strconv.Atoi(originPortText)
-	if err != nil {
-		t.Fatal(err)
-	}
 
 	db, err := sqlite.Open(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	seedHTTPSProxy(t, ctx, db, originHost, originPort)
+	seedHTTPSProxy(t, ctx, db, "127.0.0.1", 8443)
 	if err := db.Certificates().Create(ctx, domain.ManagedCertificate{ID: "cert-1", ProxyID: "proxy-1", Host: "app.example.com", Status: domain.CertificatePending, Provider: "cloudflare", CertFile: "pending.crt", KeyFile: "pending.key"}); err != nil {
 		t.Fatalf("create pending managed certificate: %v", err)
 	}
 
 	sessions := session.NewManager()
-	controlListener, err := control.ListenAddr("127.0.0.1:0", control.Server{
-		Authenticator: control.Authenticator{Store: db, Now: func() time.Time { return time.Now().UTC() }},
-		Sessions:      sessions,
-		TLSConfig:     testServerTLSConfig(t),
-		NewSessionID:  func() (string, error) { return "session-1", nil },
-	})
-	if err != nil {
-		t.Fatalf("control listen: %v", err)
-	}
-	t.Cleanup(func() { _ = controlListener.Close() })
-	go func() { _ = controlListener.Serve(ctx) }()
-
-	client, response, err := control.DialAndAuthenticate(ctx, controlListener.Addr().String(), testClientTLSConfig(t), nil, control.AuthRequest{ClientID: "client-1", Credential: "secret", Timestamp: time.Now().UTC(), Protocols: []domain.Protocol{domain.ProtocolQUIC}})
-	if err != nil {
-		t.Fatalf("dial authenticate: %v", err)
-	}
-	if !response.Accepted {
-		t.Fatalf("expected accepted auth response: %+v", response)
-	}
-	t.Cleanup(func() { _ = client.Close() })
-	if _, err := client.ReadProxySnapshot(); err != nil {
-		t.Fatalf("read snapshot: %v", err)
-	}
-	go func() { _ = client.ServeProxyStreams(ctx) }()
-
 	entry, err := Listen(Entry{Store: db, Sessions: sessions, ListenAddress: "127.0.0.1:0", NewConnection: func() (string, error) { return "conn-1", nil }})
 	if err != nil {
 		t.Fatalf("https listen: %v", err)
@@ -86,20 +52,10 @@ func TestHTTPSEntryPassesThroughTLSBySNI(t *testing.T) {
 	go func() { _ = entry.Serve(ctx) }()
 
 	dialer := &net.Dialer{Timeout: 2 * time.Second}
-	conn, err := tls.DialWithDialer(dialer, "tcp", entry.Addr().String(), &tls.Config{RootCAs: originPool, ServerName: "app.example.com", MinVersion: tls.VersionTLS12})
-	if err != nil {
-		t.Fatalf("dial proxied tls origin: %v", err)
-	}
-	defer conn.Close()
-	if _, err := conn.Write([]byte("ping\n")); err != nil {
-		t.Fatalf("write tls payload: %v", err)
-	}
-	line, err := bufio.NewReader(conn).ReadString('\n')
-	if err != nil {
-		t.Fatalf("read tls payload: %v", err)
-	}
-	if line != "pong\n" {
-		t.Fatalf("unexpected tls response %q", line)
+	conn, err := tls.DialWithDialer(dialer, "tcp", entry.Addr().String(), &tls.Config{InsecureSkipVerify: true, ServerName: "app.example.com", MinVersion: tls.VersionTLS12})
+	if err == nil {
+		_ = conn.Close()
+		t.Fatal("expected TLS handshake to fail when certificate active material is unavailable")
 	}
 }
 
@@ -613,6 +569,69 @@ func TestValidateCertificatePairRejectsWrongHostExpiredAndKeyMismatch(t *testing
 	}
 }
 
+func TestCheckCertificateFilesReportsLifecycleHealth(t *testing.T) {
+	now := time.Now().UTC()
+	dir := t.TempDir()
+	certPEM, keyPEM, _, err := generateTestCertificatePEMAt(t, "app.example.com", now.Add(-time.Hour), now.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	certFile := filepath.Join(dir, "active.crt")
+	keyFile := filepath.Join(dir, "active.key")
+	if err := os.WriteFile(certFile, certPEM, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(keyFile, keyPEM, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	health := CheckCertificateFiles("app.example.com", certFile, keyFile, dir, 30*time.Minute, now)
+	if health.ServingStatus != domain.CertificateServingUsable || !health.Usable() || health.Fingerprint == "" || health.NotAfter == nil {
+		t.Fatalf("unexpected usable health: %+v", health)
+	}
+	health = CheckCertificateFiles("app.example.com", certFile, keyFile, dir, 2*time.Hour, now)
+	if health.ServingStatus != domain.CertificateServingExpiringSoon || !health.Usable() {
+		t.Fatalf("unexpected expiring health: %+v", health)
+	}
+
+	expiredCert, expiredKey, _, err := generateTestCertificatePEMAt(t, "app.example.com", now.Add(-2*time.Hour), now.Add(-time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	expiredCertFile := filepath.Join(dir, "expired.crt")
+	expiredKeyFile := filepath.Join(dir, "expired.key")
+	if err := os.WriteFile(expiredCertFile, expiredCert, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(expiredKeyFile, expiredKey, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	health = CheckCertificateFiles("app.example.com", expiredCertFile, expiredKeyFile, dir, 30*time.Minute, now)
+	if health.ServingStatus != domain.CertificateServingExpired || health.Usable() {
+		t.Fatalf("unexpected expired health: %+v", health)
+	}
+
+	health = CheckCertificateFiles("app.example.com", filepath.Join(dir, "missing.crt"), keyFile, dir, 30*time.Minute, now)
+	if health.ServingStatus != domain.CertificateServingMissing || health.ErrorSummary == "" || strings.Contains(health.ErrorSummary, "missing.crt") {
+		t.Fatalf("unexpected missing health: %+v", health)
+	}
+	health = CheckCertificateFiles("other.example.com", certFile, keyFile, dir, 30*time.Minute, now)
+	if health.ServingStatus != domain.CertificateServingInvalid || health.Usable() {
+		t.Fatalf("unexpected host mismatch health: %+v", health)
+	}
+	_, otherKey, _, err := generateTestCertificatePEMAt(t, "app.example.com", now.Add(-time.Hour), now.Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherKeyFile := filepath.Join(dir, "other.key")
+	if err := os.WriteFile(otherKeyFile, otherKey, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	health = CheckCertificateFiles("app.example.com", certFile, otherKeyFile, dir, 30*time.Minute, now)
+	if health.ServingStatus != domain.CertificateServingInvalid || health.Usable() {
+		t.Fatalf("unexpected key mismatch health: %+v", health)
+	}
+}
+
 func TestCertificateResolverSupportsStaticAndManagedCertificates(t *testing.T) {
 	ctx := context.Background()
 	certificateDir := t.TempDir()
@@ -640,7 +659,7 @@ func TestCertificateResolverSupportsStaticAndManagedCertificates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("store managed certificate: %v", err)
 	}
-	if err := db.Certificates().Create(ctx, domain.ManagedCertificate{ID: "managed-cert-1", ProxyID: "proxy-1", Host: "managed.example.com", Status: domain.CertificateValid, Provider: "cloudflare", CertFile: stored.CertFile, KeyFile: stored.KeyFile, NotAfter: &stored.NotAfter}); err != nil {
+	if err := db.Certificates().Create(ctx, domain.ManagedCertificate{ID: "managed-cert-1", ProxyID: "proxy-1", Host: "managed.example.com", Status: domain.CertificateValid, ServingStatus: domain.CertificateServingUsable, Provider: "cloudflare", ProviderType: domain.CertificateProviderCloudflareOriginCA, ProviderName: "cloudflare", ProviderStatus: domain.CertificateProviderStatusActive, CertFile: stored.CertFile, KeyFile: stored.KeyFile, NotAfter: &stored.NotAfter}); err != nil {
 		t.Fatalf("create managed certificate metadata: %v", err)
 	}
 	managedResolver := NewCertificateResolver(db, certificateDir)
@@ -658,7 +677,7 @@ func TestCertificateResolverSupportsStaticAndManagedCertificates(t *testing.T) {
 	}
 }
 
-func TestCertificateResolverIgnoresInactiveManagedCertificate(t *testing.T) {
+func TestCertificateResolverRejectsUnavailableManagedCertificate(t *testing.T) {
 	ctx := context.Background()
 	db, err := sqlite.Open(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
@@ -670,11 +689,56 @@ func TestCertificateResolverIgnoresInactiveManagedCertificate(t *testing.T) {
 		t.Fatalf("create inactive certificate: %v", err)
 	}
 	certificate, err := NewCertificateResolver(db, t.TempDir()).Certificate(ctx, "app.example.com", domain.Proxy{})
-	if err != nil {
-		t.Fatalf("resolve inactive certificate: %v", err)
+	if err == nil {
+		t.Fatalf("expected unavailable managed certificate to fail closed, got certificate=%+v", certificate)
 	}
-	if certificate != nil {
-		t.Fatal("expected inactive managed certificate to preserve passthrough")
+}
+
+func TestCertificateResolverRejectsProviderDisabledOriginCACertificate(t *testing.T) {
+	ctx := context.Background()
+	certificateDir := t.TempDir()
+	db, err := sqlite.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	seedHTTPSTerminationProxy(t, ctx, db, "127.0.0.1", 8080, "", "")
+	certPEM, keyPEM, _, err := generateTestCertificatePEMAt(t, "app.example.com", time.Now().Add(-time.Hour), time.Now().Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored, err := ManagedCertificateStorage{CertificateDir: certificateDir}.Store("app.example.com", certPEM, keyPEM)
+	if err != nil {
+		t.Fatalf("store origin ca certificate: %v", err)
+	}
+
+	cases := []struct {
+		id             string
+		proxyID        string
+		host           string
+		providerStatus domain.CertificateProviderStatus
+	}{
+		{id: "cert-revoked", proxyID: "proxy-1", host: "revoked.example.com", providerStatus: domain.CertificateProviderStatusRevoked},
+		{id: "cert-missing", proxyID: "proxy-2", host: "missing.example.com", providerStatus: domain.CertificateProviderStatusMissingRemote},
+	}
+	if err := db.Proxies().Create(ctx, domain.Proxy{ID: "proxy-2", UserID: "user-1", ClientID: "client-1", Name: "secure-missing", Type: domain.ProxyHTTPS, Status: domain.ProxyEnabled, EntryHost: "missing.example.com", TargetHost: "127.0.0.1", TargetPort: 8081}); err != nil {
+		t.Fatalf("create second https proxy: %v", err)
+	}
+	for _, tc := range cases {
+		if err := db.Certificates().Create(ctx, domain.ManagedCertificate{ID: tc.id, ProxyID: tc.proxyID, Host: tc.host, Status: domain.CertificateValid, ServingStatus: domain.CertificateServingUsable, ProviderType: domain.CertificateProviderCloudflareOriginCA, ProviderName: "cloudflare", ProviderStatus: tc.providerStatus, CertFile: stored.CertFile, KeyFile: stored.KeyFile, NotAfter: &stored.NotAfter}); err != nil {
+			t.Fatalf("create %s managed certificate: %v", tc.providerStatus, err)
+		}
+	}
+
+	resolver := NewCertificateResolver(db, certificateDir)
+	for _, tc := range cases {
+		certificate, err := resolver.Certificate(ctx, tc.host, domain.Proxy{})
+		if err == nil {
+			t.Fatalf("expected %s origin ca certificate to be rejected, got %+v", tc.providerStatus, certificate)
+		}
+		if !strings.Contains(err.Error(), "provider") {
+			t.Fatalf("expected provider-side rejection error, got %v", err)
+		}
 	}
 }
 

@@ -97,10 +97,40 @@ fragment ManagedCertificateFields on AdminManagedCertificate {
   certificateId
   host
   status
+  servingStatus
+  operationStatus
+  providerType
+  providerName
+  credentialId
+  providerStatus
+  cloudflareCertificateId
+  hostnames
+  requestType
+  requestedValidity
+  lastSyncedAt
+  deploymentHints
   notAfter
   lastIssuedAt
   lastRenewedAt
+  lastCheckedAt
+  lastAttemptedAt
+  nextAttemptAt
+  failureCount
+  fingerprint
   lastError
+}
+
+fragment ProviderCredentialFields on AdminProviderCredential {
+  id
+  name
+  providerType
+  scope
+  tokenFingerprint
+  status
+  lastVerifiedAt
+  lastError
+  createdAt
+  updatedAt
 }
 
 fragment ProxyFields on AdminProxy {
@@ -169,6 +199,14 @@ fragment CertificatePayloadFields on AdminCertificatePayload {
   status
   certificate {
     ...ManagedCertificateFields
+  }
+}
+
+fragment ProviderCredentialPayloadFields on AdminProviderCredentialPayload {
+  id
+  status
+  credential {
+    ...ProviderCredentialFields
   }
 }
 
@@ -262,6 +300,18 @@ query Certificates($input: AdminCertificatesInput) {
     }
     items {
       ...ManagedCertificateFields
+    }
+  }
+}
+
+query ProviderCredentials($input: AdminProviderCredentialsInput) {
+  providerCredentials(input: $input) {
+    totalCount
+    pageInfo {
+      ...PageInfoFields
+    }
+    items {
+      ...ProviderCredentialFields
     }
   }
 }
@@ -360,5 +410,54 @@ mutation IssueManagedCertificate($input: AdminCertificateMutationInput!) {
 mutation RenewManagedCertificate($input: AdminCertificateMutationInput!) {
   renewManagedCertificate(input: $input) {
     ...CertificatePayloadFields
+  }
+}
+
+mutation RotateCloudflareOriginCertificate($input: AdminCertificateMutationInput!) {
+  rotateCloudflareOriginCertificate(input: $input) {
+    ...CertificatePayloadFields
+  }
+}
+
+mutation SyncCloudflareOriginCertificate($input: AdminCertificateMutationInput!) {
+  syncCloudflareOriginCertificate(input: $input) {
+    ...CertificatePayloadFields
+  }
+}
+
+mutation RevokeCloudflareOriginCertificate($input: AdminRevokeOriginCAInput!) {
+  revokeCloudflareOriginCertificate(input: $input) {
+    ...CertificatePayloadFields
+  }
+}
+
+mutation CreateProviderCredential($input: AdminProviderCredentialMutationInput!) {
+  createProviderCredential(input: $input) {
+    ...ProviderCredentialPayloadFields
+  }
+}
+
+mutation UpdateProviderCredential($input: AdminProviderCredentialMutationInput!) {
+  updateProviderCredential(input: $input) {
+    ...ProviderCredentialPayloadFields
+  }
+}
+
+mutation VerifyProviderCredential($input: AdminProviderCredentialIDInput!) {
+  verifyProviderCredential(input: $input) {
+    ...ProviderCredentialPayloadFields
+  }
+}
+
+mutation DisableProviderCredential($input: AdminProviderCredentialIDInput!) {
+  disableProviderCredential(input: $input) {
+    ...ProviderCredentialPayloadFields
+  }
+}
+
+mutation DeleteProviderCredential($input: AdminProviderCredentialIDInput!) {
+  deleteProviderCredential(input: $input) {
+    id
+    status
   }
 }

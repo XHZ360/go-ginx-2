@@ -86,7 +86,7 @@ Covered behavior:
 
 ## External Process Smoke
 
-The external process smoke tests build real `goginx-server` and `goginx-client` binaries, write temporary JSON configs, generate temporary TLS certificates, seed SQLite, start both processes, and verify TCP, UDP, HTTP, and HTTPS passthrough traffic through the daemon path.
+The external process smoke tests build real `goginx-server` and `goginx-client` binaries, write temporary JSON configs, generate temporary TLS certificates, seed SQLite, start both processes, and verify TCP, UDP, HTTP, and HTTPS termination traffic through the daemon path.
 
 ```powershell
 $env:CGO_ENABLED="0"
@@ -101,7 +101,7 @@ Covered behavior:
 - External TCP traffic reaches a local echo origin through server TCP entry -> client stream -> local target.
 - External UDP traffic reaches a local echo origin through server UDP entry -> client stream -> local target.
 - External HTTP traffic reaches a local HTTP origin through server HTTP entry -> client stream -> local target.
-- External HTTPS passthrough traffic reaches a local TLS origin through server HTTPS entry -> client stream -> local target using SNI routing.
+- External HTTPS termination traffic reaches a local HTTP origin through server HTTPS entry -> client stream -> local target using SNI certificate selection.
 - Child server and client processes are terminated by the test cleanup path.
 
 ## TCP Proxy
@@ -157,7 +157,7 @@ Covered behavior:
 
 ## HTTPS Proxy
 
-The HTTPS proxy E2E test covers both passthrough and termination. Passthrough starts a local TLS echo origin and verifies encrypted traffic reaches the origin through the client stream while the server routes by SNI. Termination uses a file-backed certificate/key pair selected by SNI, terminates public TLS on the server, and forwards the decrypted HTTP request to the configured local HTTP target.
+The HTTPS proxy E2E test covers certificate-backed TLS termination and failure-closed behavior. Termination uses a file-backed or managed certificate/key pair selected by SNI, terminates public TLS on the server, and forwards the decrypted HTTP request to the configured local HTTP target. HTTPS proxies without usable certificate material reject or close the matching TLS connection instead of forwarding encrypted bytes.
 
 ```powershell
 $env:CGO_ENABLED="0"
@@ -168,16 +168,17 @@ Covered behavior:
 
 - HTTPS entry reads the TLS ClientHello SNI for proxy and certificate selection.
 - HTTPS entry routes by SNI through the HTTPS proxy repository lookup.
-- Passthrough proxies without `cert_file`/`key_file` preserve encrypted bytes to the configured local TLS target.
-- Termination proxies with `cert_file`/`key_file` complete the public TLS handshake and forward HTTP to the configured local HTTP target.
+- Proxies with healthy static or managed certificate material complete the public TLS handshake and forward HTTP to the configured local HTTP target.
+- Proxies without usable certificate material fail closed and are surfaced as needing certificate configuration.
 
 ## Managed Certificates
 
-The managed certificate tests cover ACME DNS-01 helper behavior, certificate lifecycle service behavior, admin CLI certificate commands, and daemon renewal wiring:
+The managed certificate tests cover ACME DNS-01 helper behavior, Cloudflare Origin CA provider behavior, certificate lifecycle service behavior, admin API/UI credential surfaces, admin CLI certificate commands, and daemon renewal/rotation wiring:
 
 ```powershell
 $env:CGO_ENABLED="0"
 go test ./internal/certmanager
+go test ./internal/admin ./internal/adminapi
 go test ./cmd/goginx-admin -run TestRunManagesCertificates
 go test ./internal/daemon -run TestStartServerRenewsManagedCertificates
 ```
@@ -185,9 +186,11 @@ go test ./internal/daemon -run TestStartServerRenewsManagedCertificates
 Covered behavior:
 
 - Cloudflare DNS provider loading rejects missing tokens and redacts token values from returned errors.
-- Certificate lifecycle service issues managed certificates, records failures, renews expiring certificates, and preserves previous files for rollback.
-- Admin CLI issue, renew, and status commands operate on managed HTTPS certificate records.
-- Daemon startup wires the renewal loop so certificates inside the configured renewal window are renewed without restart.
+- Cloudflare Origin CA credentials are stored as metadata plus SQLite-external token material; Admin API responses remain write-only and secret-safe.
+- Origin CA provider tests cover CSR-only create requests, list/get/revoke/verify calls, Service Key rejection, response error sanitization, issue/rotate/sync/revoke lifecycle, and provider-side revoked certificates being blocked by HTTPS runtime.
+- Certificate lifecycle service issues managed certificates, records operation failures separately from serving health, renews or rotates expiring certificates with retry backoff, and preserves previous active files for rollback.
+- Admin CLI issue, renew, status, sync, and revoke commands operate on managed HTTPS certificate records.
+- Daemon startup wires the renewal/rotation controller so certificates inside the configured ACME renewal or Origin CA rotation window are renewed without restart and skipped while `next_attempt_at` backoff is still in the future.
 
 ## Admin CLI
 

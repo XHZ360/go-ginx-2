@@ -14,6 +14,8 @@ import type {
   CreateClientMutationVariables,
   CreateProxyMutation,
   CreateProxyMutationVariables,
+  CreateProviderCredentialMutation,
+  CreateProviderCredentialMutationVariables,
   CreateUserMutation,
   CreateUserMutationVariables,
   DashboardQuery,
@@ -21,14 +23,20 @@ import type {
   DeleteClientMutationVariables,
   DeleteProxyMutation,
   DeleteProxyMutationVariables,
+  DeleteProviderCredentialMutation,
+  DeleteProviderCredentialMutationVariables,
   DisableProxyMutation,
   DisableProxyMutationVariables,
+  DisableProviderCredentialMutation,
+  DisableProviderCredentialMutationVariables,
   DisableUserMutation,
   DisableUserMutationVariables,
   EnableProxyMutation,
   EnableProxyMutationVariables,
   IssueManagedCertificateMutation,
   IssueManagedCertificateMutationVariables,
+  ProviderCredentialsQuery,
+  ProviderCredentialsQueryVariables,
   ProxiesQuery,
   ProxiesQueryVariables,
   ProxyEntryOptionsQuery,
@@ -36,16 +44,26 @@ import type {
   ProxyQueryVariables,
   RenewManagedCertificateMutation,
   RenewManagedCertificateMutationVariables,
+  RevokeCloudflareOriginCertificateMutation,
+  RevokeCloudflareOriginCertificateMutationVariables,
+  RotateCloudflareOriginCertificateMutation,
+  RotateCloudflareOriginCertificateMutationVariables,
   RotateClientCredentialMutation,
   RotateClientCredentialMutationVariables,
   SetUserPasswordMutation,
   SetUserPasswordMutationVariables,
+  SyncCloudflareOriginCertificateMutation,
+  SyncCloudflareOriginCertificateMutationVariables,
+  UpdateProviderCredentialMutation,
+  UpdateProviderCredentialMutationVariables,
   UpdateProxyMutation,
   UpdateProxyMutationVariables,
   UserQuery,
   UserQueryVariables,
   UsersQuery,
   UsersQueryVariables,
+  VerifyProviderCredentialMutation,
+  VerifyProviderCredentialMutationVariables,
 } from '../graphql/generated';
 import { graphqlClient } from './api';
 import type {
@@ -55,6 +73,7 @@ import type {
   ManagedCertificate,
   PageInfo,
   PageResult,
+  ProviderCredential,
   ProxyEntryOptions,
   ProxyRecord,
   User,
@@ -99,6 +118,21 @@ export type AuditFilter = {
   resourceType?: string;
   action?: string;
   result?: string;
+};
+
+export type CertificateMutationInput = {
+  proxyId: string;
+  providerType?: string;
+  credentialId?: string;
+  requestType?: string;
+  requestedValidity?: number;
+};
+
+export type ProviderCredentialInput = {
+  id?: string;
+  name: string;
+  scope?: string;
+  token?: string;
 };
 
 type ProxyConfigInput = {
@@ -204,6 +238,12 @@ export async function queryCertificates(input: ListInput<CertificateFilter>) {
   const variables = { input: cleanObject(input) } satisfies CertificatesQueryVariables;
   const data = await request<CertificatesQuery, CertificatesQueryVariables>({ operationName: 'Certificates', variables });
   return normalizePageResult<ManagedCertificate>(data.certificates);
+}
+
+export async function queryProviderCredentials(input: { page?: { page: number; pageSize: number } }) {
+  const variables = { input: cleanObject(input) } satisfies ProviderCredentialsQueryVariables;
+  const data = await request<ProviderCredentialsQuery, ProviderCredentialsQueryVariables>({ operationName: 'ProviderCredentials', variables });
+  return normalizePageResult<ProviderCredential>(data.providerCredentials);
 }
 
 export async function queryAudit(input: ListInput<AuditFilter>) {
@@ -351,8 +391,8 @@ export function mutateDeleteProxy(csrfToken: string, id: string) {
   });
 }
 
-export function mutateIssueCertificate(csrfToken: string, proxyId: string) {
-  const variables = { input: { proxyId } } satisfies IssueManagedCertificateMutationVariables;
+export function mutateIssueCertificate(csrfToken: string, input: CertificateMutationInput | string) {
+  const variables = { input: typeof input === 'string' ? { proxyId: input } : cleanObject(input) } satisfies IssueManagedCertificateMutationVariables;
   return request<IssueManagedCertificateMutation, IssueManagedCertificateMutationVariables>({
     operationName: 'IssueManagedCertificate',
     variables,
@@ -365,6 +405,89 @@ export function mutateRenewCertificate(csrfToken: string, proxyId: string) {
   const variables = { input: { proxyId } } satisfies RenewManagedCertificateMutationVariables;
   return request<RenewManagedCertificateMutation, RenewManagedCertificateMutationVariables>({
     operationName: 'RenewManagedCertificate',
+    variables,
+    mutation: true,
+    csrfToken,
+  });
+}
+
+export function mutateRotateOriginCertificate(csrfToken: string, proxyId: string) {
+  const variables = { input: { proxyId } } satisfies RotateCloudflareOriginCertificateMutationVariables;
+  return request<RotateCloudflareOriginCertificateMutation, RotateCloudflareOriginCertificateMutationVariables>({
+    operationName: 'RotateCloudflareOriginCertificate',
+    variables,
+    mutation: true,
+    csrfToken,
+  });
+}
+
+export function mutateSyncOriginCertificate(csrfToken: string, proxyId: string) {
+  const variables = { input: { proxyId } } satisfies SyncCloudflareOriginCertificateMutationVariables;
+  return request<SyncCloudflareOriginCertificateMutation, SyncCloudflareOriginCertificateMutationVariables>({
+    operationName: 'SyncCloudflareOriginCertificate',
+    variables,
+    mutation: true,
+    csrfToken,
+  });
+}
+
+export function mutateRevokeOriginCertificate(
+  csrfToken: string,
+  input: { proxyId: string; host: string; cloudflareCertificateId: string },
+) {
+  const variables = { input } satisfies RevokeCloudflareOriginCertificateMutationVariables;
+  return request<RevokeCloudflareOriginCertificateMutation, RevokeCloudflareOriginCertificateMutationVariables>({
+    operationName: 'RevokeCloudflareOriginCertificate',
+    variables,
+    mutation: true,
+    csrfToken,
+  });
+}
+
+export function mutateCreateProviderCredential(csrfToken: string, input: ProviderCredentialInput) {
+  const variables = { input: cleanObject(input) } satisfies CreateProviderCredentialMutationVariables;
+  return request<CreateProviderCredentialMutation, CreateProviderCredentialMutationVariables>({
+    operationName: 'CreateProviderCredential',
+    variables,
+    mutation: true,
+    csrfToken,
+  });
+}
+
+export function mutateUpdateProviderCredential(csrfToken: string, input: ProviderCredentialInput & { id: string }) {
+  const variables = { input: cleanObject(input) } satisfies UpdateProviderCredentialMutationVariables;
+  return request<UpdateProviderCredentialMutation, UpdateProviderCredentialMutationVariables>({
+    operationName: 'UpdateProviderCredential',
+    variables,
+    mutation: true,
+    csrfToken,
+  });
+}
+
+export function mutateVerifyProviderCredential(csrfToken: string, id: string) {
+  const variables = { input: { id } } satisfies VerifyProviderCredentialMutationVariables;
+  return request<VerifyProviderCredentialMutation, VerifyProviderCredentialMutationVariables>({
+    operationName: 'VerifyProviderCredential',
+    variables,
+    mutation: true,
+    csrfToken,
+  });
+}
+
+export function mutateDisableProviderCredential(csrfToken: string, id: string) {
+  const variables = { input: { id } } satisfies DisableProviderCredentialMutationVariables;
+  return request<DisableProviderCredentialMutation, DisableProviderCredentialMutationVariables>({
+    operationName: 'DisableProviderCredential',
+    variables,
+    mutation: true,
+    csrfToken,
+  });
+}
+
+export function mutateDeleteProviderCredential(csrfToken: string, id: string) {
+  const variables = { input: { id } } satisfies DeleteProviderCredentialMutationVariables;
+  return request<DeleteProviderCredentialMutation, DeleteProviderCredentialMutationVariables>({
+    operationName: 'DeleteProviderCredential',
     variables,
     mutation: true,
     csrfToken,

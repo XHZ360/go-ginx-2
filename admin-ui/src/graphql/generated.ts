@@ -23,7 +23,11 @@ export type AdminCertificateFilterInput = {
 };
 
 export type AdminCertificateMutationInput = {
+  credentialId?: string | null | undefined;
+  providerType?: string | null | undefined;
   proxyId: string;
+  requestType?: string | null | undefined;
+  requestedValidity?: number | null | undefined;
 };
 
 export type AdminCertificatesInput = {
@@ -83,6 +87,21 @@ export type AdminPaginationInput = {
   pageSize?: number | null | undefined;
 };
 
+export type AdminProviderCredentialIdInput = {
+  id: string;
+};
+
+export type AdminProviderCredentialMutationInput = {
+  id?: string | null | undefined;
+  name: string;
+  scope?: string | null | undefined;
+  token?: string | null | undefined;
+};
+
+export type AdminProviderCredentialsInput = {
+  page?: AdminPaginationInput | null | undefined;
+};
+
 export type AdminProxiesInput = {
   filter?: AdminProxyFilterInput | null | undefined;
   page?: AdminPaginationInput | null | undefined;
@@ -105,6 +124,12 @@ export type AdminProxyFilterInput = {
   status?: string | null | undefined;
   type?: string | null | undefined;
   userId?: string | null | undefined;
+};
+
+export type AdminRevokeOriginCaInput = {
+  cloudflareCertificateId: string;
+  host: string;
+  proxyId: string;
 };
 
 export type AdminSetUserPasswordInput = {
@@ -155,9 +180,11 @@ export type ClientDetailFieldsFragment = { id: string, userId: string, name: str
 
 export type ProxyConfigFieldsFragment = { entryBindHost: string, entryHost: string, entryPort: number, targetHost: string, targetPort: number, certFile: string, keyFile: string };
 
-export type ManagedCertificateFieldsFragment = { proxyId: string, certificateId: string, host: string, status: string, notAfter: string, lastIssuedAt: string, lastRenewedAt: string, lastError: string };
+export type ManagedCertificateFieldsFragment = { proxyId: string, certificateId: string, host: string, status: string, servingStatus: string, operationStatus: string, providerType: string, providerName: string, credentialId: string, providerStatus: string, cloudflareCertificateId: string, hostnames: Array<string>, requestType: string, requestedValidity: number, lastSyncedAt: string, deploymentHints: Array<string>, notAfter: string, lastIssuedAt: string, lastRenewedAt: string, lastCheckedAt: string, lastAttemptedAt: string, nextAttemptAt: string, failureCount: number, fingerprint: string, lastError: string };
 
-export type ProxyFieldsFragment = { id: string, userId: string, clientId: string, name: string, type: string, status: string, description: string, runtimeStatus: string, activeTCPConnections: number, uploadBytes: number, downloadBytes: number, tcpErrorCount: number, udpErrorCount: number, httpErrorCount: number, createdAt: string, updatedAt: string, config: { entryBindHost: string, entryHost: string, entryPort: number, targetHost: string, targetPort: number, certFile: string, keyFile: string }, certificate: { proxyId: string, certificateId: string, host: string, status: string, notAfter: string, lastIssuedAt: string, lastRenewedAt: string, lastError: string } };
+export type ProviderCredentialFieldsFragment = { id: string, name: string, providerType: string, scope: string, tokenFingerprint: string, status: string, lastVerifiedAt: string, lastError: string, createdAt: string, updatedAt: string };
+
+export type ProxyFieldsFragment = { id: string, userId: string, clientId: string, name: string, type: string, status: string, description: string, runtimeStatus: string, activeTCPConnections: number, uploadBytes: number, downloadBytes: number, tcpErrorCount: number, udpErrorCount: number, httpErrorCount: number, createdAt: string, updatedAt: string, config: { entryBindHost: string, entryHost: string, entryPort: number, targetHost: string, targetPort: number, certFile: string, keyFile: string }, certificate: { proxyId: string, certificateId: string, host: string, status: string, servingStatus: string, operationStatus: string, providerType: string, providerName: string, credentialId: string, providerStatus: string, cloudflareCertificateId: string, hostnames: Array<string>, requestType: string, requestedValidity: number, lastSyncedAt: string, deploymentHints: Array<string>, notAfter: string, lastIssuedAt: string, lastRenewedAt: string, lastCheckedAt: string, lastAttemptedAt: string, nextAttemptAt: string, failureCount: number, fingerprint: string, lastError: string } };
 
 export type AuditFieldsFragment = { id: string, actorType: string, actorId: string, resourceType: string, resourceId: string, action: string, result: string, createdAt: string };
 
@@ -165,9 +192,11 @@ export type UserPayloadFieldsFragment = { userId: string, status: string, user: 
 
 export type ClientPayloadFieldsFragment = { clientId: string, credential: string, token: string, client: { id: string, userId: string, name: string, status: string, version: number, lastOnlineAt: string, lastOfflineAt: string, createdAt: string, updatedAt: string, runtime: { online: boolean, protocol: string, connectedAt: string, lastHeartbeat: string, configVersion: number, activeProxies: number, activeStreams: number, uploadBytes: number, downloadBytes: number, errorSummary: string }, managedProxies: Array<{ id: string, name: string, type: string, status: string, runtimeStatus: string, entryBindHost: string, entryHost: string, entryPort: number, targetHost: string, targetPort: number, activeTCPConnections: number }> } };
 
-export type ProxyPayloadFieldsFragment = { proxyId: string, status: string, proxy: { id: string, userId: string, clientId: string, name: string, type: string, status: string, description: string, runtimeStatus: string, activeTCPConnections: number, uploadBytes: number, downloadBytes: number, tcpErrorCount: number, udpErrorCount: number, httpErrorCount: number, createdAt: string, updatedAt: string, config: { entryBindHost: string, entryHost: string, entryPort: number, targetHost: string, targetPort: number, certFile: string, keyFile: string }, certificate: { proxyId: string, certificateId: string, host: string, status: string, notAfter: string, lastIssuedAt: string, lastRenewedAt: string, lastError: string } } };
+export type ProxyPayloadFieldsFragment = { proxyId: string, status: string, proxy: { id: string, userId: string, clientId: string, name: string, type: string, status: string, description: string, runtimeStatus: string, activeTCPConnections: number, uploadBytes: number, downloadBytes: number, tcpErrorCount: number, udpErrorCount: number, httpErrorCount: number, createdAt: string, updatedAt: string, config: { entryBindHost: string, entryHost: string, entryPort: number, targetHost: string, targetPort: number, certFile: string, keyFile: string }, certificate: { proxyId: string, certificateId: string, host: string, status: string, servingStatus: string, operationStatus: string, providerType: string, providerName: string, credentialId: string, providerStatus: string, cloudflareCertificateId: string, hostnames: Array<string>, requestType: string, requestedValidity: number, lastSyncedAt: string, deploymentHints: Array<string>, notAfter: string, lastIssuedAt: string, lastRenewedAt: string, lastCheckedAt: string, lastAttemptedAt: string, nextAttemptAt: string, failureCount: number, fingerprint: string, lastError: string } } };
 
-export type CertificatePayloadFieldsFragment = { proxyId: string, status: string, certificate: { proxyId: string, certificateId: string, host: string, status: string, notAfter: string, lastIssuedAt: string, lastRenewedAt: string, lastError: string } };
+export type CertificatePayloadFieldsFragment = { proxyId: string, status: string, certificate: { proxyId: string, certificateId: string, host: string, status: string, servingStatus: string, operationStatus: string, providerType: string, providerName: string, credentialId: string, providerStatus: string, cloudflareCertificateId: string, hostnames: Array<string>, requestType: string, requestedValidity: number, lastSyncedAt: string, deploymentHints: Array<string>, notAfter: string, lastIssuedAt: string, lastRenewedAt: string, lastCheckedAt: string, lastAttemptedAt: string, nextAttemptAt: string, failureCount: number, fingerprint: string, lastError: string } };
+
+export type ProviderCredentialPayloadFieldsFragment = { id: string, status: string, credential: { id: string, name: string, providerType: string, scope: string, tokenFingerprint: string, status: string, lastVerifiedAt: string, lastError: string, createdAt: string, updatedAt: string } };
 
 export type DashboardQueryVariables = Exact<{ [key: string]: never; }>;
 
@@ -207,14 +236,14 @@ export type ProxiesQueryVariables = Exact<{
 }>;
 
 
-export type ProxiesQuery = { proxies: { totalCount: number, pageInfo: { page: number, pageSize: number, totalCount: number, totalPages: number, hasNext: boolean, hasPrev: boolean }, items: Array<{ id: string, userId: string, clientId: string, name: string, type: string, status: string, description: string, runtimeStatus: string, activeTCPConnections: number, uploadBytes: number, downloadBytes: number, tcpErrorCount: number, udpErrorCount: number, httpErrorCount: number, createdAt: string, updatedAt: string, config: { entryBindHost: string, entryHost: string, entryPort: number, targetHost: string, targetPort: number, certFile: string, keyFile: string }, certificate: { proxyId: string, certificateId: string, host: string, status: string, notAfter: string, lastIssuedAt: string, lastRenewedAt: string, lastError: string } }> } };
+export type ProxiesQuery = { proxies: { totalCount: number, pageInfo: { page: number, pageSize: number, totalCount: number, totalPages: number, hasNext: boolean, hasPrev: boolean }, items: Array<{ id: string, userId: string, clientId: string, name: string, type: string, status: string, description: string, runtimeStatus: string, activeTCPConnections: number, uploadBytes: number, downloadBytes: number, tcpErrorCount: number, udpErrorCount: number, httpErrorCount: number, createdAt: string, updatedAt: string, config: { entryBindHost: string, entryHost: string, entryPort: number, targetHost: string, targetPort: number, certFile: string, keyFile: string }, certificate: { proxyId: string, certificateId: string, host: string, status: string, servingStatus: string, operationStatus: string, providerType: string, providerName: string, credentialId: string, providerStatus: string, cloudflareCertificateId: string, hostnames: Array<string>, requestType: string, requestedValidity: number, lastSyncedAt: string, deploymentHints: Array<string>, notAfter: string, lastIssuedAt: string, lastRenewedAt: string, lastCheckedAt: string, lastAttemptedAt: string, nextAttemptAt: string, failureCount: number, fingerprint: string, lastError: string } }> } };
 
 export type ProxyQueryVariables = Exact<{
   id: string;
 }>;
 
 
-export type ProxyQuery = { proxy: { id: string, userId: string, clientId: string, name: string, type: string, status: string, description: string, runtimeStatus: string, activeTCPConnections: number, uploadBytes: number, downloadBytes: number, tcpErrorCount: number, udpErrorCount: number, httpErrorCount: number, createdAt: string, updatedAt: string, config: { entryBindHost: string, entryHost: string, entryPort: number, targetHost: string, targetPort: number, certFile: string, keyFile: string }, certificate: { proxyId: string, certificateId: string, host: string, status: string, notAfter: string, lastIssuedAt: string, lastRenewedAt: string, lastError: string } } };
+export type ProxyQuery = { proxy: { id: string, userId: string, clientId: string, name: string, type: string, status: string, description: string, runtimeStatus: string, activeTCPConnections: number, uploadBytes: number, downloadBytes: number, tcpErrorCount: number, udpErrorCount: number, httpErrorCount: number, createdAt: string, updatedAt: string, config: { entryBindHost: string, entryHost: string, entryPort: number, targetHost: string, targetPort: number, certFile: string, keyFile: string }, certificate: { proxyId: string, certificateId: string, host: string, status: string, servingStatus: string, operationStatus: string, providerType: string, providerName: string, credentialId: string, providerStatus: string, cloudflareCertificateId: string, hostnames: Array<string>, requestType: string, requestedValidity: number, lastSyncedAt: string, deploymentHints: Array<string>, notAfter: string, lastIssuedAt: string, lastRenewedAt: string, lastCheckedAt: string, lastAttemptedAt: string, nextAttemptAt: string, failureCount: number, fingerprint: string, lastError: string } } };
 
 export type ProxyEntryOptionsQueryVariables = Exact<{ [key: string]: never; }>;
 
@@ -226,7 +255,14 @@ export type CertificatesQueryVariables = Exact<{
 }>;
 
 
-export type CertificatesQuery = { certificates: { totalCount: number, pageInfo: { page: number, pageSize: number, totalCount: number, totalPages: number, hasNext: boolean, hasPrev: boolean }, items: Array<{ proxyId: string, certificateId: string, host: string, status: string, notAfter: string, lastIssuedAt: string, lastRenewedAt: string, lastError: string }> } };
+export type CertificatesQuery = { certificates: { totalCount: number, pageInfo: { page: number, pageSize: number, totalCount: number, totalPages: number, hasNext: boolean, hasPrev: boolean }, items: Array<{ proxyId: string, certificateId: string, host: string, status: string, servingStatus: string, operationStatus: string, providerType: string, providerName: string, credentialId: string, providerStatus: string, cloudflareCertificateId: string, hostnames: Array<string>, requestType: string, requestedValidity: number, lastSyncedAt: string, deploymentHints: Array<string>, notAfter: string, lastIssuedAt: string, lastRenewedAt: string, lastCheckedAt: string, lastAttemptedAt: string, nextAttemptAt: string, failureCount: number, fingerprint: string, lastError: string }> } };
+
+export type ProviderCredentialsQueryVariables = Exact<{
+  input: AdminProviderCredentialsInput | null | undefined;
+}>;
+
+
+export type ProviderCredentialsQuery = { providerCredentials: { totalCount: number, pageInfo: { page: number, pageSize: number, totalCount: number, totalPages: number, hasNext: boolean, hasPrev: boolean }, items: Array<{ id: string, name: string, providerType: string, scope: string, tokenFingerprint: string, status: string, lastVerifiedAt: string, lastError: string, createdAt: string, updatedAt: string }> } };
 
 export type AuditQueryVariables = Exact<{
   input: AdminAuditInput | null | undefined;
@@ -289,28 +325,28 @@ export type CreateProxyMutationVariables = Exact<{
 }>;
 
 
-export type CreateProxyMutation = { createProxy: { proxyId: string, status: string, proxy: { id: string, userId: string, clientId: string, name: string, type: string, status: string, description: string, runtimeStatus: string, activeTCPConnections: number, uploadBytes: number, downloadBytes: number, tcpErrorCount: number, udpErrorCount: number, httpErrorCount: number, createdAt: string, updatedAt: string, config: { entryBindHost: string, entryHost: string, entryPort: number, targetHost: string, targetPort: number, certFile: string, keyFile: string }, certificate: { proxyId: string, certificateId: string, host: string, status: string, notAfter: string, lastIssuedAt: string, lastRenewedAt: string, lastError: string } } } };
+export type CreateProxyMutation = { createProxy: { proxyId: string, status: string, proxy: { id: string, userId: string, clientId: string, name: string, type: string, status: string, description: string, runtimeStatus: string, activeTCPConnections: number, uploadBytes: number, downloadBytes: number, tcpErrorCount: number, udpErrorCount: number, httpErrorCount: number, createdAt: string, updatedAt: string, config: { entryBindHost: string, entryHost: string, entryPort: number, targetHost: string, targetPort: number, certFile: string, keyFile: string }, certificate: { proxyId: string, certificateId: string, host: string, status: string, servingStatus: string, operationStatus: string, providerType: string, providerName: string, credentialId: string, providerStatus: string, cloudflareCertificateId: string, hostnames: Array<string>, requestType: string, requestedValidity: number, lastSyncedAt: string, deploymentHints: Array<string>, notAfter: string, lastIssuedAt: string, lastRenewedAt: string, lastCheckedAt: string, lastAttemptedAt: string, nextAttemptAt: string, failureCount: number, fingerprint: string, lastError: string } } } };
 
 export type UpdateProxyMutationVariables = Exact<{
   input: AdminUpdateProxyInput;
 }>;
 
 
-export type UpdateProxyMutation = { updateProxy: { proxyId: string, status: string, proxy: { id: string, userId: string, clientId: string, name: string, type: string, status: string, description: string, runtimeStatus: string, activeTCPConnections: number, uploadBytes: number, downloadBytes: number, tcpErrorCount: number, udpErrorCount: number, httpErrorCount: number, createdAt: string, updatedAt: string, config: { entryBindHost: string, entryHost: string, entryPort: number, targetHost: string, targetPort: number, certFile: string, keyFile: string }, certificate: { proxyId: string, certificateId: string, host: string, status: string, notAfter: string, lastIssuedAt: string, lastRenewedAt: string, lastError: string } } } };
+export type UpdateProxyMutation = { updateProxy: { proxyId: string, status: string, proxy: { id: string, userId: string, clientId: string, name: string, type: string, status: string, description: string, runtimeStatus: string, activeTCPConnections: number, uploadBytes: number, downloadBytes: number, tcpErrorCount: number, udpErrorCount: number, httpErrorCount: number, createdAt: string, updatedAt: string, config: { entryBindHost: string, entryHost: string, entryPort: number, targetHost: string, targetPort: number, certFile: string, keyFile: string }, certificate: { proxyId: string, certificateId: string, host: string, status: string, servingStatus: string, operationStatus: string, providerType: string, providerName: string, credentialId: string, providerStatus: string, cloudflareCertificateId: string, hostnames: Array<string>, requestType: string, requestedValidity: number, lastSyncedAt: string, deploymentHints: Array<string>, notAfter: string, lastIssuedAt: string, lastRenewedAt: string, lastCheckedAt: string, lastAttemptedAt: string, nextAttemptAt: string, failureCount: number, fingerprint: string, lastError: string } } } };
 
 export type EnableProxyMutationVariables = Exact<{
   input: AdminUserIdInput;
 }>;
 
 
-export type EnableProxyMutation = { enableProxy: { proxyId: string, status: string, proxy: { id: string, userId: string, clientId: string, name: string, type: string, status: string, description: string, runtimeStatus: string, activeTCPConnections: number, uploadBytes: number, downloadBytes: number, tcpErrorCount: number, udpErrorCount: number, httpErrorCount: number, createdAt: string, updatedAt: string, config: { entryBindHost: string, entryHost: string, entryPort: number, targetHost: string, targetPort: number, certFile: string, keyFile: string }, certificate: { proxyId: string, certificateId: string, host: string, status: string, notAfter: string, lastIssuedAt: string, lastRenewedAt: string, lastError: string } } } };
+export type EnableProxyMutation = { enableProxy: { proxyId: string, status: string, proxy: { id: string, userId: string, clientId: string, name: string, type: string, status: string, description: string, runtimeStatus: string, activeTCPConnections: number, uploadBytes: number, downloadBytes: number, tcpErrorCount: number, udpErrorCount: number, httpErrorCount: number, createdAt: string, updatedAt: string, config: { entryBindHost: string, entryHost: string, entryPort: number, targetHost: string, targetPort: number, certFile: string, keyFile: string }, certificate: { proxyId: string, certificateId: string, host: string, status: string, servingStatus: string, operationStatus: string, providerType: string, providerName: string, credentialId: string, providerStatus: string, cloudflareCertificateId: string, hostnames: Array<string>, requestType: string, requestedValidity: number, lastSyncedAt: string, deploymentHints: Array<string>, notAfter: string, lastIssuedAt: string, lastRenewedAt: string, lastCheckedAt: string, lastAttemptedAt: string, nextAttemptAt: string, failureCount: number, fingerprint: string, lastError: string } } } };
 
 export type DisableProxyMutationVariables = Exact<{
   input: AdminUserIdInput;
 }>;
 
 
-export type DisableProxyMutation = { disableProxy: { proxyId: string, status: string, proxy: { id: string, userId: string, clientId: string, name: string, type: string, status: string, description: string, runtimeStatus: string, activeTCPConnections: number, uploadBytes: number, downloadBytes: number, tcpErrorCount: number, udpErrorCount: number, httpErrorCount: number, createdAt: string, updatedAt: string, config: { entryBindHost: string, entryHost: string, entryPort: number, targetHost: string, targetPort: number, certFile: string, keyFile: string }, certificate: { proxyId: string, certificateId: string, host: string, status: string, notAfter: string, lastIssuedAt: string, lastRenewedAt: string, lastError: string } } } };
+export type DisableProxyMutation = { disableProxy: { proxyId: string, status: string, proxy: { id: string, userId: string, clientId: string, name: string, type: string, status: string, description: string, runtimeStatus: string, activeTCPConnections: number, uploadBytes: number, downloadBytes: number, tcpErrorCount: number, udpErrorCount: number, httpErrorCount: number, createdAt: string, updatedAt: string, config: { entryBindHost: string, entryHost: string, entryPort: number, targetHost: string, targetPort: number, certFile: string, keyFile: string }, certificate: { proxyId: string, certificateId: string, host: string, status: string, servingStatus: string, operationStatus: string, providerType: string, providerName: string, credentialId: string, providerStatus: string, cloudflareCertificateId: string, hostnames: Array<string>, requestType: string, requestedValidity: number, lastSyncedAt: string, deploymentHints: Array<string>, notAfter: string, lastIssuedAt: string, lastRenewedAt: string, lastCheckedAt: string, lastAttemptedAt: string, nextAttemptAt: string, failureCount: number, fingerprint: string, lastError: string } } } };
 
 export type DeleteProxyMutationVariables = Exact<{
   input: AdminUserIdInput;
@@ -324,11 +360,67 @@ export type IssueManagedCertificateMutationVariables = Exact<{
 }>;
 
 
-export type IssueManagedCertificateMutation = { issueManagedCertificate: { proxyId: string, status: string, certificate: { proxyId: string, certificateId: string, host: string, status: string, notAfter: string, lastIssuedAt: string, lastRenewedAt: string, lastError: string } } };
+export type IssueManagedCertificateMutation = { issueManagedCertificate: { proxyId: string, status: string, certificate: { proxyId: string, certificateId: string, host: string, status: string, servingStatus: string, operationStatus: string, providerType: string, providerName: string, credentialId: string, providerStatus: string, cloudflareCertificateId: string, hostnames: Array<string>, requestType: string, requestedValidity: number, lastSyncedAt: string, deploymentHints: Array<string>, notAfter: string, lastIssuedAt: string, lastRenewedAt: string, lastCheckedAt: string, lastAttemptedAt: string, nextAttemptAt: string, failureCount: number, fingerprint: string, lastError: string } } };
 
 export type RenewManagedCertificateMutationVariables = Exact<{
   input: AdminCertificateMutationInput;
 }>;
 
 
-export type RenewManagedCertificateMutation = { renewManagedCertificate: { proxyId: string, status: string, certificate: { proxyId: string, certificateId: string, host: string, status: string, notAfter: string, lastIssuedAt: string, lastRenewedAt: string, lastError: string } } };
+export type RenewManagedCertificateMutation = { renewManagedCertificate: { proxyId: string, status: string, certificate: { proxyId: string, certificateId: string, host: string, status: string, servingStatus: string, operationStatus: string, providerType: string, providerName: string, credentialId: string, providerStatus: string, cloudflareCertificateId: string, hostnames: Array<string>, requestType: string, requestedValidity: number, lastSyncedAt: string, deploymentHints: Array<string>, notAfter: string, lastIssuedAt: string, lastRenewedAt: string, lastCheckedAt: string, lastAttemptedAt: string, nextAttemptAt: string, failureCount: number, fingerprint: string, lastError: string } } };
+
+export type RotateCloudflareOriginCertificateMutationVariables = Exact<{
+  input: AdminCertificateMutationInput;
+}>;
+
+
+export type RotateCloudflareOriginCertificateMutation = { rotateCloudflareOriginCertificate: { proxyId: string, status: string, certificate: { proxyId: string, certificateId: string, host: string, status: string, servingStatus: string, operationStatus: string, providerType: string, providerName: string, credentialId: string, providerStatus: string, cloudflareCertificateId: string, hostnames: Array<string>, requestType: string, requestedValidity: number, lastSyncedAt: string, deploymentHints: Array<string>, notAfter: string, lastIssuedAt: string, lastRenewedAt: string, lastCheckedAt: string, lastAttemptedAt: string, nextAttemptAt: string, failureCount: number, fingerprint: string, lastError: string } } };
+
+export type SyncCloudflareOriginCertificateMutationVariables = Exact<{
+  input: AdminCertificateMutationInput;
+}>;
+
+
+export type SyncCloudflareOriginCertificateMutation = { syncCloudflareOriginCertificate: { proxyId: string, status: string, certificate: { proxyId: string, certificateId: string, host: string, status: string, servingStatus: string, operationStatus: string, providerType: string, providerName: string, credentialId: string, providerStatus: string, cloudflareCertificateId: string, hostnames: Array<string>, requestType: string, requestedValidity: number, lastSyncedAt: string, deploymentHints: Array<string>, notAfter: string, lastIssuedAt: string, lastRenewedAt: string, lastCheckedAt: string, lastAttemptedAt: string, nextAttemptAt: string, failureCount: number, fingerprint: string, lastError: string } } };
+
+export type RevokeCloudflareOriginCertificateMutationVariables = Exact<{
+  input: AdminRevokeOriginCaInput;
+}>;
+
+
+export type RevokeCloudflareOriginCertificateMutation = { revokeCloudflareOriginCertificate: { proxyId: string, status: string, certificate: { proxyId: string, certificateId: string, host: string, status: string, servingStatus: string, operationStatus: string, providerType: string, providerName: string, credentialId: string, providerStatus: string, cloudflareCertificateId: string, hostnames: Array<string>, requestType: string, requestedValidity: number, lastSyncedAt: string, deploymentHints: Array<string>, notAfter: string, lastIssuedAt: string, lastRenewedAt: string, lastCheckedAt: string, lastAttemptedAt: string, nextAttemptAt: string, failureCount: number, fingerprint: string, lastError: string } } };
+
+export type CreateProviderCredentialMutationVariables = Exact<{
+  input: AdminProviderCredentialMutationInput;
+}>;
+
+
+export type CreateProviderCredentialMutation = { createProviderCredential: { id: string, status: string, credential: { id: string, name: string, providerType: string, scope: string, tokenFingerprint: string, status: string, lastVerifiedAt: string, lastError: string, createdAt: string, updatedAt: string } } };
+
+export type UpdateProviderCredentialMutationVariables = Exact<{
+  input: AdminProviderCredentialMutationInput;
+}>;
+
+
+export type UpdateProviderCredentialMutation = { updateProviderCredential: { id: string, status: string, credential: { id: string, name: string, providerType: string, scope: string, tokenFingerprint: string, status: string, lastVerifiedAt: string, lastError: string, createdAt: string, updatedAt: string } } };
+
+export type VerifyProviderCredentialMutationVariables = Exact<{
+  input: AdminProviderCredentialIdInput;
+}>;
+
+
+export type VerifyProviderCredentialMutation = { verifyProviderCredential: { id: string, status: string, credential: { id: string, name: string, providerType: string, scope: string, tokenFingerprint: string, status: string, lastVerifiedAt: string, lastError: string, createdAt: string, updatedAt: string } } };
+
+export type DisableProviderCredentialMutationVariables = Exact<{
+  input: AdminProviderCredentialIdInput;
+}>;
+
+
+export type DisableProviderCredentialMutation = { disableProviderCredential: { id: string, status: string, credential: { id: string, name: string, providerType: string, scope: string, tokenFingerprint: string, status: string, lastVerifiedAt: string, lastError: string, createdAt: string, updatedAt: string } } };
+
+export type DeleteProviderCredentialMutationVariables = Exact<{
+  input: AdminProviderCredentialIdInput;
+}>;
+
+
+export type DeleteProviderCredentialMutation = { deleteProviderCredential: { id: string, status: string } };

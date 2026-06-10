@@ -15,36 +15,42 @@ import (
 )
 
 type Server struct {
-	AdminEnabled           bool          `json:"admin_enabled"`
-	AdminListen            string        `json:"admin_listen"`
-	AdminCredentialsFile   string        `json:"admin_credentials_file"`
-	AdminFrontendDir       string        `json:"admin_frontend_dir"`
-	AdminJWTSecretFile     string        `json:"admin_jwt_secret_file"`
-	ClientEnrollmentListen string        `json:"client_enrollment_listen"`
-	ControlQUICListen      string        `json:"control_quic_listen"`
-	ControlTLSListen       string        `json:"control_tls_listen"`
-	ControlTLSServerName   string        `json:"control_tls_server_name"`
-	ControlTLSCAFile       string        `json:"control_tls_ca_file"`
-	ControlTLSCertFile     string        `json:"control_tls_cert_file"`
-	ControlTLSKeyFile      string        `json:"control_tls_key_file"`
-	JoinServiceHost        string        `json:"join_service_host"`
-	TCPEntryHost           string        `json:"tcp_entry_host"`
-	HTTPEntryListen        string        `json:"http_entry_listen"`
-	HTTPSEntryListen       string        `json:"https_entry_listen"`
-	SQLitePath             string        `json:"sqlite_path"`
-	DataDir                string        `json:"data_dir"`
-	CertificateDir         string        `json:"certificate_dir"`
-	ACMEEnabled            bool          `json:"acme_enabled"`
-	ACMEDirectoryURL       string        `json:"acme_directory_url"`
-	ACMEAccountEmail       string        `json:"acme_account_email"`
-	ACMETermsAccepted      bool          `json:"acme_terms_accepted"`
-	ACMERenewalWindow      time.Duration `json:"acme_renewal_window"`
-	ACMECloudflareTokenEnv string        `json:"acme_cloudflare_token_env"`
-	HeartbeatTimeout       time.Duration `json:"heartbeat_timeout"`
-	LogMaxSizeMB           int           `json:"log_max_size_mb"`
-	LogMaxBackups          int           `json:"log_max_backups"`
-	LogRetentionDays       int           `json:"log_retention_days"`
-	LogCompress            bool          `json:"log_compress"`
+	AdminEnabled               bool          `json:"admin_enabled"`
+	AdminListen                string        `json:"admin_listen"`
+	AdminCredentialsFile       string        `json:"admin_credentials_file"`
+	AdminFrontendDir           string        `json:"admin_frontend_dir"`
+	AdminJWTSecretFile         string        `json:"admin_jwt_secret_file"`
+	ClientEnrollmentListen     string        `json:"client_enrollment_listen"`
+	ControlQUICListen          string        `json:"control_quic_listen"`
+	ControlTLSListen           string        `json:"control_tls_listen"`
+	ControlTLSServerName       string        `json:"control_tls_server_name"`
+	ControlTLSCAFile           string        `json:"control_tls_ca_file"`
+	ControlTLSCertFile         string        `json:"control_tls_cert_file"`
+	ControlTLSKeyFile          string        `json:"control_tls_key_file"`
+	JoinServiceHost            string        `json:"join_service_host"`
+	TCPEntryHost               string        `json:"tcp_entry_host"`
+	HTTPEntryListen            string        `json:"http_entry_listen"`
+	HTTPSEntryListen           string        `json:"https_entry_listen"`
+	SQLitePath                 string        `json:"sqlite_path"`
+	DataDir                    string        `json:"data_dir"`
+	CertificateDir             string        `json:"certificate_dir"`
+	ACMEEnabled                bool          `json:"acme_enabled"`
+	ACMEDirectoryURL           string        `json:"acme_directory_url"`
+	ACMEAccountEmail           string        `json:"acme_account_email"`
+	ACMETermsAccepted          bool          `json:"acme_terms_accepted"`
+	ACMERenewalWindow          time.Duration `json:"acme_renewal_window"`
+	ACMECloudflareTokenEnv     string        `json:"acme_cloudflare_token_env"`
+	OriginCAEnabled            bool          `json:"origin_ca_enabled"`
+	OriginCASecretStorePath    string        `json:"origin_ca_secret_store_path"`
+	OriginCADefaultRequestType string        `json:"origin_ca_default_request_type"`
+	OriginCARequestedValidity  int           `json:"origin_ca_requested_validity"`
+	OriginCARotationWindow     time.Duration `json:"origin_ca_rotation_window"`
+	OriginCAServiceKeyPath     string        `json:"origin_ca_service_key_path"`
+	HeartbeatTimeout           time.Duration `json:"heartbeat_timeout"`
+	LogMaxSizeMB               int           `json:"log_max_size_mb"`
+	LogMaxBackups              int           `json:"log_max_backups"`
+	LogRetentionDays           int           `json:"log_retention_days"`
+	LogCompress                bool          `json:"log_compress"`
 }
 
 type JoinServiceDefaults struct {
@@ -88,33 +94,37 @@ type LogRotation struct {
 func DefaultServer() Server {
 	logRotation := DefaultLogRotation()
 	return Server{
-		AdminEnabled:           false,
-		AdminListen:            "127.0.0.1:8080",
-		AdminCredentialsFile:   "",
-		AdminFrontendDir:       "",
-		AdminJWTSecretFile:     "data/admin-jwt.key",
-		ClientEnrollmentListen: ":8081",
-		ControlQUICListen:      ":8443",
-		ControlTLSListen:       ":9443",
-		ControlTLSServerName:   "go-ginx-control.local",
-		ControlTLSCAFile:       "data/certs/control-ca.crt",
-		ControlTLSCertFile:     "data/certs/control.crt",
-		ControlTLSKeyFile:      "data/certs/control.key",
-		JoinServiceHost:        "",
-		TCPEntryHost:           "0.0.0.0",
-		HTTPEntryListen:        ":80",
-		HTTPSEntryListen:       ":443",
-		SQLitePath:             "data/go-ginx.db",
-		DataDir:                "data",
-		CertificateDir:         "data/certs",
-		ACMEDirectoryURL:       "https://acme-v02.api.letsencrypt.org/directory",
-		ACMERenewalWindow:      30 * 24 * time.Hour,
-		ACMECloudflareTokenEnv: "CF_DNS_API_TOKEN",
-		HeartbeatTimeout:       45 * time.Second,
-		LogMaxSizeMB:           logRotation.MaxSizeMB,
-		LogMaxBackups:          logRotation.MaxBackups,
-		LogRetentionDays:       logRotation.RetentionDays,
-		LogCompress:            logRotation.Compress,
+		AdminEnabled:               false,
+		AdminListen:                "127.0.0.1:8080",
+		AdminCredentialsFile:       "",
+		AdminFrontendDir:           "",
+		AdminJWTSecretFile:         "data/admin-jwt.key",
+		ClientEnrollmentListen:     ":8081",
+		ControlQUICListen:          ":8443",
+		ControlTLSListen:           ":9443",
+		ControlTLSServerName:       "go-ginx-control.local",
+		ControlTLSCAFile:           "data/certs/control-ca.crt",
+		ControlTLSCertFile:         "data/certs/control.crt",
+		ControlTLSKeyFile:          "data/certs/control.key",
+		JoinServiceHost:            "",
+		TCPEntryHost:               "0.0.0.0",
+		HTTPEntryListen:            ":80",
+		HTTPSEntryListen:           ":443",
+		SQLitePath:                 "data/go-ginx.db",
+		DataDir:                    "data",
+		CertificateDir:             "data/certs",
+		ACMEDirectoryURL:           "https://acme-v02.api.letsencrypt.org/directory",
+		ACMERenewalWindow:          30 * 24 * time.Hour,
+		ACMECloudflareTokenEnv:     "CF_DNS_API_TOKEN",
+		OriginCASecretStorePath:    "data/secrets/provider-credentials",
+		OriginCADefaultRequestType: "origin-ecc",
+		OriginCARequestedValidity:  5475,
+		OriginCARotationWindow:     30 * 24 * time.Hour,
+		HeartbeatTimeout:           45 * time.Second,
+		LogMaxSizeMB:               logRotation.MaxSizeMB,
+		LogMaxBackups:              logRotation.MaxBackups,
+		LogRetentionDays:           logRotation.RetentionDays,
+		LogCompress:                logRotation.Compress,
 	}
 }
 
@@ -225,6 +235,25 @@ func (cfg Server) Validate() error {
 		}
 		if strings.TrimSpace(cfg.ACMECloudflareTokenEnv) == "" {
 			return errors.New("acme_cloudflare_token_env is required when acme is enabled")
+		}
+	}
+	if strings.TrimSpace(cfg.OriginCAServiceKeyPath) != "" {
+		return errors.New("origin_ca_service_key_path is not supported; use an admin-managed cloudflare api token credential")
+	}
+	if cfg.OriginCAEnabled {
+		if strings.TrimSpace(cfg.OriginCASecretStorePath) == "" {
+			return errors.New("origin_ca_secret_store_path is required when origin ca is enabled")
+		}
+		switch strings.TrimSpace(cfg.OriginCADefaultRequestType) {
+		case "", "origin-ecc", "origin-rsa":
+		default:
+			return errors.New("origin_ca_default_request_type must be origin-ecc or origin-rsa")
+		}
+		if cfg.OriginCARequestedValidity <= 0 {
+			return errors.New("origin_ca_requested_validity must be positive when origin ca is enabled")
+		}
+		if cfg.OriginCARotationWindow <= 0 {
+			return errors.New("origin_ca_rotation_window must be positive when origin ca is enabled")
 		}
 	}
 	if cfg.HeartbeatTimeout <= 0 {

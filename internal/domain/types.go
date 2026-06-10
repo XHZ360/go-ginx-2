@@ -105,9 +105,107 @@ const (
 	CertificateDisabled      CertificateStatus = "disabled"
 )
 
+type CertificateServingStatus string
+
+const (
+	CertificateServingUsable       CertificateServingStatus = "usable"
+	CertificateServingExpiringSoon CertificateServingStatus = "expiring_soon"
+	CertificateServingExpired      CertificateServingStatus = "expired"
+	CertificateServingMissing      CertificateServingStatus = "missing"
+	CertificateServingInvalid      CertificateServingStatus = "invalid"
+)
+
+type CertificateOperationStatus string
+
+const (
+	CertificateOperationIdle          CertificateOperationStatus = "idle"
+	CertificateOperationIssuing       CertificateOperationStatus = "issuing"
+	CertificateOperationRenewing      CertificateOperationStatus = "renewing"
+	CertificateOperationIssueFailed   CertificateOperationStatus = "issue_failed"
+	CertificateOperationRenewalFailed CertificateOperationStatus = "renewal_failed"
+)
+
+type CertificateProviderType string
+
+const (
+	CertificateProviderACMEDNS01          CertificateProviderType = "acme_dns01"
+	CertificateProviderCloudflareOriginCA CertificateProviderType = "cloudflare_origin_ca"
+)
+
+type CertificateProviderStatus string
+
+const (
+	CertificateProviderStatusActive        CertificateProviderStatus = "active"
+	CertificateProviderStatusRevoked       CertificateProviderStatus = "revoked"
+	CertificateProviderStatusMissingRemote CertificateProviderStatus = "missing_remote"
+	CertificateProviderStatusUnknown       CertificateProviderStatus = "unknown"
+)
+
+type ProviderCredentialStatus string
+
+const (
+	ProviderCredentialPending            ProviderCredentialStatus = "pending"
+	ProviderCredentialVerified           ProviderCredentialStatus = "verified"
+	ProviderCredentialVerificationFailed ProviderCredentialStatus = "verification_failed"
+	ProviderCredentialDisabled           ProviderCredentialStatus = "disabled"
+)
+
 func (status CertificateStatus) Valid() bool {
 	switch status {
 	case CertificatePending, CertificateValid, CertificateExpiringSoon, CertificateExpired, CertificateIssueFailed, CertificateRenewalFailed, CertificateDisabled:
+		return true
+	default:
+		return false
+	}
+}
+
+func (status CertificateServingStatus) Valid() bool {
+	switch status {
+	case CertificateServingUsable, CertificateServingExpiringSoon, CertificateServingExpired, CertificateServingMissing, CertificateServingInvalid:
+		return true
+	default:
+		return false
+	}
+}
+
+func (status CertificateServingStatus) ServesTLS() bool {
+	return status == CertificateServingUsable || status == CertificateServingExpiringSoon
+}
+
+func (status CertificateOperationStatus) Valid() bool {
+	switch status {
+	case CertificateOperationIdle, CertificateOperationIssuing, CertificateOperationRenewing, CertificateOperationIssueFailed, CertificateOperationRenewalFailed:
+		return true
+	default:
+		return false
+	}
+}
+
+func (provider CertificateProviderType) Valid() bool {
+	switch provider {
+	case CertificateProviderACMEDNS01, CertificateProviderCloudflareOriginCA:
+		return true
+	default:
+		return false
+	}
+}
+
+func (status CertificateProviderStatus) Valid() bool {
+	switch status {
+	case CertificateProviderStatusActive, CertificateProviderStatusRevoked, CertificateProviderStatusMissingRemote, CertificateProviderStatusUnknown:
+		return true
+	default:
+		return false
+	}
+}
+
+func (status CertificateProviderStatus) BlocksServing() bool {
+	return status == CertificateProviderStatusRevoked || status == CertificateProviderStatusMissingRemote
+}
+
+func (status ProviderCredentialStatus) Valid() bool {
+	switch status {
+	case ProviderCredentialPending, ProviderCredentialVerified, ProviderCredentialVerificationFailed, ProviderCredentialDisabled:
 		return true
 	default:
 		return false
@@ -169,21 +267,38 @@ type Proxy struct {
 }
 
 type ManagedCertificate struct {
-	ID               string
-	ProxyID          string
-	Host             string
-	Status           CertificateStatus
-	Provider         string
-	CertFile         string
-	KeyFile          string
-	PreviousCertFile string
-	PreviousKeyFile  string
-	NotAfter         *time.Time
-	LastIssuedAt     *time.Time
-	LastRenewedAt    *time.Time
-	LastError        string
-	CreatedAt        time.Time
-	UpdatedAt        time.Time
+	ID                              string
+	ProxyID                         string
+	Host                            string
+	Status                          CertificateStatus
+	ServingStatus                   CertificateServingStatus
+	OperationStatus                 CertificateOperationStatus
+	Provider                        string
+	ProviderType                    CertificateProviderType
+	ProviderName                    string
+	CredentialID                    string
+	ProviderStatus                  CertificateProviderStatus
+	CloudflareCertificateID         string
+	PreviousCloudflareCertificateID string
+	Hostnames                       []string
+	RequestType                     string
+	RequestedValidity               int
+	CertFile                        string
+	KeyFile                         string
+	PreviousCertFile                string
+	PreviousKeyFile                 string
+	NotAfter                        *time.Time
+	LastIssuedAt                    *time.Time
+	LastRenewedAt                   *time.Time
+	LastCheckedAt                   *time.Time
+	LastSyncedAt                    *time.Time
+	LastAttemptedAt                 *time.Time
+	NextAttemptAt                   *time.Time
+	FailureCount                    int
+	Fingerprint                     string
+	LastError                       string
+	CreatedAt                       time.Time
+	UpdatedAt                       time.Time
 }
 
 type ACMEProviderSettings struct {
@@ -195,13 +310,43 @@ type ACMEProviderSettings struct {
 	DNSProviderTokenEnv string
 }
 
+type OriginCAProviderSettings struct {
+	Enabled            bool
+	SecretStorePath    string
+	DefaultRequestType string
+	RequestedValidity  int
+	RotationWindow     time.Duration
+}
+
+type ProviderCredential struct {
+	ID               string
+	Name             string
+	ProviderType     CertificateProviderType
+	Scope            string
+	TokenFingerprint string
+	SecretRef        string
+	Status           ProviderCredentialStatus
+	LastVerifiedAt   *time.Time
+	LastError        string
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
+}
+
 type CertificateOperationResult struct {
 	Status           CertificateStatus
+	ServingStatus    CertificateServingStatus
+	OperationStatus  CertificateOperationStatus
+	ProviderStatus   CertificateProviderStatus
 	CertFile         string
 	KeyFile          string
 	PreviousCertFile string
 	PreviousKeyFile  string
 	NotAfter         *time.Time
+	LastCheckedAt    *time.Time
+	LastAttemptedAt  *time.Time
+	NextAttemptAt    *time.Time
+	FailureCount     int
+	Fingerprint      string
 	ErrorSummary     string
 	CompletedAt      time.Time
 }
@@ -315,6 +460,40 @@ func (certificate ManagedCertificate) Validate() error {
 	}
 	if !certificate.Status.Valid() {
 		return errors.New("certificate status is invalid")
+	}
+	if certificate.ServingStatus != "" && !certificate.ServingStatus.Valid() {
+		return errors.New("certificate serving status is invalid")
+	}
+	if certificate.OperationStatus != "" && !certificate.OperationStatus.Valid() {
+		return errors.New("certificate operation status is invalid")
+	}
+	if certificate.ProviderType != "" && !certificate.ProviderType.Valid() {
+		return errors.New("certificate provider type is invalid")
+	}
+	if certificate.ProviderStatus != "" && !certificate.ProviderStatus.Valid() {
+		return errors.New("certificate provider status is invalid")
+	}
+	if certificate.FailureCount < 0 {
+		return errors.New("certificate failure count is invalid")
+	}
+	return nil
+}
+
+func (credential ProviderCredential) Validate() error {
+	if strings.TrimSpace(credential.ID) == "" {
+		return errors.New("provider credential id is required")
+	}
+	if strings.TrimSpace(credential.Name) == "" {
+		return errors.New("provider credential name is required")
+	}
+	if !credential.ProviderType.Valid() {
+		return errors.New("provider credential type is invalid")
+	}
+	if !credential.Status.Valid() {
+		return errors.New("provider credential status is invalid")
+	}
+	if strings.TrimSpace(credential.SecretRef) == "" {
+		return errors.New("provider credential secret ref is required")
 	}
 	return nil
 }

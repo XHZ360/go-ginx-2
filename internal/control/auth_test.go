@@ -84,6 +84,10 @@ func (s authStore) Proxies() store.ProxyRepository { return authProxyRepository{
 
 func (s authStore) Certificates() store.CertificateRepository { return authCertificateRepository{} }
 
+func (s authStore) ProviderCredentials() store.ProviderCredentialRepository {
+	return authProviderCredentialRepository{}
+}
+
 func (s authStore) Stats() store.StatsRepository { return authStatsRepository{} }
 
 func (s authStore) AuditEvents() store.AuditRepository { return nil }
@@ -253,7 +257,7 @@ func (authCertificateRepository) List(context.Context) ([]domain.ManagedCertific
 	return nil, nil
 }
 
-func (authCertificateRepository) ListRenewable(context.Context, time.Time) ([]domain.ManagedCertificate, error) {
+func (authCertificateRepository) ListRenewable(context.Context, time.Time, time.Time) ([]domain.ManagedCertificate, error) {
 	return nil, nil
 }
 
@@ -262,6 +266,40 @@ func (authCertificateRepository) UpdateSuccess(context.Context, string, store.Ce
 }
 
 func (authCertificateRepository) UpdateFailure(context.Context, string, store.CertificateFailure) error {
+	return nil
+}
+
+func (authCertificateRepository) UpdateHealth(context.Context, string, store.CertificateHealth) error {
+	return nil
+}
+
+func (authCertificateRepository) UpdateProviderSync(context.Context, string, store.CertificateProviderSync) error {
+	return nil
+}
+
+type authProviderCredentialRepository struct{}
+
+func (authProviderCredentialRepository) Create(context.Context, domain.ProviderCredential) error {
+	return nil
+}
+
+func (authProviderCredentialRepository) ByID(context.Context, string) (domain.ProviderCredential, error) {
+	return domain.ProviderCredential{}, store.ErrNotFound
+}
+
+func (authProviderCredentialRepository) List(context.Context) ([]domain.ProviderCredential, error) {
+	return nil, nil
+}
+
+func (authProviderCredentialRepository) Update(context.Context, domain.ProviderCredential) error {
+	return nil
+}
+
+func (authProviderCredentialRepository) SetStatus(context.Context, string, domain.ProviderCredentialStatus, *time.Time, string) error {
+	return nil
+}
+
+func (authProviderCredentialRepository) Delete(context.Context, string) error {
 	return nil
 }
 

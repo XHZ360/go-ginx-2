@@ -70,7 +70,7 @@ go run ./cmd/goginx-admin create-http-proxy `
   -target-port 8080
 ```
 
-Create an HTTPS passthrough proxy:
+Create an HTTPS termination proxy. HTTPS proxies must have a valid static certificate/key pair or a healthy managed certificate. The public server selects the certificate by SNI, terminates TLS, and forwards the decrypted HTTP request to the configured local HTTP target:
 
 ```powershell
 go run ./cmd/goginx-admin create-https-proxy `
@@ -80,20 +80,6 @@ go run ./cmd/goginx-admin create-https-proxy `
   -client client-1 `
   -name secure `
   -host secure.example.com `
-  -target-host 127.0.0.1 `
-  -target-port 8443
-```
-
-Create an HTTPS termination proxy. The public server selects this certificate by SNI, terminates TLS, and forwards the decrypted HTTP request to the configured local HTTP target:
-
-```powershell
-go run ./cmd/goginx-admin create-https-proxy `
-  -db ./.tmp/go-ginx.db `
-  -id secure-term-1 `
-  -user user-1 `
-  -client client-1 `
-  -name secure-term `
-  -host term.example.com `
   -target-host 127.0.0.1 `
   -target-port 8080 `
   -cert-file data/certs/term.crt `

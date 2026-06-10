@@ -134,6 +134,43 @@ func TestServerValidateAcceptsConfiguredACME(t *testing.T) {
 	}
 }
 
+func TestServerValidateOriginCASettings(t *testing.T) {
+	cfg := DefaultServer()
+	if cfg.OriginCASecretStorePath != "data/secrets/provider-credentials" || cfg.OriginCADefaultRequestType != "origin-ecc" || cfg.OriginCARequestedValidity != 5475 || cfg.OriginCARotationWindow != 30*24*time.Hour {
+		t.Fatalf("unexpected origin ca defaults: %+v", cfg)
+	}
+	cfg.OriginCAEnabled = true
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("validate default origin ca config: %v", err)
+	}
+
+	cfg = DefaultServer()
+	cfg.OriginCAServiceKeyPath = "origin-ca-service-key.pem"
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected origin ca service key path to be rejected")
+	}
+
+	tests := []struct {
+		name   string
+		mutate func(*Server)
+	}{
+		{name: "missing secret store", mutate: func(cfg *Server) { cfg.OriginCASecretStorePath = "" }},
+		{name: "invalid request type", mutate: func(cfg *Server) { cfg.OriginCADefaultRequestType = "origin-unknown" }},
+		{name: "invalid requested validity", mutate: func(cfg *Server) { cfg.OriginCARequestedValidity = 0 }},
+		{name: "invalid rotation window", mutate: func(cfg *Server) { cfg.OriginCARotationWindow = 0 }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := DefaultServer()
+			cfg.OriginCAEnabled = true
+			tt.mutate(&cfg)
+			if err := cfg.Validate(); err == nil {
+				t.Fatal("expected invalid origin ca config error")
+			}
+		})
+	}
+}
+
 func TestLoadServerAcceptsAdminFrontendDir(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "server.json")
 	content := `{"admin_listen":"127.0.0.1:8080","admin_credentials_file":"admins.json","admin_frontend_dir":"web/admin","client_enrollment_listen":"127.0.0.1:18081","control_quic_listen":"127.0.0.1:8443","control_tls_listen":"127.0.0.1:9443","control_tls_cert_file":"control.crt","control_tls_key_file":"control.key","join_service_host":"server.example.com","tcp_entry_host":"127.0.0.1","http_entry_listen":"127.0.0.1:8081","sqlite_path":"data/go-ginx.db","data_dir":"data","certificate_dir":"data/certs","heartbeat_timeout":1000000000,"log_max_size_mb":25,"log_max_backups":4,"log_retention_days":9,"log_compress":false}`

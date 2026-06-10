@@ -9,13 +9,10 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
-	"fmt"
 	"io"
 	"log"
 	"net"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -107,32 +104,14 @@ func (listener *Listener) handleConn(ctx context.Context, conn net.Conn) {
 	}
 	certificate, err := listener.resolver.Certificate(ctx, serverName, proxy)
 	if err != nil {
+		log.Printf("https proxy route failed: bind_host=%s port=%d sni=%s proxy_id=%s category=certificate_unavailable error=%v", displayBindHost(listener.entry.EntryBindHost), listener.entry.EntryPort, serverName, proxy.ID, err)
 		return
 	}
-	if certificate != nil {
-		listener.handleTerminatedConn(ctx, conn, prefix, proxy, *certificate)
+	if certificate == nil {
+		log.Printf("https proxy route failed: bind_host=%s port=%d sni=%s proxy_id=%s category=certificate_missing", displayBindHost(listener.entry.EntryBindHost), listener.entry.EntryPort, serverName, proxy.ID)
 		return
 	}
-	_ = conn.SetDeadline(time.Time{})
-	latest, ok := listener.entry.Sessions.Latest(proxy.ClientID)
-	if !ok || latest.StreamOpener == nil {
-		log.Printf("https proxy route failed: bind_host=%s port=%d sni=%s proxy_id=%s category=client_offline", displayBindHost(listener.entry.EntryBindHost), listener.entry.EntryPort, serverName, proxy.ID)
-		return
-	}
-	stream, err := latest.StreamOpener.OpenStream(ctx)
-	if err != nil {
-		log.Printf("https proxy route failed: bind_host=%s port=%d sni=%s proxy_id=%s category=open_stream_failed error=%v", displayBindHost(listener.entry.EntryBindHost), listener.entry.EntryPort, serverName, proxy.ID, err)
-		return
-	}
-	defer stream.Close()
-	connectionID, err := listener.connectionID()
-	if err != nil {
-		return
-	}
-	if err := control.WriteMessage(stream, control.MessageOpenStream, control.OpenStream{Kind: "tcp", ProxyID: proxy.ID, ConnectionID: connectionID, TargetHost: proxy.TargetHost, TargetPort: proxy.TargetPort}); err != nil {
-		return
-	}
-	tunnel.CopyBidirectional(&prefixedConn{Conn: conn, reader: bytes.NewReader(prefix)}, stream)
+	listener.handleTerminatedConn(ctx, conn, prefix, proxy, *certificate)
 }
 
 func (listener *Listener) handleTerminatedConn(ctx context.Context, conn net.Conn, prefix []byte, proxy domain.Proxy, certificate tls.Certificate) {
@@ -245,40 +224,7 @@ func writeResponseWithTimeout(conn net.Conn, stream io.Closer, response *http.Re
 }
 
 func (listener *Listener) certificateFile(path string) (string, error) {
-	info, err := os.Lstat(path)
-	if err != nil {
-		return "", err
-	}
-	if info.Mode()&os.ModeSymlink != 0 {
-		return "", errors.New("certificate file symlinks are not allowed")
-	}
-	resolved, err := filepath.EvalSymlinks(path)
-	if err != nil {
-		return "", err
-	}
-	resolved, err = filepath.Abs(resolved)
-	if err != nil {
-		return "", err
-	}
-	if strings.TrimSpace(listener.entry.CertificateDir) == "" {
-		return resolved, nil
-	}
-	certificateDir, err := filepath.EvalSymlinks(listener.entry.CertificateDir)
-	if err != nil {
-		return "", err
-	}
-	certificateDir, err = filepath.Abs(certificateDir)
-	if err != nil {
-		return "", err
-	}
-	relative, err := filepath.Rel(certificateDir, resolved)
-	if err != nil {
-		return "", err
-	}
-	if relative == "." || strings.HasPrefix(relative, "..") || filepath.IsAbs(relative) {
-		return "", fmt.Errorf("certificate file must be under %s", certificateDir)
-	}
-	return resolved, nil
+	return resolveCertificateFile(path, listener.entry.CertificateDir)
 }
 
 func writeSimpleResponse(writer io.Writer, statusCode int, body string) error {

@@ -20,6 +20,7 @@ type Store interface {
 	ClientEnrollments() ClientEnrollmentRepository
 	Proxies() ProxyRepository
 	Certificates() CertificateRepository
+	ProviderCredentials() ProviderCredentialRepository
 	Stats() StatsRepository
 	AuditEvents() AuditRepository
 	Close() error
@@ -43,18 +44,55 @@ type ProxyStats struct {
 }
 
 type CertificateSuccess struct {
-	CertFile         string
-	KeyFile          string
-	PreviousCertFile string
-	PreviousKeyFile  string
-	NotAfter         time.Time
-	CompletedAt      time.Time
+	CertFile             string
+	KeyFile              string
+	PreviousCertFile     string
+	PreviousKeyFile      string
+	NotAfter             time.Time
+	ServingStatus        domain.CertificateServingStatus
+	ProviderStatus       domain.CertificateProviderStatus
+	ProviderType         domain.CertificateProviderType
+	ProviderName         string
+	CredentialID         string
+	CloudflareID         string
+	PreviousCloudflareID string
+	Hostnames            []string
+	RequestType          string
+	RequestedValidity    int
+	Fingerprint          string
+	LastCheckedAt        time.Time
+	LastAttemptedAt      time.Time
+	LastSyncedAt         *time.Time
+	CompletedAt          time.Time
 }
 
 type CertificateFailure struct {
-	Status      domain.CertificateStatus
-	LastError   string
-	CompletedAt time.Time
+	Status          domain.CertificateStatus
+	ServingStatus   domain.CertificateServingStatus
+	OperationStatus domain.CertificateOperationStatus
+	ProviderStatus  domain.CertificateProviderStatus
+	LastError       string
+	LastCheckedAt   time.Time
+	LastAttemptedAt time.Time
+	LastSyncedAt    *time.Time
+	NextAttemptAt   *time.Time
+	FailureCount    int
+	CompletedAt     time.Time
+}
+
+type CertificateHealth struct {
+	ServingStatus domain.CertificateServingStatus
+	NotAfter      *time.Time
+	Fingerprint   string
+	LastError     string
+	CheckedAt     time.Time
+}
+
+type CertificateProviderSync struct {
+	ProviderStatus domain.CertificateProviderStatus
+	LastError      string
+	SyncedAt       time.Time
+	UpdatedAt      time.Time
 }
 
 type UserRepository interface {
@@ -108,9 +146,20 @@ type CertificateRepository interface {
 	ByProxyID(ctx context.Context, proxyID string) (domain.ManagedCertificate, error)
 	ByHost(ctx context.Context, host string) (domain.ManagedCertificate, error)
 	List(ctx context.Context) ([]domain.ManagedCertificate, error)
-	ListRenewable(ctx context.Context, before time.Time) ([]domain.ManagedCertificate, error)
+	ListRenewable(ctx context.Context, before time.Time, now time.Time) ([]domain.ManagedCertificate, error)
 	UpdateSuccess(ctx context.Context, id string, result CertificateSuccess) error
 	UpdateFailure(ctx context.Context, id string, failure CertificateFailure) error
+	UpdateHealth(ctx context.Context, id string, health CertificateHealth) error
+	UpdateProviderSync(ctx context.Context, id string, sync CertificateProviderSync) error
+}
+
+type ProviderCredentialRepository interface {
+	Create(ctx context.Context, credential domain.ProviderCredential) error
+	ByID(ctx context.Context, id string) (domain.ProviderCredential, error)
+	List(ctx context.Context) ([]domain.ProviderCredential, error)
+	Update(ctx context.Context, credential domain.ProviderCredential) error
+	SetStatus(ctx context.Context, id string, status domain.ProviderCredentialStatus, lastVerifiedAt *time.Time, lastError string) error
+	Delete(ctx context.Context, id string) error
 }
 
 type AuditRepository interface {

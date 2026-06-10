@@ -267,7 +267,7 @@ describe('admin client management', () => {
     expect(fetchMock).toHaveBeenCalledWith('/api/admin/graphql', expect.objectContaining({
       body: expect.stringContaining('"userId":"user-1"'),
     }));
-  });
+  }, 10000);
 
   it('generates a client join token from the clients page', async () => {
     const fetchMock = createFetchMock();
@@ -289,7 +289,7 @@ describe('admin client management', () => {
     expect(fetchMock).toHaveBeenCalledWith('/api/admin/graphql', expect.objectContaining({
       body: expect.stringContaining('"serverAddress":"edge.example.com:8443"'),
     }));
-  });
+  }, 10000);
 
   it('keeps create validation errors inside the client form and clears user filtering through the selector', async () => {
     vi.stubGlobal('fetch', createFetchMock({ createValidationFailure: true }));

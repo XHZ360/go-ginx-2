@@ -237,11 +237,17 @@ export function ProxyDetailPage() {
           <article className="panel">
             <h2>Certificate</h2>
             <dl className="detail-list">
-              <div><dt>Status</dt><dd><StatusBadge value={proxy.certificate.status} /></dd></div>
+              <div><dt>Serving</dt><dd><StatusBadge value={proxy.certificate.servingStatus ?? proxy.certificate.status} /></dd></div>
+              <div><dt>Operation</dt><dd><StatusBadge value={proxy.certificate.operationStatus} /></dd></div>
               <div><dt>Host</dt><dd>{proxy.certificate.host ?? 'N/A'}</dd></div>
               <div><dt>Expires</dt><dd><Timestamp value={proxy.certificate.notAfter} /></dd></div>
               <div><dt>Issued</dt><dd><Timestamp value={proxy.certificate.lastIssuedAt} /></dd></div>
               <div><dt>Renewed</dt><dd><Timestamp value={proxy.certificate.lastRenewedAt} /></dd></div>
+              <div><dt>Checked</dt><dd><Timestamp value={proxy.certificate.lastCheckedAt} /></dd></div>
+              <div><dt>Attempted</dt><dd><Timestamp value={proxy.certificate.lastAttemptedAt} /></dd></div>
+              <div><dt>Next attempt</dt><dd><Timestamp value={proxy.certificate.nextAttemptAt} /></dd></div>
+              <div><dt>Failures</dt><dd>{proxy.certificate.failureCount ?? 0}</dd></div>
+              <div><dt>Fingerprint</dt><dd>{formatFingerprint(proxy.certificate.fingerprint)}</dd></div>
               <div><dt>Last error</dt><dd>{proxy.certificate.lastError || 'None'}</dd></div>
             </dl>
           </article>
@@ -292,4 +298,11 @@ export function ProxyDetailPage() {
       </Dialog>
     </section>
   );
+}
+
+function formatFingerprint(value?: string | null) {
+  if (!value) {
+    return 'None';
+  }
+  return value.length > 32 ? `${value.slice(0, 32)}...` : value;
 }

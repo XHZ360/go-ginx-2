@@ -17,6 +17,7 @@ import (
 
 	"github.com/simp-frp/go-ginx-2/internal/admin"
 	"github.com/simp-frp/go-ginx-2/internal/adminquery"
+	"github.com/simp-frp/go-ginx-2/internal/certmanager"
 	"github.com/simp-frp/go-ginx-2/internal/config"
 	"github.com/simp-frp/go-ginx-2/internal/domain"
 	"github.com/simp-frp/go-ginx-2/internal/enrollment"
@@ -603,6 +604,93 @@ func TestServerCertificateResponsesStaySecretSafe(t *testing.T) {
 	}
 }
 
+func TestServerProviderCredentialGraphQLLifecycleIsSecretSafe(t *testing.T) {
+	server := startAdminTestServer(t, func(entry *Entry) {
+		entry.Commands.Certificates = certmanager.Service{
+			ProviderSecretStore: certmanager.FileSecretStore{Dir: t.TempDir()},
+			OriginCAClient:      adminAPIOriginCAClient{},
+			OriginCASettings:    domain.OriginCAProviderSettings{Enabled: true},
+		}
+	})
+	client := newAdminHTTPClient(t)
+	bootstrap := loginAdmin(t, client, server.Addr().String(), "admin", "secret")
+
+	createResult := postAdminGraphQL(t, client, server.Addr().String(), `mutation {
+  createProviderCredential(input: { id: "cred-1", name: "Production Origin CA", scope: "Zone SSL:Edit", token: "cf-token-secret" }) {
+    id
+    status
+    credential { id name providerType scope tokenFingerprint status lastVerifiedAt lastError }
+  }
+}`, bootstrap.CSRFToken, http.StatusOK)
+	createPayload := createResult["data"].(map[string]any)["createProviderCredential"].(map[string]any)
+	created := createPayload["credential"].(map[string]any)
+	if created["id"] != "cred-1" || created["providerType"] != string(domain.CertificateProviderCloudflareOriginCA) || created["status"] != string(domain.ProviderCredentialPending) || created["tokenFingerprint"] == "" {
+		t.Fatalf("unexpected created credential payload: %+v", createPayload)
+	}
+
+	verifyResult := postAdminGraphQL(t, client, server.Addr().String(), `mutation {
+  verifyProviderCredential(input: { id: "cred-1" }) {
+    credential { id status lastVerifiedAt lastError }
+  }
+}`, bootstrap.CSRFToken, http.StatusOK)
+	verified := verifyResult["data"].(map[string]any)["verifyProviderCredential"].(map[string]any)["credential"].(map[string]any)
+	if verified["status"] != string(domain.ProviderCredentialVerified) || verified["lastVerifiedAt"] == nil {
+		t.Fatalf("unexpected verified credential payload: %+v", verified)
+	}
+
+	updateResult := postAdminGraphQL(t, client, server.Addr().String(), `mutation {
+  updateProviderCredential(input: { id: "cred-1", name: "Rotated Origin CA", scope: "Zone SSL:Read,Edit", token: "cf-token-rotated" }) {
+    credential { id name tokenFingerprint status lastVerifiedAt }
+  }
+}`, bootstrap.CSRFToken, http.StatusOK)
+	updated := updateResult["data"].(map[string]any)["updateProviderCredential"].(map[string]any)["credential"].(map[string]any)
+	if updated["name"] != "Rotated Origin CA" || updated["status"] != string(domain.ProviderCredentialPending) || updated["lastVerifiedAt"] != nil {
+		t.Fatalf("unexpected updated credential payload: %+v", updated)
+	}
+
+	queryResult := postAdminGraphQL(t, client, server.Addr().String(), `query {
+  providerCredentials(input: { page: { page: 1, pageSize: 10 } }) {
+    items { id name providerType scope tokenFingerprint status lastVerifiedAt lastError }
+  }
+  providerCredential(id: "cred-1") { id name providerType scope tokenFingerprint status lastVerifiedAt lastError }
+  audit(input: { page: { page: 1, pageSize: 20 } }) { items { action resourceId result } }
+}`, "", http.StatusOK)
+	encoded, err := json.Marshal(queryResult)
+	if err != nil {
+		t.Fatalf("marshal provider credential query: %v", err)
+	}
+	for _, secret := range []string{"cf-token-secret", "cf-token-rotated", "secretRef", "token:"} {
+		if bytes.Contains(encoded, []byte(secret)) {
+			t.Fatalf("provider credential response leaked %q: %s", secret, string(encoded))
+		}
+	}
+	auditItems := queryResult["data"].(map[string]any)["audit"].(map[string]any)["items"].([]any)
+	auditActions := make(map[string]bool, len(auditItems))
+	for _, item := range auditItems {
+		auditActions[item.(map[string]any)["action"].(string)] = true
+	}
+	for _, action := range []string{"create_provider_credential", "verify_provider_credential", "update_provider_credential"} {
+		if !auditActions[action] {
+			t.Fatalf("expected audit action %q in %+v", action, auditItems)
+		}
+	}
+
+	disableResult := postAdminGraphQL(t, client, server.Addr().String(), `mutation {
+  disableProviderCredential(input: { id: "cred-1" }) { credential { id status } }
+}`, bootstrap.CSRFToken, http.StatusOK)
+	disabled := disableResult["data"].(map[string]any)["disableProviderCredential"].(map[string]any)["credential"].(map[string]any)
+	if disabled["status"] != string(domain.ProviderCredentialDisabled) {
+		t.Fatalf("unexpected disabled credential payload: %+v", disabled)
+	}
+	deleteResult := postAdminGraphQL(t, client, server.Addr().String(), `mutation {
+  deleteProviderCredential(input: { id: "cred-1" }) { id status }
+}`, bootstrap.CSRFToken, http.StatusOK)
+	deleted := deleteResult["data"].(map[string]any)["deleteProviderCredential"].(map[string]any)
+	if deleted["id"] != "cred-1" || deleted["status"] != string(domain.ProviderCredentialDisabled) {
+		t.Fatalf("unexpected delete credential payload: %+v", deleted)
+	}
+}
+
 func TestServerSessionExpiryAndLogout(t *testing.T) {
 	now := time.Now().UTC()
 	server := startAdminTestServer(t, func(entry *Entry) {
@@ -825,6 +913,28 @@ func newAdminHTTPClient(t *testing.T) *http.Client {
 
 func testAdminJWTSecret() []byte {
 	return []byte("0123456789abcdef0123456789abcdef")
+}
+
+type adminAPIOriginCAClient struct{}
+
+func (adminAPIOriginCAClient) Create(context.Context, string, certmanager.OriginCACreateRequest) (certmanager.OriginCACertificate, error) {
+	return certmanager.OriginCACertificate{}, io.ErrUnexpectedEOF
+}
+
+func (adminAPIOriginCAClient) Get(context.Context, string, string) (certmanager.OriginCACertificate, error) {
+	return certmanager.OriginCACertificate{}, io.ErrUnexpectedEOF
+}
+
+func (adminAPIOriginCAClient) List(context.Context, string) ([]certmanager.OriginCACertificate, error) {
+	return nil, io.ErrUnexpectedEOF
+}
+
+func (adminAPIOriginCAClient) Revoke(context.Context, string, string) error {
+	return io.ErrUnexpectedEOF
+}
+
+func (adminAPIOriginCAClient) VerifyToken(context.Context, string) error {
+	return nil
 }
 
 func loginAdmin(t *testing.T, client *http.Client, addr string, username string, password string) sessionBootstrapResponse {

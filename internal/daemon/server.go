@@ -133,7 +133,7 @@ func startServerWithStore(parent context.Context, cfg config.Server, db store.St
 			return nil, fmt.Errorf("assemble runtime listener claims: %w", err)
 		}
 		adminService := admin.Service{Store: db, StaticListenerClaims: staticListenerClaims, ProxyEntryDefaults: proxyEntryDefaults, DefaultJoin: joinDefaults, ListenerReconciler: runtime}
-		if cfg.ACMEEnabled {
+		if cfg.ACMEEnabled || cfg.OriginCAEnabled {
 			certificateService, err := managedCertificateService(cfg, db)
 			if err != nil {
 				_ = runtime.Close()
@@ -146,7 +146,7 @@ func startServerWithStore(parent context.Context, cfg config.Server, db store.St
 			_ = runtime.Close()
 			return nil, fmt.Errorf("load admin jwt secret: %w", err)
 		}
-		adminServer, err := adminapi.Listen(adminapi.Entry{ListenAddress: cfg.AdminListen, AdminCredentialsFile: cfg.AdminCredentialsFile, AdminFrontendDir: cfg.AdminFrontendDir, AdminJWTSecret: adminJWTSecret, Query: adminquery.Service{Store: db, Sessions: sessions, Stats: memoryStats}, Commands: adminService, Enrollment: enrollment.Service{Store: db}})
+		adminServer, err := adminapi.Listen(adminapi.Entry{ListenAddress: cfg.AdminListen, AdminCredentialsFile: cfg.AdminCredentialsFile, AdminFrontendDir: cfg.AdminFrontendDir, AdminJWTSecret: adminJWTSecret, Query: adminquery.Service{Store: db, Sessions: sessions, Stats: memoryStats, CertificateDir: cfg.CertificateDir, RenewalWindow: cfg.ACMERenewalWindow, OriginCARotationWindow: cfg.OriginCARotationWindow}, Commands: adminService, Enrollment: enrollment.Service{Store: db}})
 		if err != nil {
 			_ = runtime.Close()
 			return nil, fmt.Errorf("listen admin api: %w", err)
@@ -176,50 +176,40 @@ func startServerWithStore(parent context.Context, cfg config.Server, db store.St
 		_ = runtime.Close()
 		return nil, fmt.Errorf("reconcile proxy listeners: %w", err)
 	}
-	if cfg.ACMEEnabled {
+	if cfg.ACMEEnabled || cfg.OriginCAEnabled {
 		certificateService, err := managedCertificateService(cfg, db)
 		if err != nil {
 			_ = runtime.Close()
 			return nil, err
 		}
-		go runCertificateRenewalLoop(runtimeCtx, db, certificateService, cfg.ACMERenewalWindow)
+		go newManagedCertificateController(db, certificateService, cfg.ACMERenewalWindow, cfg.OriginCARotationWindow).Run(runtimeCtx)
 	}
 	return runtime, nil
 }
 
 func managedCertificateService(cfg config.Server, db store.Store) (certmanager.Service, error) {
-	provider, err := newDaemonDNSProvider(cfg.ACMECloudflareTokenEnv)
-	if err != nil {
-		return certmanager.Service{}, err
-	}
-	return certmanager.Service{Store: db, Issuer: newDaemonACMEIssuer(), DNSProvider: provider, Storage: httpsproxy.ManagedCertificateStorage{CertificateDir: cfg.CertificateDir}, Settings: domain.ACMEProviderSettings{DirectoryURL: cfg.ACMEDirectoryURL, AccountEmail: cfg.ACMEAccountEmail, TermsAccepted: cfg.ACMETermsAccepted, RenewalWindow: cfg.ACMERenewalWindow, DNSProvider: "cloudflare", DNSProviderTokenEnv: cfg.ACMECloudflareTokenEnv}}, nil
-}
-
-func runCertificateRenewalLoop(ctx context.Context, db store.Store, service certmanager.Service, renewalWindow time.Duration) {
-	ticker := time.NewTicker(time.Second)
-	defer ticker.Stop()
-	renewManagedCertificates(ctx, db, service, renewalWindow)
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			renewManagedCertificates(ctx, db, service, renewalWindow)
+	var issuer certmanager.Issuer
+	var provider certmanager.DNSChallengeProvider
+	if cfg.ACMEEnabled {
+		issuer = newDaemonACMEIssuer()
+		loadedProvider, err := newDaemonDNSProvider(cfg.ACMECloudflareTokenEnv)
+		if err != nil {
+			provider = failedDNSProvider{err: err}
+			issuer = failedCertificateIssuer{err: err}
+		} else {
+			provider = loadedProvider
 		}
 	}
-}
-
-func renewManagedCertificates(ctx context.Context, db store.Store, service certmanager.Service, renewalWindow time.Duration) {
-	if db == nil || renewalWindow <= 0 {
-		return
-	}
-	certificates, err := db.Certificates().ListRenewable(ctx, time.Now().UTC().Add(renewalWindow))
-	if err != nil {
-		return
-	}
-	for _, certificate := range certificates {
-		_, _ = service.Renew(ctx, certificate.ProxyID)
-	}
+	return certmanager.Service{
+		Store:               db,
+		Issuer:              issuer,
+		DNSProvider:         provider,
+		OriginCAClient:      certmanager.CloudflareOriginCAClient{},
+		ProviderSecretStore: certmanager.FileSecretStore{Dir: cfg.OriginCASecretStorePath},
+		Storage:             httpsproxy.ManagedCertificateStorage{CertificateDir: cfg.CertificateDir},
+		Settings:            domain.ACMEProviderSettings{DirectoryURL: cfg.ACMEDirectoryURL, AccountEmail: cfg.ACMEAccountEmail, TermsAccepted: cfg.ACMETermsAccepted, RenewalWindow: cfg.ACMERenewalWindow, DNSProvider: "cloudflare", DNSProviderTokenEnv: cfg.ACMECloudflareTokenEnv},
+		OriginCASettings:    domain.OriginCAProviderSettings{Enabled: cfg.OriginCAEnabled, SecretStorePath: cfg.OriginCASecretStorePath, DefaultRequestType: cfg.OriginCADefaultRequestType, RequestedValidity: cfg.OriginCARequestedValidity, RotationWindow: cfg.OriginCARotationWindow},
+	}, nil
 }
 
 func (runtime *ServerRuntime) Close() error {

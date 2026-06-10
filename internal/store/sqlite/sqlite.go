@@ -46,6 +46,10 @@ func (s *Store) Proxies() store.ProxyRepository { return proxyRepository{s.db} }
 
 func (s *Store) Certificates() store.CertificateRepository { return certificateRepository{s.db} }
 
+func (s *Store) ProviderCredentials() store.ProviderCredentialRepository {
+	return providerCredentialRepository{s.db}
+}
+
 func (s *Store) Stats() store.StatsRepository { return statsRepository{s.db} }
 
 func (s *Store) AuditEvents() store.AuditRepository { return auditRepository{s.db} }
@@ -64,6 +68,12 @@ func (s *Store) migrate(ctx context.Context) error {
 		return err
 	}
 	if err := addClientEnrollmentTokenColumn(ctx, s.db); err != nil {
+		return err
+	}
+	if err := addManagedCertificateLifecycleColumns(ctx, s.db); err != nil {
+		return err
+	}
+	if err := addManagedCertificateProviderColumns(ctx, s.db); err != nil {
 		return err
 	}
 	return addUserPasswordColumn(ctx, s.db)
@@ -398,6 +408,7 @@ func (r proxyRepository) Delete(ctx context.Context, id string) error {
 type certificateRepository struct{ db *sql.DB }
 
 func (r certificateRepository) Create(ctx context.Context, certificate domain.ManagedCertificate) error {
+	applyManagedCertificateDefaults(&certificate)
 	if err := certificate.Validate(); err != nil {
 		return err
 	}
@@ -408,7 +419,11 @@ func (r certificateRepository) Create(ctx context.Context, certificate domain.Ma
 	if certificate.UpdatedAt.IsZero() {
 		certificate.UpdatedAt = now
 	}
-	_, err := r.db.ExecContext(ctx, `insert into managed_certificates (id, proxy_id, host, status, provider, cert_file, key_file, previous_cert_file, previous_key_file, not_after, last_issued_at, last_renewed_at, last_error, created_at, updated_at) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, certificate.ID, certificate.ProxyID, certificate.Host, certificate.Status, certificate.Provider, certificate.CertFile, certificate.KeyFile, certificate.PreviousCertFile, certificate.PreviousKeyFile, certificate.NotAfter, certificate.LastIssuedAt, certificate.LastRenewedAt, certificate.LastError, certificate.CreatedAt, certificate.UpdatedAt)
+	hostnames, err := encodeStringList(certificate.Hostnames)
+	if err != nil {
+		return err
+	}
+	_, err = r.db.ExecContext(ctx, `insert into managed_certificates (id, proxy_id, host, status, serving_status, operation_status, provider, provider_type, provider_name, credential_id, provider_status, cloudflare_certificate_id, previous_cloudflare_certificate_id, hostnames, request_type, requested_validity, cert_file, key_file, previous_cert_file, previous_key_file, not_after, last_issued_at, last_renewed_at, last_checked_at, last_synced_at, last_attempted_at, next_attempt_at, failure_count, fingerprint, last_error, created_at, updated_at) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, certificate.ID, certificate.ProxyID, certificate.Host, certificate.Status, certificate.ServingStatus, certificate.OperationStatus, certificate.Provider, certificate.ProviderType, certificate.ProviderName, certificate.CredentialID, certificate.ProviderStatus, certificate.CloudflareCertificateID, certificate.PreviousCloudflareCertificateID, hostnames, certificate.RequestType, certificate.RequestedValidity, certificate.CertFile, certificate.KeyFile, certificate.PreviousCertFile, certificate.PreviousKeyFile, certificate.NotAfter, certificate.LastIssuedAt, certificate.LastRenewedAt, certificate.LastCheckedAt, certificate.LastSyncedAt, certificate.LastAttemptedAt, certificate.NextAttemptAt, certificate.FailureCount, certificate.Fingerprint, certificate.LastError, certificate.CreatedAt, certificate.UpdatedAt)
 	return translateError(err)
 }
 
@@ -440,8 +455,11 @@ func (r certificateRepository) List(ctx context.Context) ([]domain.ManagedCertif
 	return certificates, nil
 }
 
-func (r certificateRepository) ListRenewable(ctx context.Context, before time.Time) ([]domain.ManagedCertificate, error) {
-	rows, err := r.db.QueryContext(ctx, managedCertificateSelect+` where status in (?, ?) and not_after is not null and not_after <= ? order by not_after, host`, domain.CertificateValid, domain.CertificateExpiringSoon, before)
+func (r certificateRepository) ListRenewable(ctx context.Context, before time.Time, now time.Time) ([]domain.ManagedCertificate, error) {
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	rows, err := r.db.QueryContext(ctx, managedCertificateSelect+` where not_after is not null and not_after <= ? and (next_attempt_at is null or next_attempt_at <= ?) and (serving_status in (?, ?) or (serving_status = '' and status in (?, ?))) order by not_after, host`, before, now, domain.CertificateServingUsable, domain.CertificateServingExpiringSoon, domain.CertificateValid, domain.CertificateExpiringSoon)
 	if err != nil {
 		return nil, err
 	}
@@ -465,8 +483,64 @@ func (r certificateRepository) UpdateSuccess(ctx context.Context, id string, res
 	if completedAt.IsZero() {
 		completedAt = time.Now().UTC()
 	}
-	query := `update managed_certificates set status = ?, cert_file = ?, key_file = ?, previous_cert_file = ?, previous_key_file = ?, not_after = ?, last_error = '', updated_at = ?`
-	args := []any{domain.CertificateValid, result.CertFile, result.KeyFile, result.PreviousCertFile, result.PreviousKeyFile, result.NotAfter, completedAt}
+	servingStatus := result.ServingStatus
+	if servingStatus == "" {
+		servingStatus = domain.CertificateServingUsable
+	}
+	lastCheckedAt := result.LastCheckedAt
+	if lastCheckedAt.IsZero() {
+		lastCheckedAt = completedAt
+	}
+	lastAttemptedAt := result.LastAttemptedAt
+	if lastAttemptedAt.IsZero() {
+		lastAttemptedAt = completedAt
+	}
+	query := `update managed_certificates set status = ?, serving_status = ?, operation_status = ?, cert_file = ?, key_file = ?, previous_cert_file = ?, previous_key_file = ?, not_after = ?, last_checked_at = ?, last_attempted_at = ?, next_attempt_at = null, failure_count = 0, fingerprint = ?, last_error = '', updated_at = ?`
+	args := []any{certificateStatusFromServing(servingStatus), servingStatus, domain.CertificateOperationIdle, result.CertFile, result.KeyFile, result.PreviousCertFile, result.PreviousKeyFile, result.NotAfter, lastCheckedAt, lastAttemptedAt, strings.ToLower(result.Fingerprint), completedAt}
+	if result.ProviderStatus != "" {
+		query += `, provider_status = ?`
+		args = append(args, result.ProviderStatus)
+	}
+	if result.ProviderType != "" {
+		query += `, provider_type = ?`
+		args = append(args, result.ProviderType)
+	}
+	if result.ProviderName != "" {
+		query += `, provider_name = ?, provider = ?`
+		args = append(args, result.ProviderName, result.ProviderName)
+	}
+	if result.CredentialID != "" {
+		query += `, credential_id = ?`
+		args = append(args, result.CredentialID)
+	}
+	if result.CloudflareID != "" {
+		query += `, cloudflare_certificate_id = ?`
+		args = append(args, result.CloudflareID)
+	}
+	if result.PreviousCloudflareID != "" {
+		query += `, previous_cloudflare_certificate_id = ?`
+		args = append(args, result.PreviousCloudflareID)
+	}
+	if result.Hostnames != nil {
+		hostnames, err := encodeStringList(result.Hostnames)
+		if err != nil {
+			return err
+		}
+		query += `, hostnames = ?`
+		args = append(args, hostnames)
+	}
+	if result.RequestType != "" {
+		query += `, request_type = ?`
+		args = append(args, result.RequestType)
+	}
+	if result.RequestedValidity > 0 {
+		query += `, requested_validity = ?`
+		args = append(args, result.RequestedValidity)
+	}
+	if result.LastSyncedAt != nil {
+		query += `, last_synced_at = ?`
+		args = append(args, result.LastSyncedAt)
+	}
 	if result.PreviousCertFile == "" && result.PreviousKeyFile == "" {
 		query += `, last_issued_at = ?`
 		args = append(args, completedAt)
@@ -489,7 +563,142 @@ func (r certificateRepository) UpdateFailure(ctx context.Context, id string, fai
 	if status == "" {
 		status = domain.CertificateIssueFailed
 	}
-	result, err := r.db.ExecContext(ctx, `update managed_certificates set status = ?, last_error = ?, updated_at = ? where id = ?`, status, failure.LastError, completedAt, id)
+	operationStatus := failure.OperationStatus
+	if operationStatus == "" {
+		operationStatus = operationStatusFromCertificateStatus(status)
+	}
+	lastAttemptedAt := failure.LastAttemptedAt
+	if lastAttemptedAt.IsZero() {
+		lastAttemptedAt = completedAt
+	}
+	query := `update managed_certificates set status = ?, operation_status = ?, last_error = ?, last_attempted_at = ?, next_attempt_at = ?, failure_count = case when ? > 0 then ? else failure_count + 1 end, updated_at = ?`
+	args := []any{status, operationStatus, failure.LastError, lastAttemptedAt, failure.NextAttemptAt, failure.FailureCount, failure.FailureCount, completedAt}
+	if failure.ServingStatus != "" {
+		query += `, serving_status = ?`
+		args = append(args, failure.ServingStatus)
+	}
+	if failure.ProviderStatus != "" {
+		query += `, provider_status = ?`
+		args = append(args, failure.ProviderStatus)
+	}
+	if !failure.LastCheckedAt.IsZero() {
+		query += `, last_checked_at = ?`
+		args = append(args, failure.LastCheckedAt)
+	}
+	if failure.LastSyncedAt != nil {
+		query += `, last_synced_at = ?`
+		args = append(args, failure.LastSyncedAt)
+	}
+	query += ` where id = ?`
+	args = append(args, id)
+	result, err := r.db.ExecContext(ctx, query, args...)
+	return resultError(result, err)
+}
+
+func (r certificateRepository) UpdateHealth(ctx context.Context, id string, health store.CertificateHealth) error {
+	checkedAt := health.CheckedAt
+	if checkedAt.IsZero() {
+		checkedAt = time.Now().UTC()
+	}
+	servingStatus := health.ServingStatus
+	if servingStatus == "" {
+		servingStatus = domain.CertificateServingInvalid
+	}
+	result, err := r.db.ExecContext(ctx, `update managed_certificates set status = case when status in (?, ?) then status else ? end, serving_status = ?, not_after = ?, fingerprint = ?, last_error = case when status in (?, ?) then last_error else ? end, last_checked_at = ?, updated_at = ? where id = ?`, domain.CertificateIssueFailed, domain.CertificateRenewalFailed, certificateStatusFromServing(servingStatus), servingStatus, health.NotAfter, strings.ToLower(health.Fingerprint), domain.CertificateIssueFailed, domain.CertificateRenewalFailed, health.LastError, checkedAt, checkedAt, id)
+	return resultError(result, err)
+}
+
+func (r certificateRepository) UpdateProviderSync(ctx context.Context, id string, sync store.CertificateProviderSync) error {
+	syncedAt := sync.SyncedAt
+	if syncedAt.IsZero() {
+		syncedAt = time.Now().UTC()
+	}
+	updatedAt := sync.UpdatedAt
+	if updatedAt.IsZero() {
+		updatedAt = syncedAt
+	}
+	status := sync.ProviderStatus
+	if status == "" {
+		status = domain.CertificateProviderStatusUnknown
+	}
+	lastError := sync.LastError
+	if lastError == "" {
+		lastError = providerStatusError(status)
+	}
+	result, err := r.db.ExecContext(ctx, `update managed_certificates set provider_status = ?, last_synced_at = ?, last_error = case when ? <> '' then ? when status in (?, ?) then last_error else '' end, updated_at = ? where id = ?`, status, syncedAt, lastError, lastError, domain.CertificateIssueFailed, domain.CertificateRenewalFailed, updatedAt, id)
+	return resultError(result, err)
+}
+
+func providerStatusError(status domain.CertificateProviderStatus) string {
+	switch status {
+	case domain.CertificateProviderStatusRevoked:
+		return "certificate provider marked active material revoked"
+	case domain.CertificateProviderStatusMissingRemote:
+		return "certificate provider active material is missing remotely"
+	default:
+		return ""
+	}
+}
+
+type providerCredentialRepository struct{ db *sql.DB }
+
+func (r providerCredentialRepository) Create(ctx context.Context, credential domain.ProviderCredential) error {
+	if err := credential.Validate(); err != nil {
+		return err
+	}
+	now := time.Now().UTC()
+	if credential.CreatedAt.IsZero() {
+		credential.CreatedAt = now
+	}
+	if credential.UpdatedAt.IsZero() {
+		credential.UpdatedAt = now
+	}
+	_, err := r.db.ExecContext(ctx, `insert into provider_credentials (id, name, provider_type, scope, token_fingerprint, secret_ref, status, last_verified_at, last_error, created_at, updated_at) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, credential.ID, credential.Name, credential.ProviderType, credential.Scope, credential.TokenFingerprint, credential.SecretRef, credential.Status, credential.LastVerifiedAt, credential.LastError, credential.CreatedAt, credential.UpdatedAt)
+	return translateError(err)
+}
+
+func (r providerCredentialRepository) ByID(ctx context.Context, id string) (domain.ProviderCredential, error) {
+	return scanProviderCredential(r.db.QueryRowContext(ctx, providerCredentialSelect+` where id = ?`, id))
+}
+
+func (r providerCredentialRepository) List(ctx context.Context) ([]domain.ProviderCredential, error) {
+	rows, err := r.db.QueryContext(ctx, providerCredentialSelect+` order by created_at, id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	credentials := make([]domain.ProviderCredential, 0)
+	for rows.Next() {
+		credential, err := scanProviderCredentialRows(rows)
+		if err != nil {
+			return nil, err
+		}
+		credentials = append(credentials, credential)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return credentials, nil
+}
+
+func (r providerCredentialRepository) Update(ctx context.Context, credential domain.ProviderCredential) error {
+	if err := credential.Validate(); err != nil {
+		return err
+	}
+	if credential.UpdatedAt.IsZero() {
+		credential.UpdatedAt = time.Now().UTC()
+	}
+	result, err := r.db.ExecContext(ctx, `update provider_credentials set name = ?, provider_type = ?, scope = ?, token_fingerprint = ?, secret_ref = ?, status = ?, last_verified_at = ?, last_error = ?, updated_at = ? where id = ?`, credential.Name, credential.ProviderType, credential.Scope, credential.TokenFingerprint, credential.SecretRef, credential.Status, credential.LastVerifiedAt, credential.LastError, credential.UpdatedAt, credential.ID)
+	return resultError(result, err)
+}
+
+func (r providerCredentialRepository) SetStatus(ctx context.Context, id string, status domain.ProviderCredentialStatus, lastVerifiedAt *time.Time, lastError string) error {
+	result, err := r.db.ExecContext(ctx, `update provider_credentials set status = ?, last_verified_at = ?, last_error = ?, updated_at = ? where id = ?`, status, lastVerifiedAt, lastError, time.Now().UTC(), id)
+	return resultError(result, err)
+}
+
+func (r providerCredentialRepository) Delete(ctx context.Context, id string) error {
+	result, err := r.db.ExecContext(ctx, `delete from provider_credentials where id = ?`, id)
 	return resultError(result, err)
 }
 
@@ -639,15 +848,24 @@ func scanProxyRows(rows *sql.Rows) (domain.Proxy, error) {
 	return proxy, err
 }
 
-const managedCertificateSelect = `select id, proxy_id, host, status, provider, cert_file, key_file, previous_cert_file, previous_key_file, not_after, last_issued_at, last_renewed_at, last_error, created_at, updated_at from managed_certificates`
+const managedCertificateSelect = `select id, proxy_id, host, status, serving_status, operation_status, provider, provider_type, provider_name, credential_id, provider_status, cloudflare_certificate_id, previous_cloudflare_certificate_id, hostnames, request_type, requested_validity, cert_file, key_file, previous_cert_file, previous_key_file, not_after, last_issued_at, last_renewed_at, last_checked_at, last_synced_at, last_attempted_at, next_attempt_at, failure_count, fingerprint, last_error, created_at, updated_at from managed_certificates`
 
 func scanManagedCertificate(row *sql.Row) (domain.ManagedCertificate, error) {
 	var certificate domain.ManagedCertificate
 	var notAfter sql.NullTime
 	var lastIssuedAt sql.NullTime
 	var lastRenewedAt sql.NullTime
-	err := row.Scan(&certificate.ID, &certificate.ProxyID, &certificate.Host, &certificate.Status, &certificate.Provider, &certificate.CertFile, &certificate.KeyFile, &certificate.PreviousCertFile, &certificate.PreviousKeyFile, &notAfter, &lastIssuedAt, &lastRenewedAt, &certificate.LastError, &certificate.CreatedAt, &certificate.UpdatedAt)
-	applyManagedCertificateTimes(&certificate, notAfter, lastIssuedAt, lastRenewedAt)
+	var lastCheckedAt sql.NullTime
+	var lastSyncedAt sql.NullTime
+	var lastAttemptedAt sql.NullTime
+	var nextAttemptAt sql.NullTime
+	var hostnames string
+	err := row.Scan(&certificate.ID, &certificate.ProxyID, &certificate.Host, &certificate.Status, &certificate.ServingStatus, &certificate.OperationStatus, &certificate.Provider, &certificate.ProviderType, &certificate.ProviderName, &certificate.CredentialID, &certificate.ProviderStatus, &certificate.CloudflareCertificateID, &certificate.PreviousCloudflareCertificateID, &hostnames, &certificate.RequestType, &certificate.RequestedValidity, &certificate.CertFile, &certificate.KeyFile, &certificate.PreviousCertFile, &certificate.PreviousKeyFile, &notAfter, &lastIssuedAt, &lastRenewedAt, &lastCheckedAt, &lastSyncedAt, &lastAttemptedAt, &nextAttemptAt, &certificate.FailureCount, &certificate.Fingerprint, &certificate.LastError, &certificate.CreatedAt, &certificate.UpdatedAt)
+	if err == nil {
+		certificate.Hostnames, err = decodeStringList(hostnames)
+	}
+	applyManagedCertificateTimes(&certificate, notAfter, lastIssuedAt, lastRenewedAt, lastCheckedAt, lastSyncedAt, lastAttemptedAt, nextAttemptAt)
+	applyManagedCertificateDefaults(&certificate)
 	return certificate, translateError(err)
 }
 
@@ -656,12 +874,21 @@ func scanManagedCertificateRows(rows *sql.Rows) (domain.ManagedCertificate, erro
 	var notAfter sql.NullTime
 	var lastIssuedAt sql.NullTime
 	var lastRenewedAt sql.NullTime
-	err := rows.Scan(&certificate.ID, &certificate.ProxyID, &certificate.Host, &certificate.Status, &certificate.Provider, &certificate.CertFile, &certificate.KeyFile, &certificate.PreviousCertFile, &certificate.PreviousKeyFile, &notAfter, &lastIssuedAt, &lastRenewedAt, &certificate.LastError, &certificate.CreatedAt, &certificate.UpdatedAt)
-	applyManagedCertificateTimes(&certificate, notAfter, lastIssuedAt, lastRenewedAt)
+	var lastCheckedAt sql.NullTime
+	var lastSyncedAt sql.NullTime
+	var lastAttemptedAt sql.NullTime
+	var nextAttemptAt sql.NullTime
+	var hostnames string
+	err := rows.Scan(&certificate.ID, &certificate.ProxyID, &certificate.Host, &certificate.Status, &certificate.ServingStatus, &certificate.OperationStatus, &certificate.Provider, &certificate.ProviderType, &certificate.ProviderName, &certificate.CredentialID, &certificate.ProviderStatus, &certificate.CloudflareCertificateID, &certificate.PreviousCloudflareCertificateID, &hostnames, &certificate.RequestType, &certificate.RequestedValidity, &certificate.CertFile, &certificate.KeyFile, &certificate.PreviousCertFile, &certificate.PreviousKeyFile, &notAfter, &lastIssuedAt, &lastRenewedAt, &lastCheckedAt, &lastSyncedAt, &lastAttemptedAt, &nextAttemptAt, &certificate.FailureCount, &certificate.Fingerprint, &certificate.LastError, &certificate.CreatedAt, &certificate.UpdatedAt)
+	if err == nil {
+		certificate.Hostnames, err = decodeStringList(hostnames)
+	}
+	applyManagedCertificateTimes(&certificate, notAfter, lastIssuedAt, lastRenewedAt, lastCheckedAt, lastSyncedAt, lastAttemptedAt, nextAttemptAt)
+	applyManagedCertificateDefaults(&certificate)
 	return certificate, err
 }
 
-func applyManagedCertificateTimes(certificate *domain.ManagedCertificate, notAfter sql.NullTime, lastIssuedAt sql.NullTime, lastRenewedAt sql.NullTime) {
+func applyManagedCertificateTimes(certificate *domain.ManagedCertificate, notAfter sql.NullTime, lastIssuedAt sql.NullTime, lastRenewedAt sql.NullTime, lastCheckedAt sql.NullTime, lastSyncedAt sql.NullTime, lastAttemptedAt sql.NullTime, nextAttemptAt sql.NullTime) {
 	if notAfter.Valid {
 		certificate.NotAfter = &notAfter.Time
 	}
@@ -671,12 +898,141 @@ func applyManagedCertificateTimes(certificate *domain.ManagedCertificate, notAft
 	if lastRenewedAt.Valid {
 		certificate.LastRenewedAt = &lastRenewedAt.Time
 	}
+	if lastCheckedAt.Valid {
+		certificate.LastCheckedAt = &lastCheckedAt.Time
+	}
+	if lastSyncedAt.Valid {
+		certificate.LastSyncedAt = &lastSyncedAt.Time
+	}
+	if lastAttemptedAt.Valid {
+		certificate.LastAttemptedAt = &lastAttemptedAt.Time
+	}
+	if nextAttemptAt.Valid {
+		certificate.NextAttemptAt = &nextAttemptAt.Time
+	}
+}
+
+func applyManagedCertificateDefaults(certificate *domain.ManagedCertificate) {
+	if certificate.ProviderName == "" {
+		certificate.ProviderName = certificate.Provider
+	}
+	if certificate.ProviderType == "" {
+		certificate.ProviderType = domain.CertificateProviderACMEDNS01
+	}
+	if certificate.Provider == "" {
+		certificate.Provider = certificate.ProviderName
+	}
+	if certificate.ProviderName == "" {
+		certificate.ProviderName = certificate.Provider
+	}
+	if certificate.ProviderStatus == "" {
+		certificate.ProviderStatus = domain.CertificateProviderStatusUnknown
+	}
+	if certificate.ServingStatus == "" {
+		certificate.ServingStatus = servingStatusFromLegacyStatus(*certificate)
+	}
+	if certificate.OperationStatus == "" {
+		certificate.OperationStatus = operationStatusFromCertificateStatus(certificate.Status)
+	}
+	certificate.Fingerprint = strings.ToLower(certificate.Fingerprint)
+}
+
+const providerCredentialSelect = `select id, name, provider_type, scope, token_fingerprint, secret_ref, status, last_verified_at, last_error, created_at, updated_at from provider_credentials`
+
+func scanProviderCredential(row *sql.Row) (domain.ProviderCredential, error) {
+	var credential domain.ProviderCredential
+	var lastVerifiedAt sql.NullTime
+	err := row.Scan(&credential.ID, &credential.Name, &credential.ProviderType, &credential.Scope, &credential.TokenFingerprint, &credential.SecretRef, &credential.Status, &lastVerifiedAt, &credential.LastError, &credential.CreatedAt, &credential.UpdatedAt)
+	if lastVerifiedAt.Valid {
+		credential.LastVerifiedAt = &lastVerifiedAt.Time
+	}
+	return credential, translateError(err)
+}
+
+func scanProviderCredentialRows(rows *sql.Rows) (domain.ProviderCredential, error) {
+	var credential domain.ProviderCredential
+	var lastVerifiedAt sql.NullTime
+	err := rows.Scan(&credential.ID, &credential.Name, &credential.ProviderType, &credential.Scope, &credential.TokenFingerprint, &credential.SecretRef, &credential.Status, &lastVerifiedAt, &credential.LastError, &credential.CreatedAt, &credential.UpdatedAt)
+	if lastVerifiedAt.Valid {
+		credential.LastVerifiedAt = &lastVerifiedAt.Time
+	}
+	return credential, err
+}
+
+func servingStatusFromLegacyStatus(certificate domain.ManagedCertificate) domain.CertificateServingStatus {
+	if certificate.CertFile == "" || certificate.KeyFile == "" {
+		return domain.CertificateServingMissing
+	}
+	switch certificate.Status {
+	case domain.CertificateValid:
+		return domain.CertificateServingUsable
+	case domain.CertificateExpiringSoon:
+		return domain.CertificateServingExpiringSoon
+	case domain.CertificateExpired:
+		return domain.CertificateServingExpired
+	default:
+		return domain.CertificateServingMissing
+	}
+}
+
+func operationStatusFromCertificateStatus(status domain.CertificateStatus) domain.CertificateOperationStatus {
+	switch status {
+	case domain.CertificateIssueFailed:
+		return domain.CertificateOperationIssueFailed
+	case domain.CertificateRenewalFailed:
+		return domain.CertificateOperationRenewalFailed
+	default:
+		return domain.CertificateOperationIdle
+	}
+}
+
+func certificateStatusFromServing(status domain.CertificateServingStatus) domain.CertificateStatus {
+	switch status {
+	case domain.CertificateServingUsable:
+		return domain.CertificateValid
+	case domain.CertificateServingExpiringSoon:
+		return domain.CertificateExpiringSoon
+	case domain.CertificateServingExpired:
+		return domain.CertificateExpired
+	default:
+		return domain.CertificatePending
+	}
 }
 
 func scanAuditEventRows(rows *sql.Rows) (domain.AuditEvent, error) {
 	var event domain.AuditEvent
 	err := rows.Scan(&event.ID, &event.ActorUserID, &event.ResourceType, &event.ResourceID, &event.Action, &event.Result, &event.SourceIP, &event.ErrorSummary, &event.CreatedAt)
 	return event, err
+}
+
+func encodeStringList(values []string) (string, error) {
+	if len(values) == 0 {
+		return "[]", nil
+	}
+	normalized := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			normalized = append(normalized, value)
+		}
+	}
+	content, err := json.Marshal(normalized)
+	if err != nil {
+		return "", err
+	}
+	return string(content), nil
+}
+
+func decodeStringList(value string) ([]string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil, nil
+	}
+	var values []string
+	if err := json.Unmarshal([]byte(value), &values); err != nil {
+		return nil, err
+	}
+	return values, nil
 }
 
 func addProxyCertificateColumns(ctx context.Context, db *sql.DB) error {
@@ -715,6 +1071,98 @@ func addUserPasswordColumn(ctx context.Context, db *sql.DB) error {
 
 func addClientEnrollmentTokenColumn(ctx context.Context, db *sql.DB) error {
 	return addColumnIfMissing(ctx, db, "client_enrollments", "token", "text not null default ''")
+}
+
+func addManagedCertificateLifecycleColumns(ctx context.Context, db *sql.DB) error {
+	columns := []struct {
+		name       string
+		definition string
+	}{
+		{"serving_status", "text not null default ''"},
+		{"operation_status", "text not null default ''"},
+		{"last_checked_at", "timestamp"},
+		{"last_attempted_at", "timestamp"},
+		{"next_attempt_at", "timestamp"},
+		{"failure_count", "integer not null default 0"},
+		{"fingerprint", "text not null default ''"},
+	}
+	for _, column := range columns {
+		if err := addColumnIfMissing(ctx, db, "managed_certificates", column.name, column.definition); err != nil {
+			return err
+		}
+	}
+	if _, err := db.ExecContext(ctx, `
+update managed_certificates
+set serving_status = case
+    when cert_file = '' or key_file = '' then ?
+    when status = ? then ?
+    when status = ? then ?
+    when status = ? then ?
+    else ?
+end
+where serving_status = ''`,
+		domain.CertificateServingMissing,
+		domain.CertificateValid, domain.CertificateServingUsable,
+		domain.CertificateExpiringSoon, domain.CertificateServingExpiringSoon,
+		domain.CertificateExpired, domain.CertificateServingExpired,
+		domain.CertificateServingMissing); err != nil {
+		return err
+	}
+	_, err := db.ExecContext(ctx, `
+update managed_certificates
+set operation_status = case
+    when status = ? then ?
+    when status = ? then ?
+    else ?
+end
+where operation_status = ''`,
+		domain.CertificateIssueFailed, domain.CertificateOperationIssueFailed,
+		domain.CertificateRenewalFailed, domain.CertificateOperationRenewalFailed,
+		domain.CertificateOperationIdle)
+	return err
+}
+
+func addManagedCertificateProviderColumns(ctx context.Context, db *sql.DB) error {
+	columns := []struct {
+		name       string
+		definition string
+	}{
+		{"provider_type", "text not null default ''"},
+		{"provider_name", "text not null default ''"},
+		{"credential_id", "text not null default ''"},
+		{"provider_status", "text not null default ''"},
+		{"cloudflare_certificate_id", "text not null default ''"},
+		{"previous_cloudflare_certificate_id", "text not null default ''"},
+		{"hostnames", "text not null default '[]'"},
+		{"request_type", "text not null default ''"},
+		{"requested_validity", "integer not null default 0"},
+		{"last_synced_at", "timestamp"},
+	}
+	for _, column := range columns {
+		if err := addColumnIfMissing(ctx, db, "managed_certificates", column.name, column.definition); err != nil {
+			return err
+		}
+	}
+	if _, err := db.ExecContext(ctx, `
+update managed_certificates
+set provider_type = ?
+where provider_type = ''`,
+		domain.CertificateProviderACMEDNS01); err != nil {
+		return err
+	}
+	if _, err := db.ExecContext(ctx, `
+update managed_certificates
+set provider_name = case when provider <> '' then provider else ? end
+where provider_name = ''`,
+		"cloudflare"); err != nil {
+		return err
+	}
+	_, err := db.ExecContext(ctx, `
+update managed_certificates
+set provider_status = ?
+where provider_status = ''`,
+		domain.CertificateProviderStatusUnknown)
+	return err
 }
 
 func addColumnIfMissing(ctx context.Context, db *sql.DB, table string, column string, definition string) error {
@@ -836,7 +1284,18 @@ create table if not exists managed_certificates (
     proxy_id text not null references proxies(id) on delete cascade,
     host text not null,
     status text not null,
+    serving_status text not null default '',
+    operation_status text not null default '',
     provider text not null default '',
+    provider_type text not null default '',
+    provider_name text not null default '',
+    credential_id text not null default '',
+    provider_status text not null default '',
+    cloudflare_certificate_id text not null default '',
+    previous_cloudflare_certificate_id text not null default '',
+    hostnames text not null default '[]',
+    request_type text not null default '',
+    requested_validity integer not null default 0,
     cert_file text not null default '',
     key_file text not null default '',
     previous_cert_file text not null default '',
@@ -844,6 +1303,12 @@ create table if not exists managed_certificates (
     not_after timestamp,
     last_issued_at timestamp,
     last_renewed_at timestamp,
+    last_checked_at timestamp,
+    last_synced_at timestamp,
+    last_attempted_at timestamp,
+    next_attempt_at timestamp,
+    failure_count integer not null default 0,
+    fingerprint text not null default '',
     last_error text not null default '',
     created_at timestamp not null,
     updated_at timestamp not null
@@ -851,6 +1316,22 @@ create table if not exists managed_certificates (
 
 create unique index if not exists managed_certificates_proxy_unique on managed_certificates(proxy_id);
 create unique index if not exists managed_certificates_host_unique on managed_certificates(lower(host));
+
+create table if not exists provider_credentials (
+    id text primary key,
+    name text not null,
+    provider_type text not null,
+    scope text not null default '',
+    token_fingerprint text not null default '',
+    secret_ref text not null,
+    status text not null,
+    last_verified_at timestamp,
+    last_error text not null default '',
+    created_at timestamp not null,
+    updated_at timestamp not null
+);
+
+create index if not exists provider_credentials_provider_type_idx on provider_credentials(provider_type);
 
 create table if not exists audit_events (
     id text primary key,

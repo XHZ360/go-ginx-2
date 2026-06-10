@@ -34,8 +34,10 @@ button, input, select, textarea { font: inherit; }
 .app-main { padding: 24px; display: grid; gap: 20px; min-width: 0; }
 
 .page-section { display: grid; gap: 16px; }
+.page-section__band { display: grid; gap: 12px; padding: 4px 0 12px; border-bottom: 1px solid #e5e7eb; }
 .page-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; }
 .page-header .ant-typography { margin: 0; }
+.section-heading h2 { margin: 0; font-size: 1rem; }
 .toolbar-actions, .inline-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .toolbar-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }
 .toolbar-grid--wide { grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); }
@@ -64,8 +66,11 @@ button, input, select, textarea { font: inherit; }
 .table-row-link { cursor: pointer; }
 .table-row-link:hover { background: #f8fafc; }
 .status-tag { margin-inline-end: 0; }
+.cell-stack { display: grid; gap: 3px; min-width: 160px; }
+.muted-text { color: #64748b; font-size: 0.85rem; overflow-wrap: anywhere; }
 
 .field { display: grid; gap: 6px; }
+.field--actions { align-content: end; display: flex; flex-wrap: wrap; align-items: end; gap: 8px; }
 .field__label { font-size: 0.9rem; color: #374151; font-weight: 500; }
 .field__hint { color: #64748b; font-size: 0.85rem; }
 .field__error { color: #b91c1c; font-size: 0.85rem; }

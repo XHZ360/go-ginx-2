@@ -431,7 +431,9 @@ func TestCertificateRepositoryPersistsLifecycleMetadata(t *testing.T) {
 	if err := db.Certificates().Create(ctx, certificate); err != nil {
 		t.Fatalf("create certificate: %v", err)
 	}
-	if err := db.Certificates().UpdateSuccess(ctx, certificate.ID, store.CertificateSuccess{CertFile: "active.crt", KeyFile: "active.key", NotAfter: notAfter}); err != nil {
+	checkedAt := time.Now().UTC().Truncate(time.Second)
+	syncedAt := checkedAt.Add(time.Minute)
+	if err := db.Certificates().UpdateSuccess(ctx, certificate.ID, store.CertificateSuccess{CertFile: "active.crt", KeyFile: "active.key", NotAfter: notAfter, ServingStatus: domain.CertificateServingExpiringSoon, ProviderStatus: domain.CertificateProviderStatusActive, ProviderType: domain.CertificateProviderCloudflareOriginCA, ProviderName: "cloudflare", CredentialID: "cred-1", CloudflareID: "cf-cert-1", Hostnames: []string{"app.example.com", "api.example.com"}, RequestType: "origin-ecc", RequestedValidity: 5475, Fingerprint: "ABCDEF", LastCheckedAt: checkedAt, LastAttemptedAt: checkedAt, LastSyncedAt: &syncedAt}); err != nil {
 		t.Fatalf("update success: %v", err)
 	}
 
@@ -439,15 +441,70 @@ func TestCertificateRepositoryPersistsLifecycleMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatalf("lookup certificate by host: %v", err)
 	}
-	if found.ProxyID != proxy.ID || found.Status != domain.CertificateValid || found.CertFile != "active.crt" || found.KeyFile != "active.key" || found.NotAfter == nil || !found.NotAfter.Equal(notAfter) {
+	if found.ProxyID != proxy.ID || found.Status != domain.CertificateExpiringSoon || found.ServingStatus != domain.CertificateServingExpiringSoon || found.OperationStatus != domain.CertificateOperationIdle || found.CertFile != "active.crt" || found.KeyFile != "active.key" || found.NotAfter == nil || !found.NotAfter.Equal(notAfter) || found.Fingerprint != "abcdef" || found.LastCheckedAt == nil || !found.LastCheckedAt.Equal(checkedAt) {
 		t.Fatalf("unexpected certificate: %+v", found)
 	}
-	renewable, err := db.Certificates().ListRenewable(ctx, notAfter.Add(time.Hour))
+	if found.ProviderType != domain.CertificateProviderCloudflareOriginCA || found.ProviderName != "cloudflare" || found.ProviderStatus != domain.CertificateProviderStatusActive || found.CredentialID != "cred-1" || found.CloudflareCertificateID != "cf-cert-1" || found.RequestType != "origin-ecc" || found.RequestedValidity != 5475 || found.LastSyncedAt == nil || !found.LastSyncedAt.Equal(syncedAt) {
+		t.Fatalf("unexpected provider metadata: %+v", found)
+	}
+	if len(found.Hostnames) != 2 || found.Hostnames[0] != "app.example.com" || found.Hostnames[1] != "api.example.com" {
+		t.Fatalf("unexpected origin ca hostnames: %+v", found.Hostnames)
+	}
+	renewable, err := db.Certificates().ListRenewable(ctx, notAfter.Add(time.Hour), time.Now().UTC())
 	if err != nil {
 		t.Fatalf("list renewable: %v", err)
 	}
 	if len(renewable) != 1 || renewable[0].ID != certificate.ID {
 		t.Fatalf("unexpected renewable certificates: %+v", renewable)
+	}
+}
+
+func TestProviderCredentialRepositoryPersistsMetadataOnly(t *testing.T) {
+	ctx := context.Background()
+	db := openTestStore(t)
+	verifiedAt := time.Now().UTC().Truncate(time.Second)
+	credential := domain.ProviderCredential{ID: "cred-1", Name: "Cloudflare Origin", ProviderType: domain.CertificateProviderCloudflareOriginCA, Scope: "Zone SSL:Edit", TokenFingerprint: "abcdef", SecretRef: "cred-1.secret", Status: domain.ProviderCredentialPending}
+
+	if err := db.ProviderCredentials().Create(ctx, credential); err != nil {
+		t.Fatalf("create provider credential: %v", err)
+	}
+	found, err := db.ProviderCredentials().ByID(ctx, credential.ID)
+	if err != nil {
+		t.Fatalf("lookup provider credential: %v", err)
+	}
+	if found.Name != credential.Name || found.ProviderType != credential.ProviderType || found.Scope != credential.Scope || found.TokenFingerprint != "abcdef" || found.SecretRef != "cred-1.secret" || found.Status != domain.ProviderCredentialPending {
+		t.Fatalf("unexpected provider credential: %+v", found)
+	}
+	if err := db.ProviderCredentials().SetStatus(ctx, credential.ID, domain.ProviderCredentialVerified, &verifiedAt, ""); err != nil {
+		t.Fatalf("set provider credential status: %v", err)
+	}
+	found, err = db.ProviderCredentials().ByID(ctx, credential.ID)
+	if err != nil {
+		t.Fatalf("lookup verified provider credential: %v", err)
+	}
+	if found.Status != domain.ProviderCredentialVerified || found.LastVerifiedAt == nil || !found.LastVerifiedAt.Equal(verifiedAt) {
+		t.Fatalf("unexpected verified provider credential: %+v", found)
+	}
+	found.Name = "Rotated Origin"
+	found.TokenFingerprint = "123456"
+	found.Status = domain.ProviderCredentialPending
+	found.LastVerifiedAt = nil
+	found.LastError = "verification pending"
+	if err := db.ProviderCredentials().Update(ctx, found); err != nil {
+		t.Fatalf("update provider credential: %v", err)
+	}
+	listed, err := db.ProviderCredentials().List(ctx)
+	if err != nil {
+		t.Fatalf("list provider credentials: %v", err)
+	}
+	if len(listed) != 1 || listed[0].Name != "Rotated Origin" || listed[0].TokenFingerprint != "123456" || listed[0].LastError != "verification pending" {
+		t.Fatalf("unexpected provider credential list: %+v", listed)
+	}
+	if err := db.ProviderCredentials().Delete(ctx, credential.ID); err != nil {
+		t.Fatalf("delete provider credential: %v", err)
+	}
+	if _, err := db.ProviderCredentials().ByID(ctx, credential.ID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("expected deleted provider credential not found, got %v", err)
 	}
 }
 
@@ -464,15 +521,131 @@ func TestCertificateRepositoryRecordsFailureWithoutReplacingFiles(t *testing.T) 
 		t.Fatalf("create certificate: %v", err)
 	}
 
-	if err := db.Certificates().UpdateFailure(ctx, certificate.ID, store.CertificateFailure{Status: domain.CertificateRenewalFailed, LastError: "dns failed"}); err != nil {
+	nextAttempt := time.Now().UTC().Add(5 * time.Minute).Truncate(time.Second)
+	if err := db.Certificates().UpdateFailure(ctx, certificate.ID, store.CertificateFailure{Status: domain.CertificateRenewalFailed, ServingStatus: domain.CertificateServingUsable, OperationStatus: domain.CertificateOperationRenewalFailed, LastError: "dns failed", NextAttemptAt: &nextAttempt, FailureCount: 2}); err != nil {
 		t.Fatalf("update failure: %v", err)
 	}
 	found, err := db.Certificates().ByProxyID(ctx, proxy.ID)
 	if err != nil {
 		t.Fatalf("lookup certificate by proxy: %v", err)
 	}
-	if found.Status != domain.CertificateRenewalFailed || found.LastError != "dns failed" || found.CertFile != "active.crt" || found.KeyFile != "active.key" {
+	if found.Status != domain.CertificateRenewalFailed || found.ServingStatus != domain.CertificateServingUsable || found.OperationStatus != domain.CertificateOperationRenewalFailed || found.LastError != "dns failed" || found.CertFile != "active.crt" || found.KeyFile != "active.key" || found.FailureCount != 2 || found.NextAttemptAt == nil || !found.NextAttemptAt.Equal(nextAttempt) {
 		t.Fatalf("unexpected failure state: %+v", found)
+	}
+	checkedAt := time.Now().UTC().Truncate(time.Second)
+	notAfter := checkedAt.Add(time.Hour)
+	if err := db.Certificates().UpdateHealth(ctx, certificate.ID, store.CertificateHealth{ServingStatus: domain.CertificateServingUsable, NotAfter: &notAfter, Fingerprint: "ABCDEF", CheckedAt: checkedAt}); err != nil {
+		t.Fatalf("update health: %v", err)
+	}
+	found, err = db.Certificates().ByProxyID(ctx, proxy.ID)
+	if err != nil {
+		t.Fatalf("lookup after health update: %v", err)
+	}
+	if found.Status != domain.CertificateRenewalFailed || found.LastError != "dns failed" || found.ServingStatus != domain.CertificateServingUsable || found.Fingerprint != "abcdef" {
+		t.Fatalf("health update should preserve lifecycle failure state: %+v", found)
+	}
+	syncedAt := checkedAt.Add(time.Minute)
+	if err := db.Certificates().UpdateProviderSync(ctx, certificate.ID, store.CertificateProviderSync{ProviderStatus: domain.CertificateProviderStatusActive, SyncedAt: syncedAt}); err != nil {
+		t.Fatalf("update provider sync: %v", err)
+	}
+	found, err = db.Certificates().ByProxyID(ctx, proxy.ID)
+	if err != nil {
+		t.Fatalf("lookup after provider sync: %v", err)
+	}
+	if found.ProviderStatus != domain.CertificateProviderStatusActive || found.LastError != "dns failed" || found.LastSyncedAt == nil || !found.LastSyncedAt.Equal(syncedAt) {
+		t.Fatalf("provider sync should preserve lifecycle failure error: %+v", found)
+	}
+}
+
+func TestCertificateRepositoryMigratesLegacyLifecycleColumns(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "legacy.db")
+	legacy, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = legacy.ExecContext(ctx, `
+create table users (
+    id text primary key,
+    username text not null unique,
+    password_hash text not null default '',
+    role text not null,
+    status text not null,
+    created_at timestamp not null,
+    updated_at timestamp not null
+);
+create table clients (
+    id text primary key,
+    user_id text not null references users(id) on delete cascade,
+    name text not null,
+    status text not null,
+    credential_hash text not null,
+    version integer not null default 0,
+    last_online_at timestamp,
+    last_offline_at timestamp,
+    created_at timestamp not null,
+    updated_at timestamp not null
+);
+create table proxies (
+    id text primary key,
+    user_id text not null references users(id) on delete cascade,
+    client_id text not null references clients(id) on delete cascade,
+    name text not null,
+    type text not null,
+    status text not null,
+    entry_bind_host text not null default '',
+    entry_host text not null default '',
+    entry_port integer not null default 0,
+    target_host text not null,
+    target_port integer not null,
+    cert_file text not null default '',
+    key_file text not null default '',
+    description text not null default '',
+    created_at timestamp not null,
+    updated_at timestamp not null
+);
+create table managed_certificates (
+    id text primary key,
+    proxy_id text not null references proxies(id) on delete cascade,
+    host text not null,
+    status text not null,
+    provider text not null default '',
+    cert_file text not null default '',
+    key_file text not null default '',
+    previous_cert_file text not null default '',
+    previous_key_file text not null default '',
+    not_after timestamp,
+    last_issued_at timestamp,
+    last_renewed_at timestamp,
+    last_error text not null default '',
+    created_at timestamp not null,
+    updated_at timestamp not null
+);
+insert into users (id, username, role, status, created_at, updated_at) values ('u1', 'alice', 'user', 'enabled', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+insert into clients (id, user_id, name, status, credential_hash, created_at, updated_at) values ('c1', 'u1', 'home', 'offline', 'hash', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+insert into proxies (id, user_id, client_id, name, type, status, entry_host, target_host, target_port, created_at, updated_at) values ('p1', 'u1', 'c1', 'secure', 'https', 'enabled', 'app.example.com', '127.0.0.1', 8080, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+insert into managed_certificates (id, proxy_id, host, status, provider, cert_file, key_file, created_at, updated_at) values ('cert-1', 'p1', 'app.example.com', 'valid', 'cloudflare', 'active.crt', 'active.key', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+`)
+	if closeErr := legacy.Close(); closeErr != nil {
+		t.Fatal(closeErr)
+	}
+	if err != nil {
+		t.Fatalf("seed legacy db: %v", err)
+	}
+	db, err := Open(path)
+	if err != nil {
+		t.Fatalf("open migrated store: %v", err)
+	}
+	defer db.Close()
+	certificate, err := db.Certificates().ByProxyID(ctx, "p1")
+	if err != nil {
+		t.Fatalf("lookup migrated certificate: %v", err)
+	}
+	if certificate.ServingStatus != domain.CertificateServingUsable || certificate.OperationStatus != domain.CertificateOperationIdle || certificate.FailureCount != 0 || certificate.Fingerprint != "" {
+		t.Fatalf("unexpected migrated lifecycle fields: %+v", certificate)
+	}
+	if certificate.ProviderType != domain.CertificateProviderACMEDNS01 || certificate.ProviderName != "cloudflare" || certificate.ProviderStatus != domain.CertificateProviderStatusUnknown {
+		t.Fatalf("unexpected migrated provider fields: %+v", certificate)
 	}
 }
 

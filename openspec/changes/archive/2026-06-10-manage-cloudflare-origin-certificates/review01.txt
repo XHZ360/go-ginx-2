@@ -1,0 +1,67 @@
+🔴 高优先级（正确性 / 安全 / 行为变更）
+1. SyncOriginCA 在瞬时 API 错误时把"已吊销"降级为"unknown"，导致重新对外提供已吊销证书
+internal/certmanager/service.go:109-119 + internal/domain/types.go:202-203
+
+BlocksServing() 只在 revoked/missing_remote 时返回 true，unknown 不阻断服务。当某证书此前被同步判定为 revoked（已停止服务），下一次 SyncOriginCA 若遇到非 404 的瞬时错误（5xx/网络抖动），会走 else if err != nil 分支把 provider_status 持久化为 unknown，于是 activeFiles 不再拦截，代理恢复对外提供这张在 Cloudflare 已被吊销的证书，直到下一次成功同步才再次标记。这是安全语义问题，建议：瞬时错误不要覆盖已知的 revoked/missing_remote 终态。
+
+2. HTTPS 数据平面在每次 TLS 握手都同步写 SQLite
+internal/proxy/https/certificates.go:264 与 :270（均为本次新增行）
+
+resolver.Certificate(...) 现在对每个 managed 证书无条件调用 UpdateHealth(...)，而该函数在 handleConn 中每个进入的 TLS 连接都会触发。即便证书材料已命中缓存，仍然每次握手产生一次 UPDATE。SQLite 是单写入者，高并发 HTTPS 站点会出现写放大与写锁争用（与下面的续期控制器、读路径写入相互竞争），且错误被 _ = 吞掉。建议：去抖（如 N 秒内最多写一次）或仅在 serving 状态实际变化时写。
+
+3. 只读的 Admin 查询会写库并覆盖 status/last_error，掩盖续期失败
+internal/adminquery/service.go:754（经 certificatesByProxy 被 ListProxies / ProxyDetail / ListManagedCertificates / ClientDetail 调用）
+
+managedCertificateSummary 在读路径里调用 UpdateHealth，而 UpdateHealth 的 SQL（sqlite.go:607）会重写 status 和 last_error。场景：续期失败后 status=renewal_failed, last_error="cloudflare ..."；运维一打开证书页面，旧的 active 文件仍然有效 → 健康检查为 usable、ErrorSummary 为空 → UpdateHealth 把 status 改回 valid、last_error 清空。一次只读操作就把失败原因从库里抹掉了（failure_count/next_attempt_at 仍残留，造成状态自相矛盾）。GraphQL 读 resolver 不应有写副作用。
+
+🟠 中优先级
+5. ACME 与 Origin CA 的操作锁 key 不一致，同一代理可并发签发/轮转
+internal/certmanager/service.go:200（ACME 锁 proxyID）vs :264（Origin CA 锁 proxy.ID+"\x00"+host）
+
+两条路径对同一代理用不同的 key，因此互不排斥。在切换 provider 或一边手动签发、一边后台轮转时，两条签发流程会同时写同一 managed_certificates 行、同时经 storage.Store 替换同一对 active.crt/active.key，互相覆盖。建议统一 key（复用 certificateOperationKey，注意它做了 ToLower/TrimSpace 归一，而 service 没有）。
+
+6. 续期控制器 goroutine 无 panic 恢复，单点崩溃拖垮整个 daemon
+internal/daemon/server.go:185：go newManagedCertificateController(...).Run(runtimeCtx)，Run→RenewDue→renewOne→service.Renew 全链路无 recover()。任何一次续期里的 nil 解引用/驱动 panic 都会终止整个进程（连带数据平面）。建议在 goroutine 顶层加 defer recover() 并记录日志。
+
+7. DeleteProviderCredential 删除凭据时不检查引用，产生无法续期的孤儿证书
+internal/admin/service.go:842-858
+
+直接删 secret 文件 + 删凭据行，不校验是否仍有 managed_certificates.credential_id 引用它。删掉后该 managed 证书的 credentialToken→ByID 永远 ErrNotFound，无法再轮转/续期/同步，临近到期时静默失效。建议删除前检查引用并拒绝（或级联提示）。
+
+8. UpdateProviderSync 在成功同步时无条件清空 last_error
+internal/store/sqlite/sqlite.go:624（成功 active 同步时 SyncOriginCA 传入 lastError=""，见 service.go:110-120）
+
+一次例行同步会把一条仍然有效的、来自续期失败的 last_error 抹掉，运维在 UI 上看不到仍处于失败的根因（与 #3 同类）。
+
+9. 自动轮转从不吊销旧的 Cloudflare origin 证书 → 证书堆积
+internal/certmanager/service.go:319-322（仅把旧 ID 存入 PreviousCloudflareCertificateID，吊销是独立的手动 RevokeOriginCA）
+
+后台控制器自动轮转每次都在 Cloudflare 侧留下一张仍然有效的 origin 证书且无清理，长期会造成同一 host 大量未吊销证书堆积（安全卫生问题）。建议轮转成功后自动吊销上一张。
+
+10. 吊销 active 证书会瞬间停服且无替换
+internal/certmanager/service.go:162-166
+
+吊销 active 证书 → provider_status=revoked → BlocksServing → 代理立即停止 TLS 终止，且不签发替换 → 立即中断。吊销 previous 证书则不改 provider_status（正确）。如果"吊销即停服"是预期则可接受，但建议在 UI 二次确认中明确告警。
+
+🟡 效率 / 清理 / 架构高度
+11. 控制器固定 1 秒唤醒，无视窗口大小
+internal/daemon/certificate_controller.go:15：managedCertificateControllerInterval = time.Second。续期/轮转窗口通常是天/周级别，却每秒做一次 ListRenewable 全量扫描（每天 86400 次）。建议改为分钟级 ticker，或按"下一张证书到期时间"动态休眠。
+
+12. 续期路径对每张证书重复 ByProxyID（约 4 次）并全量列出凭据
+Renew→rotateOriginCA→issueOriginCA/ensureCertificateRecord→最终读取，控制器其实已持有完整 ManagedCertificate 行却仍重新查库；resolveCredentialID 还 List() 全部凭据再内存过滤。建议把已加载的证书行透传进续期入口。
+
+13. 死代码：managedCertificateActive 已无任何调用方
+internal/proxy/https/certificates.go:388。activeFiles 重构后改为内联 ProviderStatus.BlocksServing()，该函数成为死代码，建议删除。
+
+14. provider 特例散落、ManagedCertificate.Validate() 不校验 Origin CA 字段（架构高度）
+续期分发用内联 if ProviderType == CloudflareOriginCA（service.go:60-64，且 ByProxyID 出错时 err == nil && 会静默落到 ACME 路径）；续期窗口逻辑在 3 处重复（service.go:387、certificate_controller.go:72、adminquery/service.go:750）；Validate() 完全不校验 CredentialID/RequestType 等 Origin CA 字段，非法 RequestType 直到 BuildOriginCACSR 才在运行期暴露。建议把 provider 行为收敛为策略/多态，窗口选择与校验下沉到 domain 单一出处。
+
+15. 重复实现（可复用现有代码）
+origin_ca.go:170 的 Cloudflare HTTP 封装（默认 base URL、Bearer、1MB 限流、{success,errors,result} 解析）与 acme.go 的 CloudflareDNSProvider.request 重复；ECC 密钥+CSR+PKCS8+PEM 段也与 ACME issuer 重复。
+certificateStatusFromServing 在 adminquery/service.go 与 sqlite.go 两个包逐字重复 → 改一处易漏另一处。
+formatFingerprint 在 CertificatesPage.tsx（截 16）与 ProxyDetailPage.tsx（截 32）重复且长度不一致，建议提到 admin-ui/src/lib。
+
+其他次要问题：
+Admin UI 凭据下拉的"Default"选不中：CertificatesPage.tsx:55 defaultCredentialId = selectedCredentialId || 第一个非 disabled 凭据，而 :276 value={defaultCredentialId} 但 onChange 只设 selectedCredentialId。当存在凭据时，选"Default"(value="")会让 selectedCredentialId="" 又回落到第一个凭据，下拉自动弹回，且签发时 :314 始终传第一个凭据，服务端的 resolveCredentialID 自动解析逻辑被绕过。
+updateProviderCredential 的 id 可空：schema 里 id 为 nullable，省略时会调用 ByID(ctx, "") 返回笼统的 not-found，而非前置校验报错（adminapi/server.go ~994）。
+FileSecretStore.Write 在 rename 后未 fsync 文件/父目录（secret_store.go:62）：崩溃/掉电可能 DB 行已提交但 secret 内容丢失，后续 Read 报 "secret material is missing"。

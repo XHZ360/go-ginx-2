@@ -2,11 +2,18 @@ package adminquery
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
+	"math/big"
 	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/simp-frp/go-ginx-2/internal/domain"
+	httpsproxy "github.com/simp-frp/go-ginx-2/internal/proxy/https"
 	"github.com/simp-frp/go-ginx-2/internal/session"
 	"github.com/simp-frp/go-ginx-2/internal/stats"
 	"github.com/simp-frp/go-ginx-2/internal/store/sqlite"
@@ -105,6 +112,54 @@ func TestServiceListsRecentAuditEvents(t *testing.T) {
 	}
 }
 
+func TestServiceManagedCertificateSummaryDoesNotMutateFailureState(t *testing.T) {
+	ctx := context.Background()
+	db := openQueryTestStore(t)
+	seedQueryTestData(t, ctx, db)
+	proxy := domain.Proxy{ID: "proxy-https", UserID: "user-1", ClientID: "client-1", Name: "secure", Type: domain.ProxyHTTPS, Status: domain.ProxyEnabled, EntryHost: "secure.example.com", TargetHost: "127.0.0.1", TargetPort: 8443}
+	if err := db.Proxies().Create(ctx, proxy); err != nil {
+		t.Fatalf("create https proxy: %v", err)
+	}
+	certificateDir := t.TempDir()
+	notAfter := time.Now().UTC().Add(24 * time.Hour).Truncate(time.Second)
+	certPEM, keyPEM := queryTestCertificatePEM(t, proxy.EntryHost, notAfter)
+	stored, err := httpsproxy.ManagedCertificateStorage{CertificateDir: certificateDir}.Store(proxy.EntryHost, certPEM, keyPEM)
+	if err != nil {
+		t.Fatalf("store certificate material: %v", err)
+	}
+	lastCheckedAt := time.Now().UTC().Add(-time.Hour).Truncate(time.Second)
+	certificate := domain.ManagedCertificate{ID: "cert-https", ProxyID: proxy.ID, Host: proxy.EntryHost, Status: domain.CertificateRenewalFailed, ServingStatus: domain.CertificateServingUsable, OperationStatus: domain.CertificateOperationRenewalFailed, ProviderType: domain.CertificateProviderCloudflareOriginCA, ProviderName: "cloudflare", ProviderStatus: domain.CertificateProviderStatusActive, CertFile: stored.CertFile, KeyFile: stored.KeyFile, NotAfter: &notAfter, LastCheckedAt: &lastCheckedAt, FailureCount: 1, Fingerprint: "oldfingerprint", LastError: "cloudflare rotation failed"}
+	if err := db.Certificates().Create(ctx, certificate); err != nil {
+		t.Fatalf("create certificate: %v", err)
+	}
+	service := Service{Store: db, CertificateDir: certificateDir}
+
+	page, err := service.ListManagedCertificates(ctx, CertificateListInput{Page: PageInput{Page: 1, PageSize: 10}})
+	if err != nil {
+		t.Fatalf("list managed certificates: %v", err)
+	}
+	var summary *ManagedCertificateSummary
+	for index := range page.Items {
+		if page.Items[index].ProxyID == proxy.ID {
+			summary = &page.Items[index]
+			break
+		}
+	}
+	if summary == nil {
+		t.Fatalf("expected https certificate summary in %+v", page.Items)
+	}
+	if summary.Status != domain.CertificateRenewalFailed || summary.ServingStatus != domain.CertificateServingUsable || summary.LastError != "cloudflare rotation failed" {
+		t.Fatalf("summary should preserve lifecycle failure while showing active health: %+v", summary)
+	}
+	reloaded, err := db.Certificates().ByProxyID(ctx, proxy.ID)
+	if err != nil {
+		t.Fatalf("reload certificate: %v", err)
+	}
+	if reloaded.Status != domain.CertificateRenewalFailed || reloaded.LastError != "cloudflare rotation failed" || reloaded.Fingerprint != "oldfingerprint" || reloaded.LastCheckedAt == nil || !reloaded.LastCheckedAt.Equal(lastCheckedAt) {
+		t.Fatalf("read path should not mutate persisted certificate state: %+v", reloaded)
+	}
+}
+
 func openQueryTestStore(t *testing.T) *sqlite.Store {
 	t.Helper()
 	db, err := sqlite.Open(filepath.Join(t.TempDir(), "query.db"))
@@ -135,4 +190,20 @@ func seedQueryTestData(t *testing.T, ctx context.Context, db *sqlite.Store) {
 			t.Fatalf("create proxy %s: %v", proxy.ID, err)
 		}
 	}
+}
+
+func queryTestCertificatePEM(t *testing.T, host string, notAfter time.Time) ([]byte, []byte) {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	template := &x509.Certificate{SerialNumber: big.NewInt(time.Now().UnixNano()), Subject: pkix.Name{CommonName: host}, DNSNames: []string{host}, NotBefore: time.Now().Add(-time.Hour), NotAfter: notAfter, KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})
+	return certPEM, keyPEM
 }
