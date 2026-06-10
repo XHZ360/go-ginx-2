@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -457,6 +458,61 @@ func TestCertificateRepositoryPersistsLifecycleMetadata(t *testing.T) {
 	if len(renewable) != 1 || renewable[0].ID != certificate.ID {
 		t.Fatalf("unexpected renewable certificates: %+v", renewable)
 	}
+	byProxyIDs, err := db.Certificates().ListByProxyIDs(ctx, []string{proxy.ID, "missing", proxy.ID})
+	if err != nil {
+		t.Fatalf("list certificates by proxy ids: %v", err)
+	}
+	if len(byProxyIDs) != 1 || byProxyIDs[0].ID != certificate.ID {
+		t.Fatalf("unexpected certificates by proxy ids: %+v", byProxyIDs)
+	}
+}
+
+func TestCertificateRepositoryListsProviderAwareLifecycleCandidates(t *testing.T) {
+	ctx := context.Background()
+	db := openTestStore(t)
+	seedUserAndClient(t, ctx, db)
+	now := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
+	proxies := []domain.Proxy{
+		{ID: "acme-due", UserID: "u1", ClientID: "c1", Name: "acme due", Type: domain.ProxyHTTPS, Status: domain.ProxyEnabled, EntryHost: "acme-due.example.com", TargetHost: "127.0.0.1", TargetPort: 8080},
+		{ID: "acme-later", UserID: "u1", ClientID: "c1", Name: "acme later", Type: domain.ProxyHTTPS, Status: domain.ProxyEnabled, EntryHost: "acme-later.example.com", TargetHost: "127.0.0.1", TargetPort: 8080},
+		{ID: "origin-due", UserID: "u1", ClientID: "c1", Name: "origin due", Type: domain.ProxyHTTPS, Status: domain.ProxyEnabled, EntryHost: "origin-due.example.com", TargetHost: "127.0.0.1", TargetPort: 8080},
+		{ID: "origin-backoff", UserID: "u1", ClientID: "c1", Name: "origin backoff", Type: domain.ProxyHTTPS, Status: domain.ProxyEnabled, EntryHost: "origin-backoff.example.com", TargetHost: "127.0.0.1", TargetPort: 8080},
+	}
+	for _, proxy := range proxies {
+		if err := db.Proxies().Create(ctx, proxy); err != nil {
+			t.Fatalf("create proxy %s: %v", proxy.ID, err)
+		}
+	}
+	acmeDue := now.Add(30 * time.Minute)
+	acmeLater := now.Add(2 * time.Hour)
+	originDue := now.Add(12 * time.Hour)
+	originBackoff := now.Add(12 * time.Hour)
+	nextAttempt := now.Add(time.Hour)
+	certificates := []domain.ManagedCertificate{
+		{ID: "cert-acme-due", ProxyID: "acme-due", Host: "acme-due.example.com", Status: domain.CertificateValid, ServingStatus: domain.CertificateServingUsable, ProviderType: domain.CertificateProviderACMEDNS01, ProviderName: "cloudflare", CertFile: "active.crt", KeyFile: "active.key", NotAfter: &acmeDue},
+		{ID: "cert-acme-later", ProxyID: "acme-later", Host: "acme-later.example.com", Status: domain.CertificateValid, ServingStatus: domain.CertificateServingUsable, ProviderType: domain.CertificateProviderACMEDNS01, ProviderName: "cloudflare", CertFile: "active.crt", KeyFile: "active.key", NotAfter: &acmeLater},
+		{ID: "cert-origin-due", ProxyID: "origin-due", Host: "origin-due.example.com", Status: domain.CertificateValid, ServingStatus: domain.CertificateServingUsable, ProviderType: domain.CertificateProviderCloudflareOriginCA, ProviderName: "cloudflare", CertFile: "active.crt", KeyFile: "active.key", NotAfter: &originDue},
+		{ID: "cert-origin-backoff", ProxyID: "origin-backoff", Host: "origin-backoff.example.com", Status: domain.CertificateValid, ServingStatus: domain.CertificateServingUsable, ProviderType: domain.CertificateProviderCloudflareOriginCA, ProviderName: "cloudflare", CertFile: "active.crt", KeyFile: "active.key", NotAfter: &originBackoff, NextAttemptAt: &nextAttempt},
+	}
+	for _, certificate := range certificates {
+		if err := db.Certificates().Create(ctx, certificate); err != nil {
+			t.Fatalf("create certificate %s: %v", certificate.ID, err)
+		}
+	}
+	acmeBefore := now.Add(time.Hour)
+	originBefore := now.Add(24 * time.Hour)
+
+	candidates, err := db.Certificates().ListLifecycleCandidates(ctx, store.CertificateLifecycleCandidateQuery{Now: now, ACMEBefore: &acmeBefore, OriginCABefore: &originBefore})
+	if err != nil {
+		t.Fatalf("list lifecycle candidates: %v", err)
+	}
+	ids := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		ids = append(ids, candidate.ID)
+	}
+	if strings.Join(ids, ",") != "cert-acme-due,cert-origin-due" {
+		t.Fatalf("unexpected lifecycle candidates: %+v", ids)
+	}
 }
 
 func TestProviderCredentialRepositoryPersistsMetadataOnly(t *testing.T) {
@@ -499,6 +555,20 @@ func TestProviderCredentialRepositoryPersistsMetadataOnly(t *testing.T) {
 	}
 	if len(listed) != 1 || listed[0].Name != "Rotated Origin" || listed[0].TokenFingerprint != "123456" || listed[0].LastError != "verification pending" {
 		t.Fatalf("unexpected provider credential list: %+v", listed)
+	}
+	scoped, err := db.ProviderCredentials().ListByProviderType(ctx, domain.CertificateProviderCloudflareOriginCA, []domain.ProviderCredentialStatus{domain.ProviderCredentialPending})
+	if err != nil {
+		t.Fatalf("list provider credentials by provider type: %v", err)
+	}
+	if len(scoped) != 1 || scoped[0].ID != credential.ID {
+		t.Fatalf("unexpected provider-scoped credentials: %+v", scoped)
+	}
+	verifiedScoped, err := db.ProviderCredentials().ListByProviderType(ctx, domain.CertificateProviderCloudflareOriginCA, []domain.ProviderCredentialStatus{domain.ProviderCredentialVerified})
+	if err != nil {
+		t.Fatalf("list verified provider credentials by provider type: %v", err)
+	}
+	if len(verifiedScoped) != 0 {
+		t.Fatalf("unexpected verified provider-scoped credentials: %+v", verifiedScoped)
 	}
 	if err := db.ProviderCredentials().Delete(ctx, credential.ID); err != nil {
 		t.Fatalf("delete provider credential: %v", err)
@@ -646,6 +716,12 @@ insert into managed_certificates (id, proxy_id, host, status, provider, cert_fil
 	}
 	if certificate.ProviderType != domain.CertificateProviderACMEDNS01 || certificate.ProviderName != "cloudflare" || certificate.ProviderStatus != domain.CertificateProviderStatusUnknown {
 		t.Fatalf("unexpected migrated provider fields: %+v", certificate)
+	}
+	if !indexExists(t, ctx, db.db, "managed_certificates_lifecycle_provider_idx") {
+		t.Fatal("expected managed certificate lifecycle provider index")
+	}
+	if !indexExists(t, ctx, db.db, "provider_credentials_provider_status_idx") {
+		t.Fatal("expected provider credential provider/status index")
 	}
 }
 

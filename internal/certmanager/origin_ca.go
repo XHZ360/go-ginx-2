@@ -1,7 +1,6 @@
 package certmanager
 
 import (
-	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -13,7 +12,6 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -168,63 +166,7 @@ func (client CloudflareOriginCAClient) VerifyToken(ctx context.Context, token st
 }
 
 func (client CloudflareOriginCAClient) request(ctx context.Context, token string, method string, path string, query url.Values, body any) ([]byte, error) {
-	token = strings.TrimSpace(token)
-	if token == "" {
-		return nil, errors.New("cloudflare api token is required")
-	}
-	var reader io.Reader
-	if body != nil {
-		encoded, err := json.Marshal(body)
-		if err != nil {
-			return nil, err
-		}
-		reader = bytes.NewReader(encoded)
-	}
-	baseURL := strings.TrimRight(client.BaseURL, "/")
-	if baseURL == "" {
-		baseURL = "https://api.cloudflare.com/client/v4"
-	}
-	requestURL := baseURL + path
-	if len(query) > 0 {
-		requestURL += "?" + query.Encode()
-	}
-	request, err := http.NewRequestWithContext(ctx, method, requestURL, reader)
-	if err != nil {
-		return nil, err
-	}
-	request.Header.Set("Authorization", "Bearer "+token)
-	request.Header.Set("Content-Type", "application/json")
-	httpClient := client.HTTPClient
-	if httpClient == nil {
-		httpClient = http.DefaultClient
-	}
-	response, err := httpClient.Do(request)
-	if err != nil {
-		return nil, err
-	}
-	defer response.Body.Close()
-	data, err := io.ReadAll(io.LimitReader(response.Body, 1<<20))
-	if err != nil {
-		return nil, err
-	}
-	if response.StatusCode == http.StatusNotFound {
-		return nil, ErrOriginCACertificateMissing
-	}
-	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return nil, fmt.Errorf("cloudflare origin ca request failed: status %d", response.StatusCode)
-	}
-	var envelope struct {
-		Success bool            `json:"success"`
-		Errors  json.RawMessage `json:"errors"`
-		Result  json.RawMessage `json:"result"`
-	}
-	if err := json.Unmarshal(data, &envelope); err != nil {
-		return nil, err
-	}
-	if !envelope.Success {
-		return nil, errors.New("cloudflare origin ca request failed")
-	}
-	return data, nil
+	return doCloudflareAPIRequest(ctx, cloudflareAPIRequest{APIToken: token, HTTPClient: client.HTTPClient, BaseURL: client.BaseURL, Method: method, Path: path, Query: query, Body: body, FailureMessage: "cloudflare origin ca request failed", NotFoundError: ErrOriginCACertificateMissing})
 }
 
 var ErrOriginCACertificateMissing = errors.New("cloudflare origin ca certificate is missing")

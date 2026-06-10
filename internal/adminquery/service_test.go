@@ -16,6 +16,7 @@ import (
 	httpsproxy "github.com/simp-frp/go-ginx-2/internal/proxy/https"
 	"github.com/simp-frp/go-ginx-2/internal/session"
 	"github.com/simp-frp/go-ginx-2/internal/stats"
+	"github.com/simp-frp/go-ginx-2/internal/store"
 	"github.com/simp-frp/go-ginx-2/internal/store/sqlite"
 )
 
@@ -160,6 +161,46 @@ func TestServiceManagedCertificateSummaryDoesNotMutateFailureState(t *testing.T)
 	}
 }
 
+func TestServiceCertificateDetailUsesScopedCertificateLookup(t *testing.T) {
+	ctx := context.Background()
+	db := openQueryTestStore(t)
+	seedQueryTestData(t, ctx, db)
+	proxy := seedQueryHTTPSCertificate(t, ctx, db)
+	countingRepo := &queryCountingCertificateRepository{CertificateRepository: db.Certificates()}
+	service := Service{Store: queryCountingStore{Store: db, certificates: countingRepo}}
+
+	detail, err := service.ProxyDetail(ctx, proxy.ID)
+	if err != nil {
+		t.Fatalf("proxy detail: %v", err)
+	}
+	if detail.Certificate == nil || detail.Certificate.ProxyID != proxy.ID {
+		t.Fatalf("expected certificate summary on proxy detail: %+v", detail.Certificate)
+	}
+	if countingRepo.listCount != 0 || countingRepo.byProxyIDCount != 1 {
+		t.Fatalf("expected scoped detail lookup, list=%d byProxyID=%d", countingRepo.listCount, countingRepo.byProxyIDCount)
+	}
+}
+
+func TestServiceManagedCertificateListUsesBatchCertificateLookup(t *testing.T) {
+	ctx := context.Background()
+	db := openQueryTestStore(t)
+	seedQueryTestData(t, ctx, db)
+	seedQueryHTTPSCertificate(t, ctx, db)
+	countingRepo := &queryCountingCertificateRepository{CertificateRepository: db.Certificates()}
+	service := Service{Store: queryCountingStore{Store: db, certificates: countingRepo}}
+
+	page, err := service.ListManagedCertificates(ctx, CertificateListInput{Page: PageInput{Page: 1, PageSize: 10}})
+	if err != nil {
+		t.Fatalf("list managed certificates: %v", err)
+	}
+	if len(page.Items) != 1 || page.Items[0].ProxyID != "proxy-https" {
+		t.Fatalf("unexpected certificate page: %+v", page.Items)
+	}
+	if countingRepo.listCount != 0 || countingRepo.byProxyIDCount != 0 || countingRepo.listByProxyIDsCount != 1 {
+		t.Fatalf("expected batch certificate lookup, list=%d byProxyID=%d listByProxyIDs=%d", countingRepo.listCount, countingRepo.byProxyIDCount, countingRepo.listByProxyIDsCount)
+	}
+}
+
 func openQueryTestStore(t *testing.T) *sqlite.Store {
 	t.Helper()
 	db, err := sqlite.Open(filepath.Join(t.TempDir(), "query.db"))
@@ -192,6 +233,25 @@ func seedQueryTestData(t *testing.T, ctx context.Context, db *sqlite.Store) {
 	}
 }
 
+func seedQueryHTTPSCertificate(t *testing.T, ctx context.Context, db *sqlite.Store) domain.Proxy {
+	t.Helper()
+	proxy := domain.Proxy{ID: "proxy-https", UserID: "user-1", ClientID: "client-1", Name: "secure", Type: domain.ProxyHTTPS, Status: domain.ProxyEnabled, EntryHost: "secure.example.com", TargetHost: "127.0.0.1", TargetPort: 8443}
+	if err := db.Proxies().Create(ctx, proxy); err != nil {
+		t.Fatalf("create https proxy: %v", err)
+	}
+	notAfter := time.Now().UTC().Add(24 * time.Hour).Truncate(time.Second)
+	certPEM, keyPEM := queryTestCertificatePEM(t, proxy.EntryHost, notAfter)
+	stored, err := httpsproxy.ManagedCertificateStorage{CertificateDir: t.TempDir()}.Store(proxy.EntryHost, certPEM, keyPEM)
+	if err != nil {
+		t.Fatalf("store certificate material: %v", err)
+	}
+	certificate := domain.ManagedCertificate{ID: "cert-https", ProxyID: proxy.ID, Host: proxy.EntryHost, Status: domain.CertificateValid, ServingStatus: domain.CertificateServingUsable, OperationStatus: domain.CertificateOperationIdle, ProviderType: domain.CertificateProviderACMEDNS01, ProviderName: "cloudflare", ProviderStatus: domain.CertificateProviderStatusUnknown, CertFile: stored.CertFile, KeyFile: stored.KeyFile, NotAfter: &notAfter}
+	if err := db.Certificates().Create(ctx, certificate); err != nil {
+		t.Fatalf("create certificate: %v", err)
+	}
+	return proxy
+}
+
 func queryTestCertificatePEM(t *testing.T, host string, notAfter time.Time) ([]byte, []byte) {
 	t.Helper()
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
@@ -206,4 +266,38 @@ func queryTestCertificatePEM(t *testing.T, host string, notAfter time.Time) ([]b
 	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
 	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})
 	return certPEM, keyPEM
+}
+
+type queryCountingStore struct {
+	*sqlite.Store
+	certificates *queryCountingCertificateRepository
+}
+
+func (qs queryCountingStore) Certificates() store.CertificateRepository {
+	if qs.certificates != nil {
+		return qs.certificates
+	}
+	return qs.Store.Certificates()
+}
+
+type queryCountingCertificateRepository struct {
+	store.CertificateRepository
+	listCount           int
+	byProxyIDCount      int
+	listByProxyIDsCount int
+}
+
+func (repo *queryCountingCertificateRepository) List(ctx context.Context) ([]domain.ManagedCertificate, error) {
+	repo.listCount++
+	return repo.CertificateRepository.List(ctx)
+}
+
+func (repo *queryCountingCertificateRepository) ByProxyID(ctx context.Context, proxyID string) (domain.ManagedCertificate, error) {
+	repo.byProxyIDCount++
+	return repo.CertificateRepository.ByProxyID(ctx, proxyID)
+}
+
+func (repo *queryCountingCertificateRepository) ListByProxyIDs(ctx context.Context, proxyIDs []string) ([]domain.ManagedCertificate, error) {
+	repo.listByProxyIDsCount++
+	return repo.CertificateRepository.ListByProxyIDs(ctx, proxyIDs)
 }

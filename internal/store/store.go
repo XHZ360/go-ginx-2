@@ -95,6 +95,12 @@ type CertificateProviderSync struct {
 	UpdatedAt      time.Time
 }
 
+type CertificateLifecycleCandidateQuery struct {
+	Now            time.Time
+	ACMEBefore     *time.Time
+	OriginCABefore *time.Time
+}
+
 type UserRepository interface {
 	Create(ctx context.Context, user domain.User) error
 	ByID(ctx context.Context, id string) (domain.User, error)
@@ -146,7 +152,9 @@ type CertificateRepository interface {
 	ByProxyID(ctx context.Context, proxyID string) (domain.ManagedCertificate, error)
 	ByHost(ctx context.Context, host string) (domain.ManagedCertificate, error)
 	List(ctx context.Context) ([]domain.ManagedCertificate, error)
+	ListByProxyIDs(ctx context.Context, proxyIDs []string) ([]domain.ManagedCertificate, error)
 	ListRenewable(ctx context.Context, before time.Time, now time.Time) ([]domain.ManagedCertificate, error)
+	ListLifecycleCandidates(ctx context.Context, query CertificateLifecycleCandidateQuery) ([]domain.ManagedCertificate, error)
 	UpdateSuccess(ctx context.Context, id string, result CertificateSuccess) error
 	UpdateFailure(ctx context.Context, id string, failure CertificateFailure) error
 	UpdateHealth(ctx context.Context, id string, health CertificateHealth) error
@@ -157,6 +165,7 @@ type ProviderCredentialRepository interface {
 	Create(ctx context.Context, credential domain.ProviderCredential) error
 	ByID(ctx context.Context, id string) (domain.ProviderCredential, error)
 	List(ctx context.Context) ([]domain.ProviderCredential, error)
+	ListByProviderType(ctx context.Context, providerType domain.CertificateProviderType, statuses []domain.ProviderCredentialStatus) ([]domain.ProviderCredential, error)
 	Update(ctx context.Context, credential domain.ProviderCredential) error
 	SetStatus(ctx context.Context, id string, status domain.ProviderCredentialStatus, lastVerifiedAt *time.Time, lastError string) error
 	Delete(ctx context.Context, id string) error

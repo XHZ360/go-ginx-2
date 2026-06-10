@@ -770,6 +770,33 @@ func TestManagedCertificateControllerSkipsBackoff(t *testing.T) {
 	}
 }
 
+func TestManagedCertificateControllerReusesLoadedCandidate(t *testing.T) {
+	ctx := context.Background()
+	db := openDaemonTestStore(t)
+	seedHTTPSProxyInStore(t, ctx, db)
+	now := time.Now().UTC().Truncate(time.Second)
+	notAfter := now.Add(10 * time.Minute)
+	if err := db.Certificates().Create(ctx, domain.ManagedCertificate{ID: "cert-1", ProxyID: "proxy-1", Host: "app.example.com", Status: domain.CertificateValid, ServingStatus: domain.CertificateServingUsable, OperationStatus: domain.CertificateOperationIdle, ProviderType: domain.CertificateProviderACMEDNS01, ProviderName: "cloudflare", Provider: "cloudflare", CertFile: "active.crt", KeyFile: "active.key", NotAfter: &notAfter}); err != nil {
+		t.Fatalf("create certificate: %v", err)
+	}
+	certPEM, keyPEM := daemonTestCertificatePEM(t, "app.example.com", now.Add(2*time.Hour))
+	issuer := &countingDaemonIssuer{certPEM: certPEM, keyPEM: keyPEM}
+	countingRepo := &daemonCountingCertificateRepository{CertificateRepository: db.Certificates()}
+	countingStore := daemonCountingStore{Store: db, certificates: countingRepo}
+	service := certmanager.Service{Store: countingStore, Issuer: issuer, DNSProvider: daemonFakeDNSProvider{}, Storage: httpsproxy.ManagedCertificateStorage{CertificateDir: t.TempDir()}, Settings: domain.ACMEProviderSettings{AccountEmail: "ops@example.com", TermsAccepted: true, DNSProvider: "cloudflare", RenewalWindow: time.Hour}}
+	controller := newManagedCertificateController(countingStore, service, time.Hour, 0)
+	controller.now = func() time.Time { return now }
+
+	controller.RenewDue(ctx)
+
+	if issuer.count != 1 {
+		t.Fatalf("expected one renewal attempt, got %d", issuer.count)
+	}
+	if countingRepo.listLifecycleCandidatesCount != 1 || countingRepo.byProxyIDCount != 1 {
+		t.Fatalf("expected candidate query plus final refresh only, candidates=%d byProxyID=%d", countingRepo.listLifecycleCandidatesCount, countingRepo.byProxyIDCount)
+	}
+}
+
 type daemonFakeDNSProvider struct{}
 
 func (daemonFakeDNSProvider) Present(context.Context, string, string) error { return nil }
@@ -792,6 +819,34 @@ type countingDaemonIssuer struct {
 func (issuer *countingDaemonIssuer) Issue(context.Context, certmanager.IssueRequest) (certmanager.IssuedCertificate, error) {
 	issuer.count++
 	return certmanager.IssuedCertificate{CertPEM: issuer.certPEM, KeyPEM: issuer.keyPEM}, nil
+}
+
+type daemonCountingStore struct {
+	*sqlite.Store
+	certificates *daemonCountingCertificateRepository
+}
+
+func (ds daemonCountingStore) Certificates() store.CertificateRepository {
+	if ds.certificates != nil {
+		return ds.certificates
+	}
+	return ds.Store.Certificates()
+}
+
+type daemonCountingCertificateRepository struct {
+	store.CertificateRepository
+	byProxyIDCount               int
+	listLifecycleCandidatesCount int
+}
+
+func (repo *daemonCountingCertificateRepository) ByProxyID(ctx context.Context, proxyID string) (domain.ManagedCertificate, error) {
+	repo.byProxyIDCount++
+	return repo.CertificateRepository.ByProxyID(ctx, proxyID)
+}
+
+func (repo *daemonCountingCertificateRepository) ListLifecycleCandidates(ctx context.Context, query store.CertificateLifecycleCandidateQuery) ([]domain.ManagedCertificate, error) {
+	repo.listLifecycleCandidatesCount++
+	return repo.CertificateRepository.ListLifecycleCandidates(ctx, query)
 }
 
 func openDaemonTestStore(t *testing.T) *sqlite.Store {

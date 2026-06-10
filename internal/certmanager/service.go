@@ -50,7 +50,7 @@ type OriginCARevokeRequest struct {
 }
 
 func (service Service) Issue(ctx context.Context, proxyID string) (domain.ManagedCertificate, error) {
-	return service.issueACME(ctx, proxyID, domain.CertificateIssueFailed)
+	return service.IssueWithProvider(ctx, ManagedCertificateRequest{ProxyID: proxyID, ProviderType: domain.CertificateProviderACMEDNS01})
 }
 
 func (service Service) Renew(ctx context.Context, proxyID string) (domain.ManagedCertificate, error) {
@@ -58,24 +58,40 @@ func (service Service) Renew(ctx context.Context, proxyID string) (domain.Manage
 		return domain.ManagedCertificate{}, errors.New("store is required")
 	}
 	certificate, err := service.Store.Certificates().ByProxyID(ctx, proxyID)
-	if err == nil && certificate.ProviderType == domain.CertificateProviderCloudflareOriginCA {
-		return service.rotateOriginCA(ctx, proxyID)
+	if err != nil {
+		return domain.ManagedCertificate{}, err
 	}
-	return service.issueACME(ctx, proxyID, domain.CertificateRenewalFailed)
+	return service.RenewCertificate(ctx, certificate)
 }
 
 func (service Service) IssueWithProvider(ctx context.Context, request ManagedCertificateRequest) (domain.ManagedCertificate, error) {
-	if request.ProviderType == "" || request.ProviderType == domain.CertificateProviderACMEDNS01 {
-		return service.Issue(ctx, request.ProxyID)
+	if request.ProviderType == "" {
+		request.ProviderType = domain.CertificateProviderACMEDNS01
 	}
-	if request.ProviderType == domain.CertificateProviderCloudflareOriginCA {
-		return service.issueOriginCA(ctx, request, domain.CertificateIssueFailed)
+	provider, err := service.providerFor(request.ProviderType)
+	if err != nil {
+		return domain.ManagedCertificate{}, err
 	}
-	return domain.ManagedCertificate{}, fmt.Errorf("unsupported certificate provider %q", request.ProviderType)
+	return provider.Issue(ctx, service, request, domain.CertificateIssueFailed)
 }
 
 func (service Service) RotateOriginCA(ctx context.Context, proxyID string) (domain.ManagedCertificate, error) {
-	return service.rotateOriginCA(ctx, proxyID)
+	if service.Store == nil {
+		return domain.ManagedCertificate{}, errors.New("store is required")
+	}
+	certificate, err := service.Store.Certificates().ByProxyID(ctx, proxyID)
+	if err != nil {
+		return domain.ManagedCertificate{}, err
+	}
+	return service.rotateOriginCACertificate(ctx, certificate)
+}
+
+func (service Service) RenewCertificate(ctx context.Context, certificate domain.ManagedCertificate) (domain.ManagedCertificate, error) {
+	provider, err := service.providerFor(certificate.ProviderType)
+	if err != nil {
+		return domain.ManagedCertificate{}, err
+	}
+	return provider.Renew(ctx, service, certificate)
 }
 
 func (service Service) Status(ctx context.Context, proxyID string) (CertificateStatus, error) {
@@ -96,6 +112,21 @@ func (service Service) SyncOriginCA(ctx context.Context, proxyID string) (domain
 	certificate, err := service.Store.Certificates().ByProxyID(ctx, proxyID)
 	if err != nil {
 		return domain.ManagedCertificate{}, err
+	}
+	return service.SyncOriginCACertificate(ctx, certificate)
+}
+
+func (service Service) SyncOriginCACertificate(ctx context.Context, certificate domain.ManagedCertificate) (domain.ManagedCertificate, error) {
+	provider, err := service.providerFor(certificate.ProviderType)
+	if err != nil {
+		return domain.ManagedCertificate{}, err
+	}
+	return provider.Sync(ctx, service, certificate)
+}
+
+func (service Service) syncOriginCACertificate(ctx context.Context, certificate domain.ManagedCertificate) (domain.ManagedCertificate, error) {
+	if service.Store == nil {
+		return domain.ManagedCertificate{}, errors.New("store is required")
 	}
 	if certificate.ProviderType != domain.CertificateProviderCloudflareOriginCA {
 		return domain.ManagedCertificate{}, errors.New("certificate is not managed by cloudflare origin ca")
@@ -122,7 +153,7 @@ func (service Service) SyncOriginCA(ctx context.Context, proxyID string) (domain
 	if updateErr := service.Store.Certificates().UpdateProviderSync(ctx, certificate.ID, store.CertificateProviderSync{ProviderStatus: status, LastError: lastError, SyncedAt: now, UpdatedAt: now}); updateErr != nil {
 		return domain.ManagedCertificate{}, updateErr
 	}
-	updated, readErr := service.Store.Certificates().ByProxyID(ctx, proxyID)
+	updated, readErr := service.Store.Certificates().ByProxyID(ctx, certificate.ProxyID)
 	if readErr != nil {
 		return domain.ManagedCertificate{}, readErr
 	}
@@ -139,6 +170,21 @@ func (service Service) RevokeOriginCA(ctx context.Context, request OriginCARevok
 	certificate, err := service.Store.Certificates().ByProxyID(ctx, request.ProxyID)
 	if err != nil {
 		return domain.ManagedCertificate{}, err
+	}
+	return service.RevokeOriginCACertificate(ctx, certificate, request)
+}
+
+func (service Service) RevokeOriginCACertificate(ctx context.Context, certificate domain.ManagedCertificate, request OriginCARevokeRequest) (domain.ManagedCertificate, error) {
+	provider, err := service.providerFor(certificate.ProviderType)
+	if err != nil {
+		return domain.ManagedCertificate{}, err
+	}
+	return provider.Revoke(ctx, service, certificate, request)
+}
+
+func (service Service) revokeOriginCACertificate(ctx context.Context, certificate domain.ManagedCertificate, request OriginCARevokeRequest) (domain.ManagedCertificate, error) {
+	if service.Store == nil {
+		return domain.ManagedCertificate{}, errors.New("store is required")
 	}
 	host := strings.ToLower(strings.TrimSpace(request.Host))
 	if host == "" || host != strings.ToLower(strings.TrimSpace(certificate.Host)) {
@@ -193,15 +239,30 @@ func (service Service) issueACME(ctx context.Context, proxyID string, failureSta
 	if service.Store == nil {
 		return domain.ManagedCertificate{}, errors.New("store is required")
 	}
+	proxy, err := service.Store.Proxies().ByID(ctx, proxyID)
+	if err != nil {
+		return domain.ManagedCertificate{}, err
+	}
+	return service.issueACMEForProxy(ctx, proxy, nil, failureStatus)
+}
+
+func (service Service) issueACMEForCertificate(ctx context.Context, certificate domain.ManagedCertificate, failureStatus domain.CertificateStatus) (domain.ManagedCertificate, error) {
+	if service.Store == nil {
+		return domain.ManagedCertificate{}, errors.New("store is required")
+	}
+	proxy, err := service.Store.Proxies().ByID(ctx, certificate.ProxyID)
+	if err != nil {
+		return domain.ManagedCertificate{}, err
+	}
+	return service.issueACMEForProxy(ctx, proxy, &certificate, failureStatus)
+}
+
+func (service Service) issueACMEForProxy(ctx context.Context, proxy domain.Proxy, existing *domain.ManagedCertificate, failureStatus domain.CertificateStatus) (domain.ManagedCertificate, error) {
 	if service.Issuer == nil {
 		return domain.ManagedCertificate{}, errors.New("issuer is required")
 	}
 	if service.DNSProvider == nil {
 		return domain.ManagedCertificate{}, errors.New("dns challenge provider is required")
-	}
-	proxy, err := service.Store.Proxies().ByID(ctx, proxyID)
-	if err != nil {
-		return domain.ManagedCertificate{}, err
 	}
 	if proxy.Type != domain.ProxyHTTPS {
 		return domain.ManagedCertificate{}, errors.New("managed certificates require an https proxy")
@@ -216,7 +277,7 @@ func (service Service) issueACME(ctx context.Context, proxyID string, failureSta
 	}
 	defer release()
 	providerName := defaultString(service.Settings.DNSProvider, "cloudflare")
-	certificate, err := service.ensureCertificateRecord(ctx, proxy.ID, host, domain.CertificateProviderACMEDNS01, providerName, "")
+	certificate, err := service.ensureCertificateRecord(ctx, proxy.ID, host, domain.CertificateProviderACMEDNS01, providerName, "", existing)
 	if err != nil {
 		return domain.ManagedCertificate{}, err
 	}
@@ -235,10 +296,15 @@ func (service Service) issueACME(ctx context.Context, proxyID string, failureSta
 		return domain.ManagedCertificate{}, err
 	}
 	now := service.now()
-	if err := service.Store.Certificates().UpdateSuccess(ctx, certificate.ID, store.CertificateSuccess{CertFile: stored.CertFile, KeyFile: stored.KeyFile, PreviousCertFile: stored.PreviousCertFile, PreviousKeyFile: stored.PreviousKeyFile, NotAfter: stored.NotAfter, ServingStatus: service.servingStatus(stored.NotAfter, now, domain.CertificateProviderACMEDNS01), ProviderStatus: domain.CertificateProviderStatusUnknown, ProviderType: domain.CertificateProviderACMEDNS01, ProviderName: providerName, Fingerprint: stored.Fingerprint, LastCheckedAt: now, LastAttemptedAt: now, CompletedAt: now}); err != nil {
+	result := store.CertificateSuccess{CertFile: stored.CertFile, KeyFile: stored.KeyFile, PreviousCertFile: stored.PreviousCertFile, PreviousKeyFile: stored.PreviousKeyFile, NotAfter: stored.NotAfter, ServingStatus: service.scheduler().ServingStatus(stored.NotAfter, domain.CertificateProviderACMEDNS01, now), ProviderStatus: domain.CertificateProviderStatusUnknown, ProviderType: domain.CertificateProviderACMEDNS01, ProviderName: providerName, Fingerprint: stored.Fingerprint, LastCheckedAt: now, LastAttemptedAt: now, CompletedAt: now}
+	if err := validateProviderSuccess(result); err != nil {
+		_ = service.recordFailure(ctx, certificate, host, failureStatus, err)
 		return domain.ManagedCertificate{}, err
 	}
-	updated, err := service.Store.Certificates().ByProxyID(ctx, proxyID)
+	if err := service.Store.Certificates().UpdateSuccess(ctx, certificate.ID, result); err != nil {
+		return domain.ManagedCertificate{}, err
+	}
+	updated, err := service.Store.Certificates().ByProxyID(ctx, proxy.ID)
 	if err != nil {
 		return domain.ManagedCertificate{}, err
 	}
@@ -256,6 +322,13 @@ func (service Service) issueOriginCA(ctx context.Context, request ManagedCertifi
 	if err != nil {
 		return domain.ManagedCertificate{}, err
 	}
+	return service.issueOriginCAForProxy(ctx, proxy, request, nil, failureStatus)
+}
+
+func (service Service) issueOriginCAForProxy(ctx context.Context, proxy domain.Proxy, request ManagedCertificateRequest, existing *domain.ManagedCertificate, failureStatus domain.CertificateStatus) (domain.ManagedCertificate, error) {
+	if !service.OriginCASettings.Enabled {
+		return domain.ManagedCertificate{}, errors.New("cloudflare origin ca is disabled")
+	}
 	if proxy.Type != domain.ProxyHTTPS {
 		return domain.ManagedCertificate{}, errors.New("managed certificates require an https proxy")
 	}
@@ -272,7 +345,7 @@ func (service Service) issueOriginCA(ctx context.Context, request ManagedCertifi
 	if err != nil {
 		return domain.ManagedCertificate{}, err
 	}
-	certificate, err := service.ensureCertificateRecord(ctx, proxy.ID, host, domain.CertificateProviderCloudflareOriginCA, "cloudflare", credentialID)
+	certificate, err := service.ensureCertificateRecord(ctx, proxy.ID, host, domain.CertificateProviderCloudflareOriginCA, "cloudflare", credentialID, existing)
 	if err != nil {
 		return domain.ManagedCertificate{}, err
 	}
@@ -308,15 +381,6 @@ func (service Service) issueOriginCA(ctx context.Context, request ManagedCertifi
 		_ = service.recordFailure(ctx, certificate, host, failureStatus, err)
 		return domain.ManagedCertificate{}, err
 	}
-	storage := service.Storage
-	if storage.Now == nil {
-		storage.Now = service.now
-	}
-	stored, err := storage.Store(host, remote.CertificatePEM, keyPEM)
-	if err != nil {
-		_ = service.recordFailure(ctx, certificate, host, failureStatus, err)
-		return domain.ManagedCertificate{}, err
-	}
 	now := service.now()
 	previousCloudflareID := ""
 	if certificate.CloudflareCertificateID != "" && certificate.CloudflareCertificateID != remote.ID {
@@ -331,22 +395,40 @@ func (service Service) issueOriginCA(ctx context.Context, request ManagedCertifi
 	if remote.RequestedValidity > 0 {
 		requestedValidity = remote.RequestedValidity
 	}
+	if err := validateOriginCASuccess(store.CertificateSuccess{ProviderStatus: domain.CertificateProviderStatusActive, ProviderType: domain.CertificateProviderCloudflareOriginCA, ProviderName: "cloudflare", CredentialID: credentialID, CloudflareID: remote.ID, Hostnames: hostnames, RequestType: requestType, RequestedValidity: requestedValidity, CertFile: "pending.crt", KeyFile: "pending.key", NotAfter: now}); err != nil {
+		_ = service.recordFailure(ctx, certificate, host, failureStatus, err)
+		return domain.ManagedCertificate{}, err
+	}
+	storage := service.Storage
+	if storage.Now == nil {
+		storage.Now = service.now
+	}
+	stored, err := storage.Store(host, remote.CertificatePEM, keyPEM)
+	if err != nil {
+		_ = service.recordFailure(ctx, certificate, host, failureStatus, err)
+		return domain.ManagedCertificate{}, err
+	}
 	lastSyncedAt := now
-	if err := service.Store.Certificates().UpdateSuccess(ctx, certificate.ID, store.CertificateSuccess{CertFile: stored.CertFile, KeyFile: stored.KeyFile, PreviousCertFile: stored.PreviousCertFile, PreviousKeyFile: stored.PreviousKeyFile, NotAfter: stored.NotAfter, ServingStatus: service.servingStatus(stored.NotAfter, now, domain.CertificateProviderCloudflareOriginCA), ProviderStatus: domain.CertificateProviderStatusActive, ProviderType: domain.CertificateProviderCloudflareOriginCA, ProviderName: "cloudflare", CredentialID: credentialID, CloudflareID: remote.ID, PreviousCloudflareID: previousCloudflareID, Hostnames: hostnames, RequestType: requestType, RequestedValidity: requestedValidity, Fingerprint: stored.Fingerprint, LastCheckedAt: now, LastAttemptedAt: now, LastSyncedAt: &lastSyncedAt, CompletedAt: now}); err != nil {
+	result := store.CertificateSuccess{CertFile: stored.CertFile, KeyFile: stored.KeyFile, PreviousCertFile: stored.PreviousCertFile, PreviousKeyFile: stored.PreviousKeyFile, NotAfter: stored.NotAfter, ServingStatus: service.scheduler().ServingStatus(stored.NotAfter, domain.CertificateProviderCloudflareOriginCA, now), ProviderStatus: domain.CertificateProviderStatusActive, ProviderType: domain.CertificateProviderCloudflareOriginCA, ProviderName: "cloudflare", CredentialID: credentialID, CloudflareID: remote.ID, PreviousCloudflareID: previousCloudflareID, Hostnames: hostnames, RequestType: requestType, RequestedValidity: requestedValidity, Fingerprint: stored.Fingerprint, LastCheckedAt: now, LastAttemptedAt: now, LastSyncedAt: &lastSyncedAt, CompletedAt: now}
+	if err := validateProviderSuccess(result); err != nil {
+		_ = service.recordFailure(ctx, certificate, host, failureStatus, err)
+		return domain.ManagedCertificate{}, err
+	}
+	if err := service.Store.Certificates().UpdateSuccess(ctx, certificate.ID, result); err != nil {
 		return domain.ManagedCertificate{}, err
 	}
 	return service.Store.Certificates().ByProxyID(ctx, proxy.ID)
 }
 
-func (service Service) rotateOriginCA(ctx context.Context, proxyID string) (domain.ManagedCertificate, error) {
+func (service Service) rotateOriginCACertificate(ctx context.Context, certificate domain.ManagedCertificate) (domain.ManagedCertificate, error) {
 	if service.Store == nil {
 		return domain.ManagedCertificate{}, errors.New("store is required")
 	}
-	certificate, err := service.Store.Certificates().ByProxyID(ctx, proxyID)
+	proxy, err := service.Store.Proxies().ByID(ctx, certificate.ProxyID)
 	if err != nil {
 		return domain.ManagedCertificate{}, err
 	}
-	return service.issueOriginCA(ctx, ManagedCertificateRequest{ProxyID: proxyID, ProviderType: domain.CertificateProviderCloudflareOriginCA, CredentialID: certificate.CredentialID, Hostnames: certificate.Hostnames, RequestType: certificate.RequestType, RequestedValidity: certificate.RequestedValidity}, domain.CertificateRenewalFailed)
+	return service.issueOriginCAForProxy(ctx, proxy, ManagedCertificateRequest{ProxyID: certificate.ProxyID, ProviderType: domain.CertificateProviderCloudflareOriginCA, CredentialID: certificate.CredentialID, Hostnames: certificate.Hostnames, RequestType: certificate.RequestType, RequestedValidity: certificate.RequestedValidity}, &certificate, domain.CertificateRenewalFailed)
 }
 
 func (service Service) recordFailure(ctx context.Context, certificate domain.ManagedCertificate, host string, failureStatus domain.CertificateStatus, cause error) error {
@@ -354,7 +436,7 @@ func (service Service) recordFailure(ctx context.Context, certificate domain.Man
 	health := service.activeHealth(host, certificate, now)
 	_ = service.Store.Certificates().UpdateHealth(ctx, certificate.ID, store.CertificateHealth{ServingStatus: health.ServingStatus, NotAfter: health.NotAfter, Fingerprint: health.Fingerprint, LastError: health.ErrorSummary, CheckedAt: now})
 	failureCount := certificate.FailureCount + 1
-	nextAttemptAt := service.nextAttemptAt(now, failureCount, certificate.NotAfter)
+	nextAttemptAt := service.scheduler().NextAttemptAt(now, failureCount, certificate.NotAfter)
 	return service.Store.Certificates().UpdateFailure(ctx, certificate.ID, store.CertificateFailure{
 		Status:          failureStatus,
 		ServingStatus:   health.ServingStatus,
@@ -373,44 +455,11 @@ func (service Service) activeHealth(host string, certificate domain.ManagedCerti
 	if certificate.CertFile == "" || certificate.KeyFile == "" {
 		return httpsproxy.CertificateMaterialHealth{ServingStatus: domain.CertificateServingMissing, ErrorSummary: "certificate active material is missing"}
 	}
-	return httpsproxy.CheckCertificateFiles(host, certificate.CertFile, certificate.KeyFile, service.Storage.CertificateDir, service.renewalWindow(certificate.ProviderType), now)
+	return httpsproxy.CheckCertificateFiles(host, certificate.CertFile, certificate.KeyFile, service.Storage.CertificateDir, service.scheduler().WindowFor(certificate.ProviderType), now)
 }
 
-func (service Service) servingStatus(notAfter time.Time, now time.Time, providerType domain.CertificateProviderType) domain.CertificateServingStatus {
-	if !notAfter.After(now) {
-		return domain.CertificateServingExpired
-	}
-	if window := service.renewalWindow(providerType); window > 0 && !notAfter.After(now.Add(window)) {
-		return domain.CertificateServingExpiringSoon
-	}
-	return domain.CertificateServingUsable
-}
-
-func (service Service) renewalWindow(providerType domain.CertificateProviderType) time.Duration {
-	if providerType == domain.CertificateProviderCloudflareOriginCA && service.OriginCASettings.RotationWindow > 0 {
-		return service.OriginCASettings.RotationWindow
-	}
-	return service.Settings.RenewalWindow
-}
-
-func (service Service) nextAttemptAt(now time.Time, failureCount int, notAfter *time.Time) time.Time {
-	if failureCount < 1 {
-		failureCount = 1
-	}
-	delay := time.Minute
-	for i := 1; i < failureCount && delay < time.Hour; i++ {
-		delay *= 2
-	}
-	if delay > time.Hour {
-		delay = time.Hour
-	}
-	if notAfter != nil {
-		remaining := notAfter.Sub(now)
-		if remaining > 0 && remaining <= 24*time.Hour && delay > 5*time.Minute {
-			delay = 5 * time.Minute
-		}
-	}
-	return now.Add(delay)
+func (service Service) scheduler() LifecycleScheduler {
+	return LifecycleScheduler{RenewalWindow: service.Settings.RenewalWindow, OriginCARotationWindow: service.OriginCASettings.RotationWindow}
 }
 
 func operationStatusFromFailure(status domain.CertificateStatus) domain.CertificateOperationStatus {
@@ -436,7 +485,10 @@ func acquireOperationLock(ctx context.Context, key string) (func(), error) {
 	return func() { operationLocks.Delete(key) }, nil
 }
 
-func (service Service) ensureCertificateRecord(ctx context.Context, proxyID string, host string, providerType domain.CertificateProviderType, providerName string, credentialID string) (domain.ManagedCertificate, error) {
+func (service Service) ensureCertificateRecord(ctx context.Context, proxyID string, host string, providerType domain.CertificateProviderType, providerName string, credentialID string, existing *domain.ManagedCertificate) (domain.ManagedCertificate, error) {
+	if existing != nil && existing.ID != "" {
+		return *existing, nil
+	}
 	certificate, err := service.Store.Certificates().ByProxyID(ctx, proxyID)
 	if err == nil {
 		return certificate, nil
@@ -522,27 +574,20 @@ func (service Service) resolveCredentialID(ctx context.Context, requested string
 	if service.Store == nil {
 		return "", errors.New("store is required")
 	}
-	credentials, err := service.Store.ProviderCredentials().List(ctx)
+	credentials, err := service.Store.ProviderCredentials().ListByProviderType(ctx, domain.CertificateProviderCloudflareOriginCA, []domain.ProviderCredentialStatus{
+		domain.ProviderCredentialPending,
+		domain.ProviderCredentialVerified,
+	})
 	if err != nil {
 		return "", err
 	}
-	candidates := make([]domain.ProviderCredential, 0, 1)
-	for _, credential := range credentials {
-		if credential.ProviderType != domain.CertificateProviderCloudflareOriginCA {
-			continue
-		}
-		if credential.Status == domain.ProviderCredentialDisabled || credential.Status == domain.ProviderCredentialVerificationFailed {
-			continue
-		}
-		candidates = append(candidates, credential)
-	}
-	if len(candidates) == 0 {
+	if len(credentials) == 0 {
 		return "", errors.New("cloudflare origin ca credential is required")
 	}
-	if len(candidates) > 1 {
+	if len(credentials) > 1 {
 		return "", errors.New("cloudflare origin ca credential id is required when multiple credentials exist")
 	}
-	return candidates[0].ID, nil
+	return credentials[0].ID, nil
 }
 
 func providerStatusAfterFailure(certificate domain.ManagedCertificate) domain.CertificateProviderStatus {

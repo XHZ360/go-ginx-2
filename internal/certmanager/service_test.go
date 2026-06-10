@@ -18,6 +18,7 @@ import (
 
 	"github.com/simp-frp/go-ginx-2/internal/domain"
 	httpsproxy "github.com/simp-frp/go-ginx-2/internal/proxy/https"
+	"github.com/simp-frp/go-ginx-2/internal/store"
 	"github.com/simp-frp/go-ginx-2/internal/store/sqlite"
 )
 
@@ -82,6 +83,20 @@ func TestServiceRecordsProviderCredentialFailure(t *testing.T) {
 	}
 }
 
+func TestServiceRejectsUnsupportedProviderBeforeMutation(t *testing.T) {
+	ctx := context.Background()
+	db := openTestStore(t)
+	seedHTTPSProxy(t, ctx, db)
+	service := Service{Store: db, NewID: func() (string, error) { return "cert-1", nil }}
+
+	if _, err := service.IssueWithProvider(ctx, ManagedCertificateRequest{ProxyID: "proxy-1", ProviderType: domain.CertificateProviderType("unsupported")}); err == nil {
+		t.Fatal("expected unsupported provider error")
+	}
+	if _, err := db.Certificates().ByProxyID(ctx, "proxy-1"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("unsupported provider should not create certificate record, got %v", err)
+	}
+}
+
 func TestServiceRenewsAndRetainsPreviousFiles(t *testing.T) {
 	ctx := context.Background()
 	db := openTestStore(t)
@@ -129,6 +144,60 @@ func TestServiceRenewalFailurePreservesServingCertificate(t *testing.T) {
 	}
 	if certificate.Status != domain.CertificateRenewalFailed || certificate.ServingStatus != domain.CertificateServingUsable || certificate.OperationStatus != domain.CertificateOperationRenewalFailed || certificate.FailureCount != 1 || certificate.NextAttemptAt == nil {
 		t.Fatalf("unexpected renewal failure metadata: %+v", certificate)
+	}
+}
+
+func TestServiceRenewCertificateReusesLoadedRecord(t *testing.T) {
+	ctx := context.Background()
+	db := openTestStore(t)
+	seedHTTPSProxy(t, ctx, db)
+	initialCert, initialKey := testCertificatePEM(t, "app.example.com", time.Now().Add(time.Hour))
+	nextCert, nextKey := testCertificatePEM(t, "app.example.com", time.Now().Add(2*time.Hour))
+	issuer := &sequenceIssuer{certs: []IssuedCertificate{{CertPEM: initialCert, KeyPEM: initialKey}, {CertPEM: nextCert, KeyPEM: nextKey}}}
+	service := Service{Store: db, Issuer: issuer, DNSProvider: fakeDNSProvider{}, Storage: httpsproxy.ManagedCertificateStorage{CertificateDir: t.TempDir()}, Settings: domain.ACMEProviderSettings{AccountEmail: "ops@example.com", TermsAccepted: true, DNSProvider: "cloudflare"}, NewID: func() (string, error) { return "cert-1", nil }}
+	issued, err := service.Issue(ctx, "proxy-1")
+	if err != nil {
+		t.Fatalf("issue certificate: %v", err)
+	}
+	countingRepo := &countingCertificateRepository{CertificateRepository: db.Certificates()}
+	countingStore := countingStore{Store: db, certificates: countingRepo}
+	service.Store = countingStore
+
+	renewed, err := service.RenewCertificate(ctx, issued)
+	if err != nil {
+		t.Fatalf("renew loaded certificate: %v", err)
+	}
+	if renewed.LastRenewedAt == nil {
+		t.Fatalf("expected renewal to complete: %+v", renewed)
+	}
+	if countingRepo.byProxyIDCount != 1 {
+		t.Fatalf("expected only final certificate refresh by proxy id, got %d", countingRepo.byProxyIDCount)
+	}
+}
+
+func TestServiceResolvesDefaultOriginCACredentialWithScopedQuery(t *testing.T) {
+	ctx := context.Background()
+	db := openTestStore(t)
+	seedHTTPSProxy(t, ctx, db)
+	secrets := testSecretStore{values: map[string]string{"cred-1.secret": "cf-api-token"}}
+	seedOriginCACredential(t, ctx, db)
+	now := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
+	client := testOriginCAClient{create: func(ctx context.Context, token string, request OriginCACreateRequest) (OriginCACertificate, error) {
+		return OriginCACertificate{ID: "cf-cert-1", CertificatePEM: originCATestCertificateFromCSR(t, request.CSR, request.Hostnames, now.Add(365*24*time.Hour)), Hostnames: request.Hostnames, RequestType: request.RequestType, RequestedValidity: request.RequestedValidity}, nil
+	}}
+	countingCredentials := &countingProviderCredentialRepository{ProviderCredentialRepository: db.ProviderCredentials()}
+	countingStore := countingStore{Store: db, credentials: countingCredentials}
+	service := Service{Store: countingStore, OriginCAClient: client, ProviderSecretStore: secrets, Storage: httpsproxy.ManagedCertificateStorage{CertificateDir: t.TempDir()}, OriginCASettings: domain.OriginCAProviderSettings{Enabled: true, DefaultRequestType: OriginCARequestTypeECC, RequestedValidity: 365}, NewID: func() (string, error) { return "cert-1", nil }, Now: func() time.Time { return now }}
+
+	issued, err := service.IssueWithProvider(ctx, ManagedCertificateRequest{ProxyID: "proxy-1", ProviderType: domain.CertificateProviderCloudflareOriginCA})
+	if err != nil {
+		t.Fatalf("issue with default origin ca credential: %v", err)
+	}
+	if issued.CredentialID != "cred-1" {
+		t.Fatalf("expected default credential to be selected, got %+v", issued)
+	}
+	if countingCredentials.listCount != 0 || countingCredentials.listByProviderTypeCount != 1 {
+		t.Fatalf("expected provider-scoped credential query, list=%d scoped=%d", countingCredentials.listCount, countingCredentials.listByProviderTypeCount)
 	}
 }
 
@@ -512,4 +581,50 @@ func stringSlicesEqual(left []string, right []string) bool {
 		}
 	}
 	return true
+}
+
+type countingStore struct {
+	*sqlite.Store
+	certificates *countingCertificateRepository
+	credentials  *countingProviderCredentialRepository
+}
+
+func (cs countingStore) Certificates() store.CertificateRepository {
+	if cs.certificates != nil {
+		return cs.certificates
+	}
+	return cs.Store.Certificates()
+}
+
+func (cs countingStore) ProviderCredentials() store.ProviderCredentialRepository {
+	if cs.credentials != nil {
+		return cs.credentials
+	}
+	return cs.Store.ProviderCredentials()
+}
+
+type countingCertificateRepository struct {
+	store.CertificateRepository
+	byProxyIDCount int
+}
+
+func (repo *countingCertificateRepository) ByProxyID(ctx context.Context, proxyID string) (domain.ManagedCertificate, error) {
+	repo.byProxyIDCount++
+	return repo.CertificateRepository.ByProxyID(ctx, proxyID)
+}
+
+type countingProviderCredentialRepository struct {
+	store.ProviderCredentialRepository
+	listCount               int
+	listByProviderTypeCount int
+}
+
+func (repo *countingProviderCredentialRepository) List(ctx context.Context) ([]domain.ProviderCredential, error) {
+	repo.listCount++
+	return repo.ProviderCredentialRepository.List(ctx)
+}
+
+func (repo *countingProviderCredentialRepository) ListByProviderType(ctx context.Context, providerType domain.CertificateProviderType, statuses []domain.ProviderCredentialStatus) ([]domain.ProviderCredential, error) {
+	repo.listByProviderTypeCount++
+	return repo.ProviderCredentialRepository.ListByProviderType(ctx, providerType, statuses)
 }

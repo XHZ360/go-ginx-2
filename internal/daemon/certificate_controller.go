@@ -59,16 +59,13 @@ func (controller *managedCertificateController) RenewDue(ctx context.Context) {
 		return
 	}
 	now := controller.nowTime()
-	window := controller.renewalWindow
-	if controller.originCARotationWindow > window {
-		window = controller.originCARotationWindow
-	}
-	certificates, err := controller.db.Certificates().ListRenewable(ctx, now.Add(window), now)
+	scheduler := controller.scheduler()
+	certificates, err := controller.db.Certificates().ListLifecycleCandidates(ctx, scheduler.CandidateQuery(now))
 	if err != nil {
 		return
 	}
 	for _, certificate := range certificates {
-		if !controller.certificateDue(certificate, now) {
+		if !scheduler.IsDue(certificate, now) {
 			continue
 		}
 		controller.renewOne(ctx, certificate)
@@ -76,17 +73,7 @@ func (controller *managedCertificateController) RenewDue(ctx context.Context) {
 }
 
 func (controller *managedCertificateController) certificateDue(certificate domain.ManagedCertificate, now time.Time) bool {
-	if certificate.NotAfter == nil {
-		return false
-	}
-	window := controller.renewalWindow
-	if certificate.ProviderType == domain.CertificateProviderCloudflareOriginCA {
-		window = controller.originCARotationWindow
-	}
-	if window <= 0 {
-		return false
-	}
-	return !certificate.NotAfter.After(now.Add(window))
+	return controller.scheduler().IsDue(certificate, now)
 }
 
 func (controller *managedCertificateController) renewOne(ctx context.Context, certificate domain.ManagedCertificate) {
@@ -95,7 +82,7 @@ func (controller *managedCertificateController) renewOne(ctx context.Context, ce
 		return
 	}
 	defer controller.finish(key)
-	_, err := controller.service.Renew(ctx, certificate.ProxyID)
+	_, err := controller.service.RenewCertificate(ctx, certificate)
 	if errors.Is(err, certmanager.ErrOperationBusy) {
 		return
 	}
@@ -122,6 +109,10 @@ func (controller *managedCertificateController) nowTime() time.Time {
 		return controller.now().UTC()
 	}
 	return time.Now().UTC()
+}
+
+func (controller *managedCertificateController) scheduler() certmanager.LifecycleScheduler {
+	return certmanager.LifecycleScheduler{RenewalWindow: controller.renewalWindow, OriginCARotationWindow: controller.originCARotationWindow}
 }
 
 func certificateOperationKey(proxyID string, host string) string {

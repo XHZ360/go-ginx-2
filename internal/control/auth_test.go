@@ -257,7 +257,15 @@ func (authCertificateRepository) List(context.Context) ([]domain.ManagedCertific
 	return nil, nil
 }
 
+func (authCertificateRepository) ListByProxyIDs(context.Context, []string) ([]domain.ManagedCertificate, error) {
+	return nil, nil
+}
+
 func (authCertificateRepository) ListRenewable(context.Context, time.Time, time.Time) ([]domain.ManagedCertificate, error) {
+	return nil, nil
+}
+
+func (authCertificateRepository) ListLifecycleCandidates(context.Context, store.CertificateLifecycleCandidateQuery) ([]domain.ManagedCertificate, error) {
 	return nil, nil
 }
 
@@ -288,6 +296,10 @@ func (authProviderCredentialRepository) ByID(context.Context, string) (domain.Pr
 }
 
 func (authProviderCredentialRepository) List(context.Context) ([]domain.ProviderCredential, error) {
+	return nil, nil
+}
+
+func (authProviderCredentialRepository) ListByProviderType(context.Context, domain.CertificateProviderType, []domain.ProviderCredentialStatus) ([]domain.ProviderCredential, error) {
 	return nil, nil
 }
 

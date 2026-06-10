@@ -13,7 +13,6 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -270,57 +269,5 @@ func candidateZones(fqdn string) []string {
 }
 
 func (provider CloudflareDNSProvider) request(ctx context.Context, method string, path string, query url.Values, body any) ([]byte, error) {
-	if strings.TrimSpace(provider.APIToken) == "" {
-		return nil, errors.New("cloudflare api token is required")
-	}
-	baseURL := provider.BaseURL
-	if strings.TrimSpace(baseURL) == "" {
-		baseURL = "https://api.cloudflare.com/client/v4"
-	}
-	var reader io.Reader
-	if body != nil {
-		encoded, err := json.Marshal(body)
-		if err != nil {
-			return nil, err
-		}
-		reader = bytes.NewReader(encoded)
-	}
-	requestURL := strings.TrimRight(baseURL, "/") + path
-	if len(query) > 0 {
-		requestURL += "?" + query.Encode()
-	}
-	request, err := http.NewRequestWithContext(ctx, method, requestURL, reader)
-	if err != nil {
-		return nil, err
-	}
-	request.Header.Set("Authorization", "Bearer "+provider.APIToken)
-	request.Header.Set("Content-Type", "application/json")
-	client := provider.HTTPClient
-	if client == nil {
-		client = http.DefaultClient
-	}
-	response, err := client.Do(request)
-	if err != nil {
-		return nil, err
-	}
-	defer response.Body.Close()
-	data, err := io.ReadAll(io.LimitReader(response.Body, 1<<20))
-	if err != nil {
-		return nil, err
-	}
-	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return nil, fmt.Errorf("cloudflare api request failed: status %d", response.StatusCode)
-	}
-	var envelope struct {
-		Success bool            `json:"success"`
-		Errors  json.RawMessage `json:"errors"`
-		Result  json.RawMessage `json:"result"`
-	}
-	if err := json.Unmarshal(data, &envelope); err != nil {
-		return nil, err
-	}
-	if !envelope.Success {
-		return nil, errors.New("cloudflare api request failed")
-	}
-	return data, nil
+	return doCloudflareAPIRequest(ctx, cloudflareAPIRequest{APIToken: provider.APIToken, HTTPClient: provider.HTTPClient, BaseURL: provider.BaseURL, Method: method, Path: path, Query: query, Body: body, FailureMessage: "cloudflare api request failed"})
 }

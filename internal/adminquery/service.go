@@ -2,10 +2,12 @@ package adminquery
 
 import (
 	"context"
+	"errors"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/simp-frp/go-ginx-2/internal/certmanager"
 	"github.com/simp-frp/go-ginx-2/internal/domain"
 	httpsproxy "github.com/simp-frp/go-ginx-2/internal/proxy/https"
 	"github.com/simp-frp/go-ginx-2/internal/session"
@@ -461,7 +463,7 @@ func (service Service) ClientDetail(ctx context.Context, clientID string) (Clien
 	}
 	statsByProxy := service.statsByProxy()
 	latestByClient := latestByClientID(service.latestSessions())
-	certificatesByProxy, err := service.certificatesByProxy(ctx)
+	certificatesByProxy, err := service.certificatesByProxyIDs(ctx, proxyIDs(proxies))
 	if err != nil {
 		return ClientDetail{}, err
 	}
@@ -508,11 +510,10 @@ func (service Service) ProxyDetail(ctx context.Context, proxyID string) (ProxyDe
 	}
 	statsByProxy := service.statsByProxy()
 	latestByClient := latestByClientID(service.latestSessions())
-	certificatesByProxy, err := service.certificatesByProxy(ctx)
+	certificate, err := service.certificateByProxyID(ctx, proxy)
 	if err != nil {
 		return ProxyDetail{}, err
 	}
-	certificate := service.certificateSummaryForProxy(ctx, proxy, certificatesByProxy[proxy.ID])
 	item := proxyListItemFromDomain(proxy, latestByClient[proxy.ClientID], statsByProxy[proxy.ID], certificate)
 	return ProxyDetail{ID: item.ID, UserID: item.UserID, ClientID: item.ClientID, Name: item.Name, Type: item.Type, Status: item.Status, Description: item.Description, RuntimeStatus: item.RuntimeStatus, ActiveTCPConnections: item.ActiveTCPConnections, UploadBytes: item.UploadBytes, DownloadBytes: item.DownloadBytes, TCPErrorCount: item.TCPErrorCount, UDPErrorCount: item.UDPErrorCount, HTTPErrorCount: item.HTTPErrorCount, Config: item.Config, Certificate: item.Certificate, CreatedAt: proxy.CreatedAt, UpdatedAt: proxy.UpdatedAt}, nil
 }
@@ -522,7 +523,13 @@ func (service Service) ListManagedCertificates(ctx context.Context, input Certif
 	if err != nil {
 		return ManagedCertificatePage{}, err
 	}
-	certificatesByProxy, err := service.certificatesByProxy(ctx)
+	httpsProxyIDs := make([]string, 0, len(proxies))
+	for _, proxy := range proxies {
+		if proxy.Type == domain.ProxyHTTPS {
+			httpsProxyIDs = append(httpsProxyIDs, proxy.ID)
+		}
+	}
+	certificatesByProxy, err := service.certificatesByProxyIDs(ctx, httpsProxyIDs)
 	if err != nil {
 		return ManagedCertificatePage{}, err
 	}
@@ -626,6 +633,45 @@ func (service Service) certificatesByProxy(ctx context.Context) (map[string]*Man
 		byProxy[certificate.ProxyID] = &summary
 	}
 	return byProxy, nil
+}
+
+func (service Service) certificatesByProxyIDs(ctx context.Context, proxyIDs []string) (map[string]*ManagedCertificateSummary, error) {
+	byProxy := make(map[string]*ManagedCertificateSummary)
+	if service.Store == nil || len(proxyIDs) == 0 {
+		return byProxy, nil
+	}
+	certificates, err := service.Store.Certificates().ListByProxyIDs(ctx, proxyIDs)
+	if err != nil {
+		return nil, err
+	}
+	for _, certificate := range certificates {
+		summary := service.managedCertificateSummary(certificate)
+		byProxy[certificate.ProxyID] = &summary
+	}
+	return byProxy, nil
+}
+
+func (service Service) certificateByProxyID(ctx context.Context, proxy domain.Proxy) (*ManagedCertificateSummary, error) {
+	if service.Store == nil || proxy.Type != domain.ProxyHTTPS {
+		return service.certificateSummaryForProxy(ctx, proxy, nil), nil
+	}
+	certificate, err := service.Store.Certificates().ByProxyID(ctx, proxy.ID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return service.certificateSummaryForProxy(ctx, proxy, nil), nil
+		}
+		return nil, err
+	}
+	summary := service.managedCertificateSummary(certificate)
+	return service.certificateSummaryForProxy(ctx, proxy, &summary), nil
+}
+
+func proxyIDs(proxies []domain.Proxy) []string {
+	ids := make([]string, 0, len(proxies))
+	for _, proxy := range proxies {
+		ids = append(ids, proxy.ID)
+	}
+	return ids
 }
 
 func mergeLastActivity(target map[string]*time.Time, userID string, value *time.Time) {
@@ -746,11 +792,7 @@ func (service Service) managedCertificateSummary(certificate domain.ManagedCerti
 		return summary
 	}
 	now := time.Now().UTC()
-	window := service.RenewalWindow
-	if certificate.ProviderType == domain.CertificateProviderCloudflareOriginCA && service.OriginCARotationWindow > 0 {
-		window = service.OriginCARotationWindow
-	}
-	health := httpsproxy.CheckCertificateFiles(certificate.Host, certificate.CertFile, certificate.KeyFile, service.CertificateDir, window, now)
+	health := httpsproxy.CheckCertificateFiles(certificate.Host, certificate.CertFile, certificate.KeyFile, service.CertificateDir, service.scheduler().WindowFor(certificate.ProviderType), now)
 	summary.ServingStatus = health.ServingStatus
 	if !certificateLifecycleFailed(certificate.Status) {
 		summary.Status = certificateStatusFromServing(health.ServingStatus)
@@ -765,6 +807,10 @@ func (service Service) managedCertificateSummary(certificate domain.ManagedCerti
 		summary.LastError = "certificate provider marked active material unavailable"
 	}
 	return summary
+}
+
+func (service Service) scheduler() certmanager.LifecycleScheduler {
+	return certmanager.LifecycleScheduler{RenewalWindow: service.RenewalWindow, OriginCARotationWindow: service.OriginCARotationWindow}
 }
 
 func certificateLifecycleFailed(status domain.CertificateStatus) bool {

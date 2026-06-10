@@ -76,6 +76,9 @@ func (s *Store) migrate(ctx context.Context) error {
 	if err := addManagedCertificateProviderColumns(ctx, s.db); err != nil {
 		return err
 	}
+	if err := addCertificateQueryIndexes(ctx, s.db); err != nil {
+		return err
+	}
 	return addUserPasswordColumn(ctx, s.db)
 }
 
@@ -455,11 +458,69 @@ func (r certificateRepository) List(ctx context.Context) ([]domain.ManagedCertif
 	return certificates, nil
 }
 
+func (r certificateRepository) ListByProxyIDs(ctx context.Context, proxyIDs []string) ([]domain.ManagedCertificate, error) {
+	proxyIDs = compactStrings(proxyIDs)
+	if len(proxyIDs) == 0 {
+		return nil, nil
+	}
+	placeholders := make([]string, len(proxyIDs))
+	args := make([]any, len(proxyIDs))
+	for index, proxyID := range proxyIDs {
+		placeholders[index] = "?"
+		args[index] = proxyID
+	}
+	rows, err := r.db.QueryContext(ctx, managedCertificateSelect+` where proxy_id in (`+strings.Join(placeholders, ",")+`) order by host, id`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	certificates := make([]domain.ManagedCertificate, 0)
+	for rows.Next() {
+		certificate, err := scanManagedCertificateRows(rows)
+		if err != nil {
+			return nil, err
+		}
+		certificates = append(certificates, certificate)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return certificates, nil
+}
+
 func (r certificateRepository) ListRenewable(ctx context.Context, before time.Time, now time.Time) ([]domain.ManagedCertificate, error) {
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
-	rows, err := r.db.QueryContext(ctx, managedCertificateSelect+` where not_after is not null and not_after <= ? and (next_attempt_at is null or next_attempt_at <= ?) and (serving_status in (?, ?) or (serving_status = '' and status in (?, ?))) order by not_after, host`, before, now, domain.CertificateServingUsable, domain.CertificateServingExpiringSoon, domain.CertificateValid, domain.CertificateExpiringSoon)
+	return r.ListLifecycleCandidates(ctx, store.CertificateLifecycleCandidateQuery{Now: now, ACMEBefore: &before, OriginCABefore: &before})
+}
+
+func (r certificateRepository) ListLifecycleCandidates(ctx context.Context, query store.CertificateLifecycleCandidateQuery) ([]domain.ManagedCertificate, error) {
+	now := query.Now
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	providerClauses := make([]string, 0, 2)
+	args := []any{
+		now,
+		domain.CertificateServingUsable,
+		domain.CertificateServingExpiringSoon,
+		domain.CertificateValid,
+		domain.CertificateExpiringSoon,
+	}
+	if query.ACMEBefore != nil {
+		providerClauses = append(providerClauses, `((provider_type = '' or provider_type <> ?) and not_after <= ?)`)
+		args = append(args, domain.CertificateProviderCloudflareOriginCA, *query.ACMEBefore)
+	}
+	if query.OriginCABefore != nil {
+		providerClauses = append(providerClauses, `(provider_type = ? and not_after <= ?)`)
+		args = append(args, domain.CertificateProviderCloudflareOriginCA, *query.OriginCABefore)
+	}
+	if len(providerClauses) == 0 {
+		return nil, nil
+	}
+	statement := managedCertificateSelect + ` where not_after is not null and (next_attempt_at is null or next_attempt_at <= ?) and (serving_status in (?, ?) or (serving_status = '' and status in (?, ?))) and (` + strings.Join(providerClauses, ` or `) + `) order by not_after, host`
+	rows, err := r.db.QueryContext(ctx, statement, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -663,6 +724,43 @@ func (r providerCredentialRepository) ByID(ctx context.Context, id string) (doma
 
 func (r providerCredentialRepository) List(ctx context.Context) ([]domain.ProviderCredential, error) {
 	rows, err := r.db.QueryContext(ctx, providerCredentialSelect+` order by created_at, id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	credentials := make([]domain.ProviderCredential, 0)
+	for rows.Next() {
+		credential, err := scanProviderCredentialRows(rows)
+		if err != nil {
+			return nil, err
+		}
+		credentials = append(credentials, credential)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return credentials, nil
+}
+
+func (r providerCredentialRepository) ListByProviderType(ctx context.Context, providerType domain.CertificateProviderType, statuses []domain.ProviderCredentialStatus) ([]domain.ProviderCredential, error) {
+	providerType = domain.CertificateProviderType(strings.TrimSpace(string(providerType)))
+	if !providerType.Valid() {
+		return nil, errors.New("provider credential type is invalid")
+	}
+	args := []any{providerType}
+	statement := providerCredentialSelect + ` where provider_type = ?`
+	if len(statuses) > 0 {
+		placeholders := make([]string, 0, len(statuses))
+		for _, status := range statuses {
+			if !status.Valid() {
+				return nil, errors.New("provider credential status is invalid")
+			}
+			placeholders = append(placeholders, "?")
+			args = append(args, status)
+		}
+		statement += ` and status in (` + strings.Join(placeholders, ",") + `)`
+	}
+	rows, err := r.db.QueryContext(ctx, statement+` order by created_at, id`, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -1165,6 +1263,19 @@ where provider_status = ''`,
 	return err
 }
 
+func addCertificateQueryIndexes(ctx context.Context, db *sql.DB) error {
+	statements := []string{
+		`create index if not exists managed_certificates_lifecycle_provider_idx on managed_certificates(provider_type, not_after, next_attempt_at)`,
+		`create index if not exists provider_credentials_provider_status_idx on provider_credentials(provider_type, status)`,
+	}
+	for _, statement := range statements {
+		if _, err := db.ExecContext(ctx, statement); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func addColumnIfMissing(ctx context.Context, db *sql.DB, table string, column string, definition string) error {
 	rows, err := db.QueryContext(ctx, `pragma table_info(`+table+`)`)
 	if err != nil {
@@ -1218,6 +1329,23 @@ func translateError(err error) error {
 		return fmt.Errorf("%w: %v", store.ErrAlreadyExists, err)
 	}
 	return err
+}
+
+func compactStrings(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	compacted := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		compacted = append(compacted, value)
+	}
+	return compacted
 }
 
 const schema = `

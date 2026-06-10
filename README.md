@@ -483,7 +483,7 @@ Cloudflare Origin CA 是另一类托管证书 provider。它不使用 DNS-01 cha
 
 创建或轮换 Origin CA 证书时，HTTPS proxy 的 DNS 记录应在 Cloudflare 中保持 proxied，SSL/TLS mode 应使用 Full (strict) 或等价的严格 origin 校验路径。Origin CA 证书只适合 Cloudflare 到 origin 的 TLS 连接，公网浏览器直连 origin 不会按普通 WebPKI 信任该证书。
 
-CLI 可以消费已经由 Admin UI/API 写入的 credential ID：
+CLI 可以消费已经由 Admin UI/API 写入的 credential ID；如果未显式提供 credential，系统只会在 Cloudflare Origin CA 的可用 credential 中按 provider/status scoped 查询唯一默认项，多于一个可用 credential 时会要求显式选择：
 
 ```bash
 ./bin/goginx-admin issue-managed-certificate \
@@ -499,7 +499,7 @@ CLI 可以消费已经由 Admin UI/API 写入的 credential ID：
   -origin-ca-secret-store data/secrets/provider-credentials
 ```
 
-Origin CA 的调度窗口由 `origin_ca_rotation_window` 控制；进入窗口后 daemon 会把证书纳入 provider-specific rotation 候选，并沿用失败退避和 active material 保留语义。撤销是高风险动作，不会在轮换后自动执行；只有显式提供 proxy ID、host 和 Cloudflare certificate ID 时才会调用 revoke。撤销当前 active 证书会让 Cloudflare 到 origin 的 Full (strict) 连接失败，通常应先轮换并确认新证书已部署。
+Origin CA 的调度窗口由 `origin_ca_rotation_window` 控制；ACME renewal window、Origin CA rotation window、`expiring_soon` 状态和失败 `next_attempt_at` 都来自统一生命周期调度规则。进入窗口后 daemon 会把证书纳入 provider-specific rotation 候选，并沿用失败退避和 active material 保留语义。撤销是高风险动作，不会在轮换后自动执行；只有显式提供 proxy ID、host 和 Cloudflare certificate ID 时才会调用 revoke。撤销当前 active 证书会让 Cloudflare 到 origin 的 Full (strict) 连接失败，通常应先轮换并确认新证书已部署。
 
 ```bash
 ./bin/goginx-admin revoke-origin-ca-certificate \
