@@ -9,3 +9,5 @@ data/
 
 deploye*.jsonc
 *.log
+*.local*
+*.private*
