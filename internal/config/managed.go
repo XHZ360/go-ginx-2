@@ -112,6 +112,7 @@ func ResolveServerPaths(cfg *Server, root string) {
 	cfg.SQLitePath = deploypath.Resolve(root, cfg.SQLitePath)
 	cfg.DataDir = deploypath.Resolve(root, cfg.DataDir)
 	cfg.CertificateDir = deploypath.Resolve(root, cfg.CertificateDir)
+	cfg.OriginCASecretStorePath = deploypath.Resolve(root, cfg.OriginCASecretStorePath)
 }
 
 func ResolveClientPaths(cfg *Client, root string) {

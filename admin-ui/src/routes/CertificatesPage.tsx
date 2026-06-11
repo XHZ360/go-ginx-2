@@ -354,7 +354,7 @@ function CredentialRow({
       <td>
         <div className="inline-actions">
           <Button type="default" onClick={onEdit}>Edit</Button>
-          <Button type="default" icon={<SyncOutlined aria-hidden="true" />} onClick={onVerify}>Verify</Button>
+          <Button type="default" icon={<SyncOutlined aria-hidden="true" />} onClick={onVerify} disabled={credential.status === 'disabled'}>Verify</Button>
           <ConfirmButton label="Disable" confirmLabel={`Disable ${credential.name}?`} onConfirm={onDisable} tone="secondary" disabled={credential.status === 'disabled'} />
           <ConfirmButton label="Delete" confirmLabel={`Delete ${credential.name}?`} onConfirm={onDelete} />
         </div>

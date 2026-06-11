@@ -469,6 +469,8 @@ export CF_DNS_API_TOKEN="<cloudflare-token>"
 
 Cloudflare Origin CA 是另一类托管证书 provider。它不使用 DNS-01 challenge；服务端本地生成私钥和 CSR，只把 CSR、hostnames、request type 和 requested validity 发送给 Cloudflare。私钥仍只写入 `certificate_dir/managed/<host>/`，Cloudflare API Token 明文只写入 SQLite 外的 `origin_ca_secret_store_path`。
 
+托管默认启动会默认启用 Cloudflare Origin CA，并使用 `data/secrets/provider-credentials` 保存 Admin UI 写入的 credential secret。只有显式配置需要覆盖路径或关闭该能力时，才需要手写下面的配置项。
+
 ```json
 {
   "origin_ca_enabled": true,

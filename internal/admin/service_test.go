@@ -602,6 +602,58 @@ func TestServiceRejectsDeletingReferencedProviderCredential(t *testing.T) {
 	}
 }
 
+func TestServiceProviderCredentialRequiresConfiguredSecretStore(t *testing.T) {
+	ctx := context.Background()
+	db := openTestStore(t)
+	service := Service{Store: db}
+
+	var contractError *contracterr.Error
+	if _, err := service.CreateProviderCredential(ctx, ProviderCredentialInput{ID: "cred-1", Name: "Production Origin CA", Token: "cf-token", ActorID: "admin-1"}); !errors.As(err, &contractError) || contractError.Code != contracterr.CodeUnsupported {
+		t.Fatalf("expected unsupported credential storage error, got %v", err)
+	}
+
+	if err := db.ProviderCredentials().Create(ctx, domain.ProviderCredential{ID: "cred-1", Name: "Production Origin CA", ProviderType: domain.CertificateProviderCloudflareOriginCA, Scope: "Zone SSL:Edit", TokenFingerprint: "fingerprint", SecretRef: "cred-1.secret", Status: domain.ProviderCredentialPending}); err != nil {
+		t.Fatalf("seed provider credential: %v", err)
+	}
+	if _, err := service.UpdateProviderCredential(ctx, UpdateProviderCredentialInput{ID: "cred-1", Name: "Rotated Origin CA", Token: "cf-token-2", ActorID: "admin-1"}); !errors.As(err, &contractError) || contractError.Code != contracterr.CodeUnsupported {
+		t.Fatalf("expected unsupported update credential storage error, got %v", err)
+	}
+	if _, err := service.VerifyProviderCredential(ctx, "cred-1", "admin-1"); !errors.As(err, &contractError) || contractError.Code != contracterr.CodeUnsupported {
+		t.Fatalf("expected unsupported verify credential storage error, got %v", err)
+	}
+}
+
+func TestServiceVerifyProviderCredentialReturnsContractErrors(t *testing.T) {
+	ctx := context.Background()
+	db := openTestStore(t)
+	secretStore := &adminMemorySecretStore{values: map[string]string{"cred-1.secret": "cf-token"}}
+	originClient := &adminOriginCAClient{verifyErr: errors.New("cloudflare origin ca request failed: status 401")}
+	service := Service{Store: db, Certificates: certmanager.Service{ProviderSecretStore: secretStore, OriginCAClient: originClient}}
+	if err := db.ProviderCredentials().Create(ctx, domain.ProviderCredential{ID: "cred-1", Name: "Production Origin CA", ProviderType: domain.CertificateProviderCloudflareOriginCA, Scope: "Zone SSL:Edit", TokenFingerprint: "fingerprint", SecretRef: "cred-1.secret", Status: domain.ProviderCredentialPending}); err != nil {
+		t.Fatalf("seed provider credential: %v", err)
+	}
+
+	var contractError *contracterr.Error
+	if _, err := service.VerifyProviderCredential(ctx, "cred-1", "admin-1"); !errors.As(err, &contractError) || contractError.Code != contracterr.CodeConflict {
+		t.Fatalf("expected conflict verification error, got %v", err)
+	}
+	credential, err := db.ProviderCredentials().ByID(ctx, "cred-1")
+	if err != nil {
+		t.Fatalf("read provider credential: %v", err)
+	}
+	if credential.Status != domain.ProviderCredentialVerificationFailed || credential.LastError != "cloudflare origin ca request failed: status 401" {
+		t.Fatalf("expected verification failure metadata, got %+v", credential)
+	}
+
+	if err := db.ProviderCredentials().SetStatus(ctx, "cred-1", domain.ProviderCredentialDisabled, nil, ""); err != nil {
+		t.Fatalf("disable provider credential: %v", err)
+	}
+	originClient.verifyErr = nil
+	if _, err := service.VerifyProviderCredential(ctx, "cred-1", "admin-1"); !errors.As(err, &contractError) || contractError.Code != contracterr.CodeConflict || contractError.Message != "provider credential is disabled" {
+		t.Fatalf("expected disabled credential conflict, got %v", err)
+	}
+}
+
 func TestServiceAuditsOriginCALifecycleActions(t *testing.T) {
 	ctx := context.Background()
 	db := openTestStore(t)

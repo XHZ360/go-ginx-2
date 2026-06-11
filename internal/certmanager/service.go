@@ -26,6 +26,11 @@ type Service struct {
 	Now                 func() time.Time
 }
 
+var (
+	ErrProviderCredentialDisabled           = errors.New("provider credential is disabled")
+	ErrProviderCredentialVerificationFailed = errors.New("provider credential verification failed")
+)
+
 var operationLocks sync.Map
 
 var ErrOperationBusy = errors.New("certificate operation already in progress")
@@ -223,7 +228,10 @@ func (service Service) VerifyProviderCredential(ctx context.Context, credentialI
 	if err != nil {
 		return err
 	}
-	token, err := service.readSecretToken(ctx, credential)
+	if credential.Status == domain.ProviderCredentialDisabled {
+		return ErrProviderCredentialDisabled
+	}
+	token, err := service.readSecretToken(ctx, credential, true)
 	now := service.now()
 	if err == nil {
 		err = service.originCAClient().VerifyToken(ctx, token)
@@ -540,18 +548,18 @@ func (service Service) credentialToken(ctx context.Context, credentialID string)
 	if err != nil {
 		return "", err
 	}
-	return service.readSecretToken(ctx, credential)
+	return service.readSecretToken(ctx, credential, false)
 }
 
-func (service Service) readSecretToken(ctx context.Context, credential domain.ProviderCredential) (string, error) {
+func (service Service) readSecretToken(ctx context.Context, credential domain.ProviderCredential, allowVerificationFailed bool) (string, error) {
 	if credential.ProviderType != domain.CertificateProviderCloudflareOriginCA {
 		return "", errors.New("provider credential is not for cloudflare origin ca")
 	}
 	if credential.Status == domain.ProviderCredentialDisabled {
-		return "", errors.New("provider credential is disabled")
+		return "", ErrProviderCredentialDisabled
 	}
-	if credential.Status == domain.ProviderCredentialVerificationFailed {
-		return "", errors.New("provider credential verification failed")
+	if credential.Status == domain.ProviderCredentialVerificationFailed && !allowVerificationFailed {
+		return "", ErrProviderCredentialVerificationFailed
 	}
 	if service.ProviderSecretStore == nil {
 		return "", errors.New("provider secret store is required")

@@ -161,7 +161,15 @@ func (client CloudflareOriginCAClient) Revoke(ctx context.Context, token string,
 }
 
 func (client CloudflareOriginCAClient) VerifyToken(ctx context.Context, token string) error {
-	_, err := client.request(ctx, token, http.MethodGet, "/user/tokens/verify", nil, nil)
+	_, err := client.Create(ctx, token, OriginCACreateRequest{
+		CSR:               "invalid-origin-ca-verification-csr",
+		Hostnames:         []string{"origin-ca-token-verification.invalid"},
+		RequestType:       OriginCARequestTypeECC,
+		RequestedValidity: 7,
+	})
+	if err != nil && IsCloudflareAPIErrorCode(err, 1007) {
+		return nil
+	}
 	return err
 }
 

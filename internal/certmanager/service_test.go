@@ -83,6 +83,56 @@ func TestServiceRecordsProviderCredentialFailure(t *testing.T) {
 	}
 }
 
+func TestServiceVerifyProviderCredentialDoesNotMutateDisabledCredential(t *testing.T) {
+	ctx := context.Background()
+	db := openTestStore(t)
+	now := time.Date(2026, 6, 11, 10, 0, 0, 0, time.UTC)
+	credential := domain.ProviderCredential{ID: "cred-1", Name: "Cloudflare Origin", ProviderType: domain.CertificateProviderCloudflareOriginCA, Scope: "Zone SSL:Edit", TokenFingerprint: TokenFingerprint("cf-api-token"), SecretRef: "cred-1.secret", Status: domain.ProviderCredentialDisabled, LastError: "disabled by admin"}
+	if err := db.ProviderCredentials().Create(ctx, credential); err != nil {
+		t.Fatalf("create provider credential: %v", err)
+	}
+	service := Service{Store: db, ProviderSecretStore: testSecretStore{values: map[string]string{"cred-1.secret": "cf-api-token"}}, OriginCAClient: testOriginCAClient{verify: func(context.Context, string) error {
+		t.Fatal("disabled credential should not call origin ca verify")
+		return nil
+	}}, Now: func() time.Time { return now }}
+
+	if err := service.VerifyProviderCredential(ctx, "cred-1"); !errors.Is(err, ErrProviderCredentialDisabled) {
+		t.Fatalf("expected disabled credential error, got %v", err)
+	}
+	found, err := db.ProviderCredentials().ByID(ctx, "cred-1")
+	if err != nil {
+		t.Fatalf("read provider credential: %v", err)
+	}
+	if found.Status != domain.ProviderCredentialDisabled || found.LastError != "disabled by admin" || found.LastVerifiedAt != nil {
+		t.Fatalf("disabled credential should not be mutated, got %+v", found)
+	}
+}
+
+func TestServiceVerifyProviderCredentialCanRetryVerificationFailedCredential(t *testing.T) {
+	ctx := context.Background()
+	db := openTestStore(t)
+	now := time.Date(2026, 6, 11, 10, 5, 0, 0, time.UTC)
+	credential := domain.ProviderCredential{ID: "cred-1", Name: "Cloudflare Origin", ProviderType: domain.CertificateProviderCloudflareOriginCA, Scope: "Zone SSL:Edit", TokenFingerprint: TokenFingerprint("cf-api-token"), SecretRef: "cred-1.secret", Status: domain.ProviderCredentialVerificationFailed, LastError: "cloudflare origin ca request failed: status 401"}
+	if err := db.ProviderCredentials().Create(ctx, credential); err != nil {
+		t.Fatalf("create provider credential: %v", err)
+	}
+	service := Service{Store: db, ProviderSecretStore: testSecretStore{values: map[string]string{"cred-1.secret": "cf-api-token"}}, OriginCAClient: testOriginCAClient{}, Now: func() time.Time { return now }}
+	if _, err := service.readSecretToken(ctx, credential, false); !errors.Is(err, ErrProviderCredentialVerificationFailed) {
+		t.Fatalf("expected certificate use to reject verification failed credential, got %v", err)
+	}
+
+	if err := service.VerifyProviderCredential(ctx, "cred-1"); err != nil {
+		t.Fatalf("verify provider credential retry: %v", err)
+	}
+	found, err := db.ProviderCredentials().ByID(ctx, "cred-1")
+	if err != nil {
+		t.Fatalf("read provider credential: %v", err)
+	}
+	if found.Status != domain.ProviderCredentialVerified || found.LastError != "" || found.LastVerifiedAt == nil || !found.LastVerifiedAt.Equal(now) {
+		t.Fatalf("expected retry to verify credential, got %+v", found)
+	}
+}
+
 func TestServiceRejectsUnsupportedProviderBeforeMutation(t *testing.T) {
 	ctx := context.Background()
 	db := openTestStore(t)

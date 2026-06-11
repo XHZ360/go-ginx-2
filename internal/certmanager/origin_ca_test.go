@@ -60,6 +60,11 @@ func TestCloudflareOriginCAClientRequestsAndSanitizesErrors(t *testing.T) {
 			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 				t.Errorf("decode create body: %v", err)
 			}
+			if body["csr"] == "invalid-origin-ca-verification-csr" {
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write([]byte(`{"success":false,"errors":[{"code":1007,"message":"CSR parsed as empty"}],"result":null}`))
+				return
+			}
 			if body["csr"] != "csr-pem" || body["request_type"] != OriginCARequestTypeECC || int(body["requested_validity"].(float64)) != 5475 {
 				t.Errorf("unexpected create body: %+v", body)
 			}
@@ -77,8 +82,6 @@ func TestCloudflareOriginCAClientRequestsAndSanitizesErrors(t *testing.T) {
 			_, _ = w.Write([]byte(`{"success":true,"result":[{"id":"cert-1","hostnames":["app.example.com"],"status":"active"}]}`))
 		case "DELETE /certificates/cert-1":
 			_, _ = w.Write([]byte(`{"success":true,"result":{"id":"cert-1"}}`))
-		case "GET /user/tokens/verify":
-			_, _ = w.Write([]byte(`{"success":true,"result":{"status":"active"}}`))
 		default:
 			t.Errorf("unexpected request %s", key)
 			http.NotFound(w, r)
@@ -108,10 +111,36 @@ func TestCloudflareOriginCAClientRequestsAndSanitizesErrors(t *testing.T) {
 	if err := client.VerifyToken(ctx, token); err != nil {
 		t.Fatalf("verify token: %v", err)
 	}
-	for _, key := range []string{"POST /certificates", "GET /certificates/cert-1", "GET /certificates", "DELETE /certificates/cert-1", "GET /user/tokens/verify"} {
+	for _, key := range []string{"GET /certificates/cert-1", "DELETE /certificates/cert-1"} {
 		if calls[key] != 1 {
 			t.Fatalf("expected one %s call, got %d", key, calls[key])
 		}
+	}
+	if calls["GET /certificates"] != 1 {
+		t.Fatalf("expected one GET /certificates call, got %d", calls["GET /certificates"])
+	}
+	if calls["POST /certificates"] != 2 {
+		t.Fatalf("expected two POST /certificates calls, got %d", calls["POST /certificates"])
+	}
+}
+
+func TestCloudflareOriginCAClientAcceptsBearerPrefixedToken(t *testing.T) {
+	const token = "cf-token-secret"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer "+token {
+			t.Fatalf("unexpected authorization header %q", r.Header.Get("Authorization"))
+		}
+		if r.Method != http.MethodPost || r.URL.Path != "/certificates" {
+			t.Fatalf("unexpected request %s %s", r.Method, r.URL.Path)
+		}
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"success":false,"errors":[{"code":1007,"message":"CSR parsed as empty"}],"result":null}`))
+	}))
+	t.Cleanup(server.Close)
+
+	client := CloudflareOriginCAClient{HTTPClient: server.Client(), BaseURL: server.URL}
+	if err := client.VerifyToken(context.Background(), "Bearer "+token); err != nil {
+		t.Fatalf("verify bearer-prefixed token: %v", err)
 	}
 }
 

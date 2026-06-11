@@ -26,6 +26,9 @@ func TestLoadServerConfigDefaultsToDeploymentRoot(t *testing.T) {
 	if cfg.DataDir != wantDataDir || cfg.SQLitePath != filepath.Join(deploymentRoot, "data", "go-ginx.db") {
 		t.Fatalf("expected deployment-root data paths, got data_dir=%q sqlite_path=%q", cfg.DataDir, cfg.SQLitePath)
 	}
+	if !cfg.OriginCAEnabled || cfg.OriginCASecretStorePath != filepath.Join(deploymentRoot, "data", "secrets", "provider-credentials") {
+		t.Fatalf("expected default origin ca support at deployment root, enabled=%v secret_store=%q", cfg.OriginCAEnabled, cfg.OriginCASecretStorePath)
+	}
 	for _, path := range []string{
 		cfg.ControlTLSCAFile,
 		cfg.ControlTLSCertFile,

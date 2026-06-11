@@ -15,6 +15,7 @@ import (
 	"github.com/simp-frp/go-ginx-2/internal/contracterr"
 	"github.com/simp-frp/go-ginx-2/internal/domain"
 	"github.com/simp-frp/go-ginx-2/internal/enrollment"
+	httpsproxy "github.com/simp-frp/go-ginx-2/internal/proxy/https"
 	"github.com/simp-frp/go-ginx-2/internal/store"
 )
 
@@ -749,7 +750,7 @@ func (service Service) CreateProviderCredential(ctx context.Context, input Provi
 		return domain.ProviderCredential{}, err
 	}
 	if manager.ProviderSecretStore == nil {
-		return domain.ProviderCredential{}, errors.New("provider secret store is required")
+		return domain.ProviderCredential{}, providerCredentialStorageUnavailableError()
 	}
 	id := strings.TrimSpace(input.ID)
 	if id == "" {
@@ -793,7 +794,7 @@ func (service Service) UpdateProviderCredential(ctx context.Context, input Updat
 			return domain.ProviderCredential{}, err
 		}
 		if manager.ProviderSecretStore == nil {
-			return domain.ProviderCredential{}, errors.New("provider secret store is required")
+			return domain.ProviderCredential{}, providerCredentialStorageUnavailableError()
 		}
 		secretRef, err := manager.ProviderSecretStore.Write(ctx, credential.ID, strings.TrimSpace(input.Token))
 		if err != nil {
@@ -817,6 +818,9 @@ func (service Service) VerifyProviderCredential(ctx context.Context, credentialI
 	if err != nil {
 		return domain.ProviderCredential{}, err
 	}
+	if manager.ProviderSecretStore == nil {
+		return domain.ProviderCredential{}, providerCredentialStorageUnavailableError()
+	}
 	verifyErr := manager.VerifyProviderCredential(ctx, credentialID)
 	credential, readErr := service.Store.ProviderCredentials().ByID(ctx, credentialID)
 	if readErr != nil {
@@ -824,7 +828,7 @@ func (service Service) VerifyProviderCredential(ctx context.Context, credentialI
 	}
 	auditErr := service.audit(ctx, actorID, "provider_credential", credential.ID, "verify_provider_credential")
 	if verifyErr != nil {
-		return credential, verifyErr
+		return credential, providerCredentialVerificationError(verifyErr)
 	}
 	return credential, auditErr
 }
@@ -889,6 +893,21 @@ func (service Service) certificateManager() (certmanager.Service, error) {
 	manager := service.Certificates
 	manager.Store = service.Store
 	return manager, nil
+}
+
+func providerCredentialStorageUnavailableError() error {
+	return contracterr.Unsupported("cloudflare origin ca credential storage is not configured; enable origin_ca_enabled and set origin_ca_secret_store_path")
+}
+
+func providerCredentialVerificationError(err error) error {
+	if errors.Is(err, certmanager.ErrProviderCredentialDisabled) {
+		return contracterr.Conflict("provider credential is disabled", err)
+	}
+	message := httpsproxy.SafeCertificateError(err)
+	if strings.TrimSpace(message) == "" {
+		message = "provider credential verification failed"
+	}
+	return contracterr.Conflict("provider credential verification failed: "+message, err)
 }
 
 func (service Service) ensureProxyAdmission(ctx context.Context, proxy domain.Proxy, ignoreProxyID string) error {

@@ -136,10 +136,9 @@ func TestServerValidateAcceptsConfiguredACME(t *testing.T) {
 
 func TestServerValidateOriginCASettings(t *testing.T) {
 	cfg := DefaultServer()
-	if cfg.OriginCASecretStorePath != "data/secrets/provider-credentials" || cfg.OriginCADefaultRequestType != "origin-ecc" || cfg.OriginCARequestedValidity != 5475 || cfg.OriginCARotationWindow != 30*24*time.Hour {
+	if !cfg.OriginCAEnabled || cfg.OriginCASecretStorePath != "data/secrets/provider-credentials" || cfg.OriginCADefaultRequestType != "origin-ecc" || cfg.OriginCARequestedValidity != 5475 || cfg.OriginCARotationWindow != 30*24*time.Hour {
 		t.Fatalf("unexpected origin ca defaults: %+v", cfg)
 	}
-	cfg.OriginCAEnabled = true
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("validate default origin ca config: %v", err)
 	}
@@ -168,6 +167,16 @@ func TestServerValidateOriginCASettings(t *testing.T) {
 				t.Fatal("expected invalid origin ca config error")
 			}
 		})
+	}
+}
+
+func TestResolveServerPathsResolvesOriginCASecretStorePath(t *testing.T) {
+	root := t.TempDir()
+	cfg := DefaultServer()
+	ResolveServerPaths(&cfg, root)
+
+	if cfg.OriginCASecretStorePath != filepath.Join(root, "data", "secrets", "provider-credentials") {
+		t.Fatalf("expected deployment-root origin ca secret store path, got %q", cfg.OriginCASecretStorePath)
 	}
 }
 

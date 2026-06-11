@@ -116,6 +116,7 @@ func DefaultServer() Server {
 		ACMEDirectoryURL:           "https://acme-v02.api.letsencrypt.org/directory",
 		ACMERenewalWindow:          30 * 24 * time.Hour,
 		ACMECloudflareTokenEnv:     "CF_DNS_API_TOKEN",
+		OriginCAEnabled:            true,
 		OriginCASecretStorePath:    "data/secrets/provider-credentials",
 		OriginCADefaultRequestType: "origin-ecc",
 		OriginCARequestedValidity:  5475,

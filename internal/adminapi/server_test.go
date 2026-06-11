@@ -691,6 +691,41 @@ func TestServerProviderCredentialGraphQLLifecycleIsSecretSafe(t *testing.T) {
 	}
 }
 
+func TestServerProviderCredentialGraphQLReportsUnavailableStorage(t *testing.T) {
+	server := startAdminTestServer(t, nil)
+	client := newAdminHTTPClient(t)
+	bootstrap := loginAdmin(t, client, server.Addr().String(), "admin", "secret")
+
+	assertGraphQLErrorCodeForQuery(t, client, server.Addr().String(), `mutation {
+  createProviderCredential(input: { id: "cred-1", name: "Production Origin CA", scope: "Zone SSL:Edit", token: "cf-token-secret" }) {
+    id
+  }
+}`, bootstrap.CSRFToken, "UNSUPPORTED")
+}
+
+func TestServerProviderCredentialGraphQLReportsVerificationFailure(t *testing.T) {
+	server := startAdminTestServer(t, func(entry *Entry) {
+		entry.Commands.Certificates = certmanager.Service{
+			ProviderSecretStore: certmanager.FileSecretStore{Dir: t.TempDir()},
+			OriginCAClient:      adminAPIOriginCAClient{verifyErr: io.ErrUnexpectedEOF},
+			OriginCASettings:    domain.OriginCAProviderSettings{Enabled: true},
+		}
+	})
+	client := newAdminHTTPClient(t)
+	bootstrap := loginAdmin(t, client, server.Addr().String(), "admin", "secret")
+	postAdminGraphQL(t, client, server.Addr().String(), `mutation {
+  createProviderCredential(input: { id: "cred-1", name: "Production Origin CA", scope: "Zone SSL:Edit", token: "cf-token-secret" }) {
+    id
+  }
+}`, bootstrap.CSRFToken, http.StatusOK)
+
+	assertGraphQLErrorCodeForQuery(t, client, server.Addr().String(), `mutation {
+  verifyProviderCredential(input: { id: "cred-1" }) {
+    id
+  }
+}`, bootstrap.CSRFToken, "CONFLICT")
+}
+
 func TestServerSessionExpiryAndLogout(t *testing.T) {
 	now := time.Now().UTC()
 	server := startAdminTestServer(t, func(entry *Entry) {
@@ -915,7 +950,9 @@ func testAdminJWTSecret() []byte {
 	return []byte("0123456789abcdef0123456789abcdef")
 }
 
-type adminAPIOriginCAClient struct{}
+type adminAPIOriginCAClient struct {
+	verifyErr error
+}
 
 func (adminAPIOriginCAClient) Create(context.Context, string, certmanager.OriginCACreateRequest) (certmanager.OriginCACertificate, error) {
 	return certmanager.OriginCACertificate{}, io.ErrUnexpectedEOF
@@ -933,8 +970,8 @@ func (adminAPIOriginCAClient) Revoke(context.Context, string, string) error {
 	return io.ErrUnexpectedEOF
 }
 
-func (adminAPIOriginCAClient) VerifyToken(context.Context, string) error {
-	return nil
+func (client adminAPIOriginCAClient) VerifyToken(context.Context, string) error {
+	return client.verifyErr
 }
 
 func loginAdmin(t *testing.T, client *http.Client, addr string, username string, password string) sessionBootstrapResponse {
