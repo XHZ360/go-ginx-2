@@ -44,12 +44,15 @@ func (storage ManagedCertificateStorage) Store(host string, certPEM []byte, keyP
 	if strings.TrimSpace(storage.CertificateDir) == "" {
 		return StoredCertificateFiles{}, errors.New("certificate dir is required")
 	}
-	parsed, err := ValidateCertificatePair(host, certPEM, keyPEM, storage.now())
+	host = strings.ToLower(strings.TrimSpace(host))
+	if host == "" {
+		return StoredCertificateFiles{}, errors.New("certificate host is required")
+	}
+	parsed, err := ValidateCertificatePair(certificateValidationHost(host), certPEM, keyPEM, storage.now())
 	if err != nil {
 		return StoredCertificateFiles{}, err
 	}
-	host = strings.ToLower(strings.TrimSpace(host))
-	dir := filepath.Join(storage.CertificateDir, managedCertificateDir, host)
+	dir := filepath.Join(storage.CertificateDir, managedCertificateDir, certificateStorageName(host))
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return StoredCertificateFiles{}, err
 	}
@@ -67,6 +70,22 @@ func (storage ManagedCertificateStorage) Store(host string, certPEM []byte, keyP
 		return StoredCertificateFiles{}, err
 	}
 	return StoredCertificateFiles{CertFile: certFile, KeyFile: keyFile, PreviousCertFile: previousCert, PreviousKeyFile: previousKey, NotAfter: parsed.NotAfter, Fingerprint: parsed.Fingerprint}, nil
+}
+
+func certificateValidationHost(host string) string {
+	host = strings.ToLower(strings.TrimSpace(host))
+	if strings.HasPrefix(host, "*.") && len(host) > 2 {
+		return "wildcard-validation." + strings.TrimPrefix(host, "*.")
+	}
+	return host
+}
+
+func certificateStorageName(host string) string {
+	host = strings.ToLower(strings.TrimSpace(host))
+	if strings.HasPrefix(host, "*.") && len(host) > 2 {
+		return "_wildcard." + strings.TrimPrefix(host, "*.")
+	}
+	return host
 }
 
 func (storage ManagedCertificateStorage) now() time.Time {

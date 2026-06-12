@@ -457,7 +457,7 @@ func (certificate ManagedCertificate) Validate() error {
 		return errors.New("certificate id is required")
 	}
 	// ProxyID 允许为空：证书现在是独立资源，可在未被任何代理绑定前存在（未绑定证书合法）。
-	if strings.TrimSpace(certificate.Host) == "" || !validHostname(certificate.Host) {
+	if strings.TrimSpace(certificate.Host) == "" || !validCertificateHost(certificate.Host) {
 		return errors.New("certificate host is invalid")
 	}
 	if !certificate.Status.Valid() {
@@ -543,4 +543,12 @@ func validHostname(hostname string) bool {
 		}
 	}
 	return true
+}
+
+func validCertificateHost(host string) bool {
+	host = strings.TrimSpace(host)
+	if strings.HasPrefix(host, "*.") {
+		return validHostname(strings.TrimPrefix(host, "*."))
+	}
+	return validHostname(host)
 }

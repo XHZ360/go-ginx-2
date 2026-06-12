@@ -67,6 +67,28 @@
 - **WHEN** 管理员尝试把已绑定到其他 HTTPS proxy 的证书绑定到新的 HTTPS proxy
 - **THEN** 系统拒绝该绑定并返回可消费冲突，除非后续规格显式引入多 proxy 共享证书语义
 
+### Requirement: Wildcard certificate host semantics
+系统 MUST 支持一层通配符 HTTPS 证书资源，并按 TLS 主机名匹配语义判断证书覆盖范围。
+
+#### Scenario: Create wildcard certificate resource
+- **WHEN** 管理员创建或签发 host 为 `*.example.com` 的 Cloudflare Origin CA、ACME DNS-01 或 file-backed HTTPS 证书资源
+- **THEN** 系统接受该证书 host，并在证书资源与 hostnames 元数据中保留 `*.example.com`
+- **AND** 系统只允许最左侧单标签 `*.` 通配符，MUST NOT 接受 `*.*.example.com`、`api.*.example.com` 或其他非 TLS 主机名通配模式
+
+#### Scenario: Wildcard certificate covers single-label subdomains
+- **WHEN** HTTPS proxy 的 SNI 域名为 `api.example.com`，且选中的证书资源 host 或 hostnames 包含 `*.example.com`
+- **THEN** 系统认为该证书与该 SNI 域名兼容
+- **AND** 同一 `*.example.com` 证书 MUST NOT 被视为覆盖 apex `example.com` 或多级子域 `a.b.example.com`
+
+#### Scenario: Apex certificate does not cover wildcard subdomains
+- **WHEN** 证书资源仅包含 `example.com`，且 HTTPS proxy 的 SNI 域名为 `api.example.com`
+- **THEN** 系统拒绝该绑定或运行时解析结果，除非证书 active material 的 SAN 另行包含兼容的 wildcard 或具体子域名
+
+#### Scenario: Wildcard managed material uses safe storage identity
+- **WHEN** 系统为 `*.example.com` 托管证书写入 active/previous 证书和私钥文件
+- **THEN** 系统保留逻辑证书 host 为 `*.example.com`，但 MUST 使用不要求原始 `*` 路径组件的安全存储标识
+- **AND** SQLite 继续只保存文件路径和生命周期元数据，MUST NOT 保存私钥字节
+
 ### Requirement: File-backed HTTPS proxy certificate selection
 系统 MUST 支持把文件型证书和私钥路径登记为可选择的 HTTPS 证书资源，并按 HTTPS proxy 的显式证书绑定和 SNI 选择证书。私钥 MUST 保留在 SQLite 之外。
 
@@ -269,4 +291,3 @@
 #### Scenario: Delete result remains secret-safe
 - **WHEN** 证书删除成功或失败
 - **THEN** 系统返回证书 ID、删除状态、受影响 proxy、强确认需求或脱敏错误，且 MUST NOT 返回私钥内容或 provider token
-

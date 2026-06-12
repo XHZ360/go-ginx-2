@@ -30,6 +30,18 @@ func TestProxyValidateAcceptsHTTPHostRouteWithoutPort(t *testing.T) {
 	}
 }
 
+func TestManagedCertificateValidateAcceptsSingleLabelWildcard(t *testing.T) {
+	certificate := ManagedCertificate{ID: "cert-1", Host: "*.example.com", Status: CertificatePending}
+
+	if err := certificate.Validate(); err != nil {
+		t.Fatalf("expected wildcard certificate host to be valid: %v", err)
+	}
+	certificate.Host = "*.*.example.com"
+	if err := certificate.Validate(); err == nil {
+		t.Fatal("expected nested wildcard certificate host to be invalid")
+	}
+}
+
 func TestListenerClaimConflictsOnWildcardBindHost(t *testing.T) {
 	wildcard := ListenerClaim{Protocol: ListenerProtocolTCP, Network: ListenerNetworkTCP, BindHost: "0.0.0.0", Port: 10022}
 	concrete := ListenerClaim{Protocol: ListenerProtocolTCP, Network: ListenerNetworkTCP, BindHost: "127.0.0.1", Port: 10022}

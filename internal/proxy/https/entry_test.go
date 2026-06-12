@@ -546,6 +546,30 @@ func TestManagedCertificateStorageWritesActiveAndRetainsPrevious(t *testing.T) {
 	}
 }
 
+func TestManagedCertificateStorageAcceptsWildcardCertificate(t *testing.T) {
+	certificateDir := t.TempDir()
+	certPEM, keyPEM, _, err := generateTestCertificatePEMAt(t, "*.example.com", time.Now().Add(-time.Hour), time.Now().Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	stored, err := ManagedCertificateStorage{CertificateDir: certificateDir}.Store("*.example.com", certPEM, keyPEM)
+	if err != nil {
+		t.Fatalf("store wildcard certificate: %v", err)
+	}
+	if filepath.Dir(stored.CertFile) != filepath.Join(certificateDir, managedCertificateDir, "_wildcard.example.com") {
+		t.Fatalf("unexpected wildcard storage path: %+v", stored)
+	}
+	health := CheckCertificateFiles("app.example.com", stored.CertFile, stored.KeyFile, certificateDir, 0, time.Now().UTC())
+	if !health.Usable() {
+		t.Fatalf("expected wildcard certificate to cover app.example.com: %+v", health)
+	}
+	health = CheckCertificateFiles("example.com", stored.CertFile, stored.KeyFile, certificateDir, 0, time.Now().UTC())
+	if health.Usable() {
+		t.Fatalf("wildcard certificate should not cover apex host: %+v", health)
+	}
+}
+
 func TestValidateCertificatePairRejectsWrongHostExpiredAndKeyMismatch(t *testing.T) {
 	certPEM, keyPEM, _, err := generateTestCertificatePEMAt(t, "app.example.com", time.Now().Add(-time.Hour), time.Now().Add(time.Hour))
 	if err != nil {

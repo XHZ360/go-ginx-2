@@ -315,6 +315,34 @@ func TestServiceIssuesOriginCACertificateWithProviderMetadata(t *testing.T) {
 	}
 }
 
+func TestServiceIssuesWildcardOriginCACertificate(t *testing.T) {
+	ctx := context.Background()
+	db := openTestStore(t)
+	secrets := testSecretStore{values: map[string]string{"cred-1.secret": "cf-api-token"}}
+	seedOriginCACredential(t, ctx, db)
+	now := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
+	var captured OriginCACreateRequest
+	client := testOriginCAClient{create: func(ctx context.Context, token string, request OriginCACreateRequest) (OriginCACertificate, error) {
+		captured = request
+		return OriginCACertificate{ID: "cf-cert-wildcard", CertificatePEM: originCATestCertificateFromCSR(t, request.CSR, request.Hostnames, now.Add(365*24*time.Hour)), Hostnames: request.Hostnames, RequestType: request.RequestType, RequestedValidity: request.RequestedValidity, Status: "active"}, nil
+	}}
+	service := Service{Store: db, OriginCAClient: client, ProviderSecretStore: secrets, Storage: httpsproxy.ManagedCertificateStorage{CertificateDir: t.TempDir(), Now: func() time.Time { return now }}, OriginCASettings: domain.OriginCAProviderSettings{Enabled: true, DefaultRequestType: OriginCARequestTypeECC, RequestedValidity: 365}, NewID: func() (string, error) { return "cert-wildcard-1", nil }, Now: func() time.Time { return now }}
+
+	certificate, err := service.IssueCertificate(ctx, CertificateIssueRequest{Host: "*.example.com", ProviderType: domain.CertificateProviderCloudflareOriginCA, CredentialID: "cred-1"})
+	if err != nil {
+		t.Fatalf("issue wildcard origin ca certificate: %v", err)
+	}
+	if !stringSlicesEqual(captured.Hostnames, []string{"*.example.com"}) || !stringSlicesEqual(certificate.Hostnames, []string{"*.example.com"}) {
+		t.Fatalf("unexpected wildcard hostnames: captured=%+v certificate=%+v", captured.Hostnames, certificate.Hostnames)
+	}
+	if certificate.Status != domain.CertificateValid || certificate.ServingStatus != domain.CertificateServingUsable || certificate.CloudflareCertificateID != "cf-cert-wildcard" {
+		t.Fatalf("unexpected wildcard certificate metadata: %+v", certificate)
+	}
+	if !strings.Contains(filepath.ToSlash(certificate.CertFile), "/_wildcard.example.com/") || !strings.Contains(filepath.ToSlash(certificate.KeyFile), "/_wildcard.example.com/") {
+		t.Fatalf("expected wildcard certificate files to use safe storage path: %+v", certificate)
+	}
+}
+
 func TestServiceOriginCAInitialIssueFailureRemovesUnusableCertificateRecord(t *testing.T) {
 	ctx := context.Background()
 	db := openTestStore(t)

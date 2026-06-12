@@ -769,6 +769,51 @@ func TestServerCloudflareOriginCAIssueFailureIsConsumable(t *testing.T) {
 	}
 }
 
+func TestServerCreatesWildcardOriginCACertificateThroughGraphQL(t *testing.T) {
+	now := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
+	certificateDir := t.TempDir()
+	server := startAdminTestServer(t, func(entry *Entry) {
+		entry.Commands.Certificates = certmanager.Service{
+			ProviderSecretStore: certmanager.FileSecretStore{Dir: t.TempDir()},
+			OriginCAClient: adminAPIOriginCAClient{create: func(_ context.Context, _ string, request certmanager.OriginCACreateRequest) (certmanager.OriginCACertificate, error) {
+				return certmanager.OriginCACertificate{ID: "cf-cert-wildcard", CertificatePEM: adminAPIOriginCATestCertificateFromCSR(t, request.CSR, request.Hostnames, now.Add(365*24*time.Hour)), Hostnames: request.Hostnames, RequestType: request.RequestType, RequestedValidity: request.RequestedValidity, Status: "active"}, nil
+			}},
+			OriginCASettings: domain.OriginCAProviderSettings{Enabled: true, DefaultRequestType: certmanager.OriginCARequestTypeECC, RequestedValidity: 5475},
+			Storage:          httpsproxy.ManagedCertificateStorage{CertificateDir: certificateDir, Now: func() time.Time { return now }},
+			NewID:            func() (string, error) { return "cert-origin-wildcard", nil },
+			Now:              func() time.Time { return now },
+		}
+	})
+	client := newAdminHTTPClient(t)
+	bootstrap := loginAdmin(t, client, server.Addr().String(), "admin", "secret")
+	postAdminGraphQL(t, client, server.Addr().String(), `mutation {
+  createProviderCredential(input: { id: "cred-1", name: "Production Origin CA", scope: "Zone SSL:Edit", token: "cf-token-secret" }) {
+    id
+  }
+}`, bootstrap.CSRFToken, http.StatusOK)
+
+	result := postAdminGraphQL(t, client, server.Addr().String(), `mutation {
+  createCertificate(input: { host: "*.example.com", providerType: "cloudflare_origin_ca", credentialId: "cred-1", requestType: "origin-ecc", requestedValidity: 5475 }) {
+    certificate { certificateId host status servingStatus providerType cloudflareCertificateId hostnames }
+  }
+}`, bootstrap.CSRFToken, http.StatusOK)
+	certificate := result["data"].(map[string]any)["createCertificate"].(map[string]any)["certificate"].(map[string]any)
+	if certificate["certificateId"] != "cert-origin-wildcard" || certificate["host"] != "*.example.com" || certificate["status"] != string(domain.CertificateValid) || certificate["servingStatus"] != string(domain.CertificateServingUsable) {
+		t.Fatalf("unexpected wildcard origin ca certificate: %+v", certificate)
+	}
+	hostnames := certificate["hostnames"].([]any)
+	if len(hostnames) != 1 || hostnames[0] != "*.example.com" {
+		t.Fatalf("unexpected wildcard hostnames: %+v", hostnames)
+	}
+	stored, err := server.commands.Store.Certificates().ByID(context.Background(), "cert-origin-wildcard")
+	if err != nil {
+		t.Fatalf("read stored wildcard certificate: %v", err)
+	}
+	if !strings.Contains(filepath.ToSlash(stored.CertFile), "/_wildcard.example.com/") || !strings.Contains(filepath.ToSlash(stored.KeyFile), "/_wildcard.example.com/") {
+		t.Fatalf("expected safe wildcard storage paths: %+v", stored)
+	}
+}
+
 func TestServerSessionExpiryAndLogout(t *testing.T) {
 	now := time.Now().UTC()
 	server := startAdminTestServer(t, func(entry *Entry) {
@@ -994,11 +1039,15 @@ func testAdminJWTSecret() []byte {
 }
 
 type adminAPIOriginCAClient struct {
+	create    func(context.Context, string, certmanager.OriginCACreateRequest) (certmanager.OriginCACertificate, error)
 	createErr error
 	verifyErr error
 }
 
-func (client adminAPIOriginCAClient) Create(context.Context, string, certmanager.OriginCACreateRequest) (certmanager.OriginCACertificate, error) {
+func (client adminAPIOriginCAClient) Create(ctx context.Context, token string, request certmanager.OriginCACreateRequest) (certmanager.OriginCACertificate, error) {
+	if client.create != nil {
+		return client.create(ctx, token, request)
+	}
 	if client.createErr != nil {
 		return certmanager.OriginCACertificate{}, client.createErr
 	}
@@ -1488,4 +1537,32 @@ func writeAdminAPICertPair(t *testing.T, certificateDir string, host string, not
 		t.Fatalf("write key file: %v", err)
 	}
 	return certFile, keyFile
+}
+
+func adminAPIOriginCATestCertificateFromCSR(t *testing.T, csrPEM string, hostnames []string, notAfter time.Time) []byte {
+	t.Helper()
+	block, _ := pem.Decode([]byte(csrPEM))
+	if block == nil {
+		t.Fatal("decode csr")
+	}
+	csr, err := x509.ParseCertificateRequest(block.Bytes)
+	if err != nil {
+		t.Fatalf("parse csr: %v", err)
+	}
+	if err := csr.CheckSignature(); err != nil {
+		t.Fatalf("check csr signature: %v", err)
+	}
+	if len(hostnames) == 0 {
+		hostnames = csr.DNSNames
+	}
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	template := &x509.Certificate{SerialNumber: big.NewInt(time.Now().UnixNano()), Subject: pkix.Name{CommonName: hostnames[0]}, DNSNames: hostnames, NotBefore: time.Now().Add(-time.Hour), NotAfter: notAfter, KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, csr.PublicKey, key)
+	if err != nil {
+		t.Fatalf("create origin ca certificate from csr: %v", err)
+	}
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
 }

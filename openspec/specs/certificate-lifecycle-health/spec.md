@@ -10,6 +10,12 @@ TBD - created by archiving change improve-certificate-lifecycle. Update Purpose 
 - **WHEN** HTTPS proxy 引用的静态证书或托管 active 证书和私钥文件存在、可读取、证书/key 匹配、证书覆盖该代理主机且尚未过期
 - **THEN** 系统把该 active material 标记为可服务，并允许 HTTPS 入口在匹配 SNI 的新 TLS 握手中使用该证书
 
+#### Scenario: Wildcard active material is checked with TLS hostname semantics
+- **WHEN** 托管证书资源的逻辑 host 或 hostnames 包含 `*.example.com`
+- **THEN** 健康检查和运行时解析按 TLS hostname 匹配语义判断该 active material 是否覆盖具体 SNI 主机
+- **AND** 系统 MUST NOT 因逻辑证书 host 自身包含 `*.` 而把有效 wildcard 证书标记为不可服务
+- **AND** 系统 MUST NOT 把 `*.example.com` 视为覆盖 apex `example.com` 或多级子域 `a.b.example.com`
+
 #### Scenario: Expiring active material remains usable
 - **WHEN** active 证书尚未过期但 `not_after` 已进入配置的续期窗口
 - **THEN** 系统把该 active material 标记为即将过期且仍可服务，并把该证书纳入续期候选
@@ -107,4 +113,3 @@ TBD - created by archiving change improve-certificate-lifecycle. Update Purpose 
 - **WHEN** admin CLI 或管理 API 通过 proxy ID 触发证书续期、轮换、同步或撤销
 - **THEN** 应用层只加载一次目标托管证书记录后进入统一生命周期路径
 - **AND** provider 选择、credential 解析和 active material 健康检查 MUST 复用该记录携带的 provider metadata
-

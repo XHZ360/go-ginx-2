@@ -332,6 +332,11 @@
 - **THEN** 系统在证书管理上下文中创建证书资源或启动签发流程，并记录控制面操作
 - **AND** HTTPS proxy 表单 MUST NOT 成为证书创建或证书文件路径维护的主入口
 
+#### Scenario: Create wildcard Origin CA certificate
+- **WHEN** 已认证管理员从 Certificates 页或 `/api/admin/graphql` 创建 host 为 `*.example.com` 的 Cloudflare Origin CA 证书
+- **THEN** 系统执行 Origin CA 签发流程，并在成功时返回 `valid`、可服务状态、Cloudflare certificate ID 和 `*.example.com` hostnames 元数据
+- **AND** 如果 provider 或证书生命周期校验失败，GraphQL 错误 MUST 使用可由前端消费的结构化错误语义，而不是把预期失败折叠成通用 `INTERNAL`
+
 #### Scenario: Delete certificate from Certificates page
 - **WHEN** 已认证管理员从 Certificates 页请求删除证书资源
 - **THEN** 系统按证书引用状态和可服务状态计算删除风险，删除证书元数据和可安全清理的受管材料，并记录控制面操作
@@ -917,4 +922,3 @@ admin-resource-management 基线 MUST 把已确认的 V1 管理员资源管理 s
 #### Scenario: Origin CA deployment hints are visible
 - **WHEN** 管理员查看或选择 Cloudflare Origin CA 证书
 - **THEN** UI 展示该证书只适用于 Cloudflare 到源站 TLS、需要合适 SSL 模式、直连浏览器不信任 Origin CA 的部署提示
-
