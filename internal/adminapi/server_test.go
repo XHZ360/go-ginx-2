@@ -3,8 +3,14 @@ package adminapi
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/json"
+	"encoding/pem"
 	"io"
+	"math/big"
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
@@ -21,6 +27,7 @@ import (
 	"github.com/simp-frp/go-ginx-2/internal/config"
 	"github.com/simp-frp/go-ginx-2/internal/domain"
 	"github.com/simp-frp/go-ginx-2/internal/enrollment"
+	httpsproxy "github.com/simp-frp/go-ginx-2/internal/proxy/https"
 	"github.com/simp-frp/go-ginx-2/internal/session"
 	"github.com/simp-frp/go-ginx-2/internal/stats"
 	"github.com/simp-frp/go-ginx-2/internal/store/sqlite"
@@ -726,6 +733,42 @@ func TestServerProviderCredentialGraphQLReportsVerificationFailure(t *testing.T)
 }`, bootstrap.CSRFToken, "CONFLICT")
 }
 
+func TestServerCloudflareOriginCAIssueFailureIsConsumable(t *testing.T) {
+	server := startAdminTestServer(t, func(entry *Entry) {
+		entry.Commands.Certificates = certmanager.Service{
+			ProviderSecretStore: certmanager.FileSecretStore{Dir: t.TempDir()},
+			OriginCAClient: adminAPIOriginCAClient{createErr: &certmanager.CloudflareAPIError{
+				FailureMessage: "cloudflare origin ca request failed",
+				StatusCode:     http.StatusBadRequest,
+				Errors:         []certmanager.CloudflareAPIErrorDetail{{Code: 1010}},
+			}},
+			OriginCASettings: domain.OriginCAProviderSettings{Enabled: true},
+			NewID:            func() (string, error) { return "cert-origin-failed", nil },
+		}
+	})
+	client := newAdminHTTPClient(t)
+	bootstrap := loginAdmin(t, client, server.Addr().String(), "admin", "secret")
+	postAdminGraphQL(t, client, server.Addr().String(), `mutation {
+  createProviderCredential(input: { id: "cred-1", name: "Production Origin CA", scope: "Zone SSL:Edit", token: "cf-token-secret" }) {
+    id
+  }
+}`, bootstrap.CSRFToken, http.StatusOK)
+
+	response := postGraphQLErrorQuery(t, client, server.Addr().String(), `mutation {
+  createCertificate(input: { host: "www.example.com", providerType: "cloudflare_origin_ca", credentialId: "cred-1", requestType: "origin-ecc", requestedValidity: 5475 }) {
+    certificate { certificateId }
+  }
+}`, bootstrap.CSRFToken)
+	code, _ := firstGraphQLErrorCode(response)
+	if code != "CONFLICT" {
+		t.Fatalf("expected conflict error, got %+v", response)
+	}
+	message := firstGraphQLErrorMessage(response)
+	if !strings.Contains(message, "cloudflare origin ca request failed: status 400") || !strings.Contains(message, "1010") {
+		t.Fatalf("expected cloudflare error message, got %q response=%+v", message, response)
+	}
+}
+
 func TestServerSessionExpiryAndLogout(t *testing.T) {
 	now := time.Now().UTC()
 	server := startAdminTestServer(t, func(entry *Entry) {
@@ -951,10 +994,14 @@ func testAdminJWTSecret() []byte {
 }
 
 type adminAPIOriginCAClient struct {
+	createErr error
 	verifyErr error
 }
 
-func (adminAPIOriginCAClient) Create(context.Context, string, certmanager.OriginCACreateRequest) (certmanager.OriginCACertificate, error) {
+func (client adminAPIOriginCAClient) Create(context.Context, string, certmanager.OriginCACreateRequest) (certmanager.OriginCACertificate, error) {
+	if client.createErr != nil {
+		return certmanager.OriginCACertificate{}, client.createErr
+	}
 	return certmanager.OriginCACertificate{}, io.ErrUnexpectedEOF
 }
 
@@ -1028,13 +1075,29 @@ func postAdminGraphQL(t *testing.T, client *http.Client, addr string, query stri
 
 func assertGraphQLErrorCodeForQuery(t *testing.T, client *http.Client, addr string, query string, csrfToken string, expectedCode string) {
 	t.Helper()
+	decoded := postGraphQLErrorQuery(t, client, addr, query, csrfToken)
+	code, _ := firstGraphQLErrorCode(decoded)
+	if code != expectedCode {
+		t.Fatalf("unexpected graphql error code %q response=%+v", code, decoded)
+	}
+}
+
+func postGraphQLErrorQuery(t *testing.T, client *http.Client, addr string, query string, csrfToken string) map[string]any {
+	t.Helper()
 	headers := map[string]string{"Content-Type": "application/json", adminCSRFHeader: csrfToken}
 	response, err := postJSON(client, "http://"+addr+adminAPIPrefix+"/graphql", map[string]any{"query": query}, headers)
 	if err != nil {
 		t.Fatalf("post graphql error query: %v", err)
 	}
 	defer response.Body.Close()
-	assertGraphQLErrorCode(t, response, http.StatusOK, expectedCode)
+	decoded := decodeGraphQLResponse(t, response)
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("unexpected graphql status %d response=%+v", response.StatusCode, decoded)
+	}
+	if _, ok := decoded["errors"].([]any); !ok {
+		t.Fatalf("expected graphql errors response=%+v", decoded)
+	}
+	return decoded
 }
 
 func postJSON(client *http.Client, url string, payload any, headers map[string]string) (*http.Response, error) {
@@ -1117,6 +1180,16 @@ func firstGraphQLErrorCode(decoded map[string]any) (string, map[string]any) {
 	return code, fields
 }
 
+func firstGraphQLErrorMessage(decoded map[string]any) string {
+	errorsValue, ok := decoded["errors"].([]any)
+	if !ok || len(errorsValue) == 0 {
+		return ""
+	}
+	firstError, _ := errorsValue[0].(map[string]any)
+	message, _ := firstError["message"].(string)
+	return message
+}
+
 func decodeBootstrapResponse(t *testing.T, reader io.Reader) sessionBootstrapResponse {
 	t.Helper()
 	var response sessionBootstrapResponse
@@ -1147,4 +1220,272 @@ func assertFrontendResponse(t *testing.T, url string, wantBodyFragment string, w
 	if contentType := response.Header.Get("Content-Type"); !strings.HasPrefix(contentType, wantContentTypePrefix) {
 		t.Fatalf("unexpected content type %q, want prefix %q", contentType, wantContentTypePrefix)
 	}
+}
+
+func TestServerCertificateBindingMutationsAndReferenceFields(t *testing.T) {
+	server := startAdminTestServer(t, func(entry *Entry) {
+		ctx := context.Background()
+		if err := entry.Commands.Store.Proxies().Create(ctx, domain.Proxy{ID: "proxy-https", UserID: "user-1", ClientID: "client-1", Name: "secure", Type: domain.ProxyHTTPS, Status: domain.ProxyEnabled, EntryHost: "secure.example.com", TargetHost: "127.0.0.1", TargetPort: 8443}); err != nil {
+			t.Fatalf("seed https proxy: %v", err)
+		}
+		if err := entry.Commands.Store.Certificates().Create(ctx, domain.ManagedCertificate{ID: "cert-bind", Host: "secure.example.com", Hostnames: []string{"secure.example.com"}, Status: domain.CertificateValid, CertFile: "secret-cert.pem", KeyFile: "secret-key.pem"}); err != nil {
+			t.Fatalf("seed certificate: %v", err)
+		}
+	})
+	client := newAdminHTTPClient(t)
+	bootstrap := loginAdmin(t, client, server.Addr().String(), "admin", "secret")
+
+	bindResult := postAdminGraphQL(t, client, server.Addr().String(), `mutation {
+  bindCertificate(input: { proxyId: "proxy-https", certificateId: "cert-bind" }) {
+    proxyId
+    proxy { id config { certificateId certFile keyFile } certificate { certificateId } }
+  }
+}`, bootstrap.CSRFToken, http.StatusOK)
+	bindPayload := bindResult["data"].(map[string]any)["bindCertificate"].(map[string]any)
+	if bindPayload["proxyId"] != "proxy-https" {
+		t.Fatalf("unexpected bind payload: %+v", bindPayload)
+	}
+	boundProxy := bindPayload["proxy"].(map[string]any)
+	boundConfig := boundProxy["config"].(map[string]any)
+	if boundConfig["certificateId"] != "cert-bind" {
+		t.Fatalf("expected proxy config certificateId to be cert-bind: %+v", boundConfig)
+	}
+
+	queryResult := postAdminGraphQL(t, client, server.Addr().String(), `query {
+  certificates(input: { page: { page: 1, pageSize: 10 } }) {
+    items { certificateId referenced boundProxyId servable deletionRisk lastError }
+  }
+}`, "", http.StatusOK)
+	items := queryResult["data"].(map[string]any)["certificates"].(map[string]any)["items"].([]any)
+	var bound map[string]any
+	for _, item := range items {
+		entry := item.(map[string]any)
+		if entry["certificateId"] == "cert-bind" {
+			bound = entry
+		}
+	}
+	if bound == nil {
+		t.Fatalf("certificate cert-bind missing from list: %+v", items)
+	}
+	if bound["referenced"] != true {
+		t.Fatalf("expected certificate to be referenced after binding: %+v", bound)
+	}
+	if bound["boundProxyId"] != "proxy-https" {
+		t.Fatalf("expected boundProxyId proxy-https: %+v", bound)
+	}
+	if _, ok := bound["servable"].(bool); !ok {
+		t.Fatalf("expected servable boolean field: %+v", bound)
+	}
+	if risk, ok := bound["deletionRisk"].(string); !ok || risk == "" {
+		t.Fatalf("expected non-empty deletionRisk string: %+v", bound)
+	}
+
+	encoded, err := json.Marshal(queryResult)
+	if err != nil {
+		t.Fatalf("marshal certificate query: %v", err)
+	}
+	for _, secret := range []string{"secret-cert.pem", "secret-key.pem"} {
+		if bytes.Contains(encoded, []byte(secret)) {
+			t.Fatalf("certificate response leaked secret material %q: %s", secret, string(encoded))
+		}
+	}
+
+	unbindResult := postAdminGraphQL(t, client, server.Addr().String(), `mutation {
+  unbindCertificate(input: { proxyId: "proxy-https" }) {
+    proxy { config { certificateId } }
+  }
+}`, bootstrap.CSRFToken, http.StatusOK)
+	unboundConfig := unbindResult["data"].(map[string]any)["unbindCertificate"].(map[string]any)["proxy"].(map[string]any)["config"].(map[string]any)
+	if certificateID, _ := unboundConfig["certificateId"].(string); certificateID != "" {
+		t.Fatalf("expected certificateId cleared after unbind: %+v", unboundConfig)
+	}
+}
+
+func TestServerBindCertificateIncompatibleHostReportsTypedCode(t *testing.T) {
+	server := startAdminTestServer(t, func(entry *Entry) {
+		ctx := context.Background()
+		if err := entry.Commands.Store.Proxies().Create(ctx, domain.Proxy{ID: "proxy-https", UserID: "user-1", ClientID: "client-1", Name: "secure", Type: domain.ProxyHTTPS, Status: domain.ProxyEnabled, EntryHost: "secure.example.com", TargetHost: "127.0.0.1", TargetPort: 8443}); err != nil {
+			t.Fatalf("seed https proxy: %v", err)
+		}
+		if err := entry.Commands.Store.Certificates().Create(ctx, domain.ManagedCertificate{ID: "cert-other", Host: "other.example.com", Hostnames: []string{"other.example.com"}, Status: domain.CertificateValid, CertFile: "c.pem", KeyFile: "k.pem"}); err != nil {
+			t.Fatalf("seed certificate: %v", err)
+		}
+	})
+	client := newAdminHTTPClient(t)
+	bootstrap := loginAdmin(t, client, server.Addr().String(), "admin", "secret")
+
+	assertGraphQLErrorCodeForQuery(t, client, server.Addr().String(), `mutation {
+  bindCertificate(input: { proxyId: "proxy-https", certificateId: "cert-other" }) { proxyId }
+}`, bootstrap.CSRFToken, "CERTIFICATE_INCOMPATIBLE")
+}
+
+// TestServerCertificateCreateProxySelectionAndRiskBasedDeleteThroughSchema 端到端覆盖
+// 新 GraphQL mutation：createCertificate（file provider，未绑定）、proxy create 通过
+// config.certificateId 建立绑定，以及风险分级的 deleteCertificate（强确认失败 ->
+// CONFIRMATION_REQUIRED；确认后成功并返回 requiredConfirm/affectedProxyIds），且响应不泄露 secret。
+func TestServerCertificateCreateProxySelectionAndRiskBasedDeleteThroughSchema(t *testing.T) {
+	certificateDir := t.TempDir()
+	certFile, keyFile := writeAdminAPICertPair(t, certificateDir, "secure.example.com", time.Now().Add(24*time.Hour))
+	server := startAdminTestServer(t, func(entry *Entry) {
+		entry.Commands.Certificates = certmanager.Service{
+			Storage: httpsproxy.ManagedCertificateStorage{CertificateDir: certificateDir},
+			NewID:   func() (string, error) { return "cert-file-graphql", nil },
+			Now:     func() time.Time { return time.Now().UTC() },
+		}
+	})
+	client := newAdminHTTPClient(t)
+	bootstrap := loginAdmin(t, client, server.Addr().String(), "admin", "secret")
+
+	// createCertificate（file provider）创建未绑定证书资源。
+	createResult := postAdminGraphQL(t, client, server.Addr().String(), `mutation {
+  createCertificate(input: { host: "secure.example.com", providerType: "file", certFile: "`+filepath.ToSlash(certFile)+`", keyFile: "`+filepath.ToSlash(keyFile)+`" }) {
+    proxyId
+    certificate { certificateId host providerType status }
+  }
+}`, bootstrap.CSRFToken, http.StatusOK)
+	createPayload := createResult["data"].(map[string]any)["createCertificate"].(map[string]any)
+	createdCert := createPayload["certificate"].(map[string]any)
+	certificateID := createdCert["certificateId"].(string)
+	if certificateID == "" || createdCert["host"] != "secure.example.com" || createdCert["providerType"] != string(domain.CertificateProviderFile) {
+		t.Fatalf("unexpected created certificate payload: %+v", createPayload)
+	}
+	if proxyID, _ := createPayload["proxyId"].(string); proxyID != "" {
+		t.Fatalf("expected created certificate to be unbound, got proxyId %q", proxyID)
+	}
+
+	// 清单中确认为未绑定、低风险。
+	listResult := postAdminGraphQL(t, client, server.Addr().String(), `query {
+  certificates(input: { page: { page: 1, pageSize: 10 } }) {
+    items { certificateId referenced boundProxyId deletionRisk }
+  }
+}`, "", http.StatusOK)
+	listItems := listResult["data"].(map[string]any)["certificates"].(map[string]any)["items"].([]any)
+	var listed map[string]any
+	for _, item := range listItems {
+		entry := item.(map[string]any)
+		if entry["certificateId"] == certificateID {
+			listed = entry
+		}
+	}
+	if listed == nil || listed["referenced"] != false || listed["boundProxyId"] != "" {
+		t.Fatalf("expected unbound certificate in list, got %+v", listed)
+	}
+
+	// proxy create 通过 config.certificateId 建立绑定。
+	proxyResult := postAdminGraphQL(t, client, server.Addr().String(), `mutation {
+  createProxy(input: {
+    userId: "user-1"
+    clientId: "client-1"
+    name: "secure"
+    type: "https"
+    config: { entryHost: "secure.example.com", targetHost: "127.0.0.1", targetPort: 8443, certificateId: "`+certificateID+`" }
+  }) {
+    proxyId
+    proxy { id config { certificateId } certificate { certificateId } }
+  }
+}`, bootstrap.CSRFToken, http.StatusOK)
+	proxyPayload := proxyResult["data"].(map[string]any)["createProxy"].(map[string]any)
+	proxyID := proxyPayload["proxyId"].(string)
+	if proxyID == "" {
+		t.Fatalf("expected created https proxy id: %+v", proxyPayload)
+	}
+	boundConfig := proxyPayload["proxy"].(map[string]any)["config"].(map[string]any)
+	if boundConfig["certificateId"] != certificateID {
+		t.Fatalf("expected proxy bound to certificate via config.certificateId: %+v", boundConfig)
+	}
+
+	// proxy update 显式提交空 certificateId，应清空绑定而不是保留旧证书。
+	clearBindingResult := postAdminGraphQL(t, client, server.Addr().String(), `mutation {
+  updateProxy(input: {
+    id: "`+proxyID+`"
+    name: "secure"
+    config: { entryHost: "secure.example.com", targetHost: "127.0.0.1", targetPort: 8443, certificateId: "" }
+  }) {
+    proxy { config { certificateId } }
+  }
+}`, bootstrap.CSRFToken, http.StatusOK)
+	clearConfig := clearBindingResult["data"].(map[string]any)["updateProxy"].(map[string]any)["proxy"].(map[string]any)["config"].(map[string]any)
+	if certificateID, _ := clearConfig["certificateId"].(string); certificateID != "" {
+		t.Fatalf("expected updateProxy empty certificateId to clear binding: %+v", clearConfig)
+	}
+
+	// 重新绑定，继续覆盖下方「已绑定且可服务」的高风险删除路径。
+	rebindResult := postAdminGraphQL(t, client, server.Addr().String(), `mutation {
+  bindCertificate(input: { proxyId: "`+proxyID+`", certificateId: "`+certificateID+`" }) {
+    proxy { config { certificateId } }
+  }
+}`, bootstrap.CSRFToken, http.StatusOK)
+	rebindConfig := rebindResult["data"].(map[string]any)["bindCertificate"].(map[string]any)["proxy"].(map[string]any)["config"].(map[string]any)
+	if rebindConfig["certificateId"] != certificateID {
+		t.Fatalf("expected proxy rebound to certificate: %+v", rebindConfig)
+	}
+
+	// deleteCertificate 无确认（已绑定且可服务）-> CONFIRMATION_REQUIRED。
+	assertGraphQLErrorCodeForQuery(t, client, server.Addr().String(), `mutation {
+  deleteCertificate(input: { certificateId: "`+certificateID+`" }) { certificateId requiredConfirm affectedProxyIds }
+}`, bootstrap.CSRFToken, "CONFIRMATION_REQUIRED")
+
+	// deleteCertificate 提供匹配 host 确认 -> 成功，requiredConfirm=true，affectedProxyIds 含该代理。
+	deleteResult := postAdminGraphQL(t, client, server.Addr().String(), `mutation {
+  deleteCertificate(input: { certificateId: "`+certificateID+`", confirmHost: "secure.example.com" }) {
+    certificateId
+    requiredConfirm
+    affectedProxyIds
+  }
+}`, bootstrap.CSRFToken, http.StatusOK)
+	deletePayload := deleteResult["data"].(map[string]any)["deleteCertificate"].(map[string]any)
+	if deletePayload["certificateId"] != certificateID || deletePayload["requiredConfirm"] != true {
+		t.Fatalf("unexpected delete payload: %+v", deletePayload)
+	}
+	affected := deletePayload["affectedProxyIds"].([]any)
+	if len(affected) != 1 || affected[0].(string) != proxyID {
+		t.Fatalf("expected affected proxy %q in delete payload, got %+v", proxyID, affected)
+	}
+
+	// 整个交互链路不得泄露私钥文件路径或私钥材料。
+	for _, encoded := range [][]byte{mustMarshal(t, createResult), mustMarshal(t, proxyResult), mustMarshal(t, deleteResult), mustMarshal(t, listResult)} {
+		for _, secret := range []string{filepath.ToSlash(keyFile), "PRIVATE KEY"} {
+			if bytes.Contains(encoded, []byte(secret)) {
+				t.Fatalf("graphql response leaked secret material %q: %s", secret, string(encoded))
+			}
+		}
+	}
+}
+
+func mustMarshal(t *testing.T, value any) []byte {
+	t.Helper()
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		t.Fatalf("marshal graphql result: %v", err)
+	}
+	return encoded
+}
+
+// writeAdminAPICertPair 在受管证书目录下写入一对覆盖 host 的有效证书/私钥文件，返回其路径。
+func writeAdminAPICertPair(t *testing.T, certificateDir string, host string, notAfter time.Time) (string, string) {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	template := &x509.Certificate{SerialNumber: big.NewInt(time.Now().UnixNano()), Subject: pkix.Name{CommonName: host}, DNSNames: []string{host}, NotBefore: time.Now().Add(-time.Hour), NotAfter: notAfter, KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})
+	dir := filepath.Join(certificateDir, "static", host)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("mkdir managed cert dir: %v", err)
+	}
+	certFile := filepath.Join(dir, "tls.crt")
+	keyFile := filepath.Join(dir, "tls.key")
+	if err := os.WriteFile(certFile, certPEM, 0o600); err != nil {
+		t.Fatalf("write cert file: %v", err)
+	}
+	if err := os.WriteFile(keyFile, keyPEM, 0o600); err != nil {
+		t.Fatalf("write key file: %v", err)
+	}
+	return certFile, keyFile
 }

@@ -796,6 +796,7 @@ curl -i http://127.0.0.1:8080/api/admin/session
 ## 参考文档
 
 - `docs/daemon-runtime.md`：守护进程运行和部署说明。
+- `docs/engineering-quality-guardrails.md`：外部服务集成、生命周期状态和 Admin UI/API 的工程质量分层防线。
 - `docs/milestone-one-e2e.md`：当前可执行验证路径。
 - `docs/examples/admin-seed-sqlite.md`：SQLite 种子数据示例。
 - `docs/admin-ui/README.md`：管理后台页面设计文档索引。

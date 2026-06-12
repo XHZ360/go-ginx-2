@@ -31,6 +31,8 @@ function normalizeCode(code?: string): ContractErrorCode {
     case 'NOT_FOUND':
     case 'CONFLICT':
     case 'ENTRY_CONFLICT':
+    case 'CONFIRMATION_REQUIRED':
+    case 'CERTIFICATE_INCOMPATIBLE':
     case 'UNSUPPORTED':
     case 'INTERNAL':
     case 'INVALID_CSRF':

@@ -270,6 +270,21 @@ func (resolver *CertificateResolver) Certificate(ctx context.Context, host strin
 }
 
 func (resolver *CertificateResolver) activeFiles(ctx context.Context, host string, proxy domain.Proxy) (string, string, *domain.ManagedCertificate, error) {
+	// 主路径：代理通过 CertificateID 显式绑定证书资源（权威绑定）。
+	if strings.TrimSpace(proxy.CertificateID) != "" && resolver.store != nil {
+		managed, err := resolver.store.Certificates().ByID(ctx, proxy.CertificateID)
+		if err == nil {
+			if managed.ProviderStatus.BlocksServing() {
+				return "", "", &managed, errors.New("certificate provider marked active material unavailable")
+			}
+			return managed.CertFile, managed.KeyFile, &managed, nil
+		}
+		if !errors.Is(err, store.ErrNotFound) {
+			return "", "", nil, err
+		}
+		// 绑定的证书已不存在：落入遗留回退路径（迁移期容错）。
+	}
+	// 遗留回退（仅迁移期）：未绑定 CertificateID 或绑定查找失败时，沿用旧解析顺序。
 	if proxy.CertFile != "" || proxy.KeyFile != "" {
 		if proxy.CertFile == "" || proxy.KeyFile == "" {
 			return "", "", nil, errors.New("static certificate and key files must both be configured")

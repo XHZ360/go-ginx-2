@@ -22,6 +22,7 @@ import (
 	"github.com/graphql-go/graphql/language/source"
 	"github.com/simp-frp/go-ginx-2/internal/admin"
 	"github.com/simp-frp/go-ginx-2/internal/adminquery"
+	"github.com/simp-frp/go-ginx-2/internal/certmanager"
 	"github.com/simp-frp/go-ginx-2/internal/contracterr"
 	"github.com/simp-frp/go-ginx-2/internal/deploypath"
 	"github.com/simp-frp/go-ginx-2/internal/domain"
@@ -154,6 +155,12 @@ type certificatePayload struct {
 	Certificate adminquery.ManagedCertificateSummary
 	ProxyID     string
 	Status      string
+}
+
+type deleteCertificatePayload struct {
+	CertificateID    string
+	AffectedProxyIDs []string
+	RequiredConfirm  bool
 }
 
 type providerCredentialPayload struct {
@@ -706,6 +713,10 @@ func (server *Server) buildSchema() (graphql.Schema, error) {
 	managedCertificateType := graphql.NewObject(graphql.ObjectConfig{Name: "AdminManagedCertificate", Fields: graphql.Fields{
 		"proxyId":                 &graphql.Field{Type: graphql.String},
 		"certificateId":           &graphql.Field{Type: graphql.String},
+		"boundProxyId":            &graphql.Field{Type: graphql.String},
+		"referenced":              &graphql.Field{Type: graphql.Boolean},
+		"servable":                &graphql.Field{Type: graphql.Boolean},
+		"deletionRisk":            &graphql.Field{Type: graphql.String, Resolve: certificateDeletionRiskResolve()},
 		"host":                    &graphql.Field{Type: graphql.String},
 		"status":                  &graphql.Field{Type: graphql.String},
 		"servingStatus":           &graphql.Field{Type: graphql.String},
@@ -824,6 +835,7 @@ func (server *Server) buildSchema() (graphql.Schema, error) {
 		"targetPort":    &graphql.Field{Type: graphql.Int},
 		"certFile":      &graphql.Field{Type: graphql.String},
 		"keyFile":       &graphql.Field{Type: graphql.String},
+		"certificateId": &graphql.Field{Type: graphql.String},
 	}})
 	proxyEntryHostOptionType := graphql.NewObject(graphql.ObjectConfig{Name: "AdminProxyEntryHostOption", Fields: graphql.Fields{
 		"value":     &graphql.Field{Type: graphql.String},
@@ -943,6 +955,7 @@ func (server *Server) buildSchema() (graphql.Schema, error) {
 		"targetPort":    &graphql.InputObjectFieldConfig{Type: graphql.Int},
 		"certFile":      &graphql.InputObjectFieldConfig{Type: graphql.String},
 		"keyFile":       &graphql.InputObjectFieldConfig{Type: graphql.String},
+		"certificateId": &graphql.InputObjectFieldConfig{Type: graphql.String},
 	}})
 	createUserInput := graphql.NewInputObject(graphql.InputObjectConfig{Name: "AdminCreateUserInput", Fields: graphql.InputObjectConfigFieldMap{
 		"username": &graphql.InputObjectFieldConfig{Type: graphql.NewNonNull(graphql.String)},
@@ -988,11 +1001,33 @@ func (server *Server) buildSchema() (graphql.Schema, error) {
 		"config":      &graphql.InputObjectFieldConfig{Type: graphql.NewNonNull(proxyConfigInput)},
 	}})
 	certificateInput := graphql.NewInputObject(graphql.InputObjectConfig{Name: "AdminCertificateMutationInput", Fields: graphql.InputObjectConfigFieldMap{
-		"proxyId":           &graphql.InputObjectFieldConfig{Type: graphql.NewNonNull(graphql.String)},
+		"proxyId":           &graphql.InputObjectFieldConfig{Type: graphql.String},
+		"certificateId":     &graphql.InputObjectFieldConfig{Type: graphql.String},
 		"providerType":      &graphql.InputObjectFieldConfig{Type: graphql.String},
 		"credentialId":      &graphql.InputObjectFieldConfig{Type: graphql.String},
 		"requestType":       &graphql.InputObjectFieldConfig{Type: graphql.String},
 		"requestedValidity": &graphql.InputObjectFieldConfig{Type: graphql.Int},
+	}})
+	createCertificateInput := graphql.NewInputObject(graphql.InputObjectConfig{Name: "AdminCreateCertificateInput", Fields: graphql.InputObjectConfigFieldMap{
+		"host":              &graphql.InputObjectFieldConfig{Type: graphql.NewNonNull(graphql.String)},
+		"providerType":      &graphql.InputObjectFieldConfig{Type: graphql.String},
+		"credentialId":      &graphql.InputObjectFieldConfig{Type: graphql.String},
+		"requestType":       &graphql.InputObjectFieldConfig{Type: graphql.String},
+		"requestedValidity": &graphql.InputObjectFieldConfig{Type: graphql.Int},
+		"certFile":          &graphql.InputObjectFieldConfig{Type: graphql.String},
+		"keyFile":           &graphql.InputObjectFieldConfig{Type: graphql.String},
+	}})
+	deleteCertificateInput := graphql.NewInputObject(graphql.InputObjectConfig{Name: "AdminDeleteCertificateInput", Fields: graphql.InputObjectConfigFieldMap{
+		"certificateId":        &graphql.InputObjectFieldConfig{Type: graphql.NewNonNull(graphql.String)},
+		"confirmHost":          &graphql.InputObjectFieldConfig{Type: graphql.String},
+		"confirmCertificateId": &graphql.InputObjectFieldConfig{Type: graphql.String},
+	}})
+	bindCertificateInput := graphql.NewInputObject(graphql.InputObjectConfig{Name: "AdminBindCertificateInput", Fields: graphql.InputObjectConfigFieldMap{
+		"proxyId":       &graphql.InputObjectFieldConfig{Type: graphql.NewNonNull(graphql.String)},
+		"certificateId": &graphql.InputObjectFieldConfig{Type: graphql.NewNonNull(graphql.String)},
+	}})
+	unbindCertificateInput := graphql.NewInputObject(graphql.InputObjectConfig{Name: "AdminUnbindCertificateInput", Fields: graphql.InputObjectConfigFieldMap{
+		"proxyId": &graphql.InputObjectFieldConfig{Type: graphql.NewNonNull(graphql.String)},
 	}})
 	providerCredentialInput := graphql.NewInputObject(graphql.InputObjectConfig{Name: "AdminProviderCredentialMutationInput", Fields: graphql.InputObjectConfigFieldMap{
 		"id":    &graphql.InputObjectFieldConfig{Type: graphql.String},
@@ -1004,7 +1039,8 @@ func (server *Server) buildSchema() (graphql.Schema, error) {
 		"id": &graphql.InputObjectFieldConfig{Type: graphql.NewNonNull(graphql.String)},
 	}})
 	revokeOriginCAInput := graphql.NewInputObject(graphql.InputObjectConfig{Name: "AdminRevokeOriginCAInput", Fields: graphql.InputObjectConfigFieldMap{
-		"proxyId":                 &graphql.InputObjectFieldConfig{Type: graphql.NewNonNull(graphql.String)},
+		"proxyId":                 &graphql.InputObjectFieldConfig{Type: graphql.String},
+		"certificateId":           &graphql.InputObjectFieldConfig{Type: graphql.String},
 		"host":                    &graphql.InputObjectFieldConfig{Type: graphql.NewNonNull(graphql.String)},
 		"cloudflareCertificateId": &graphql.InputObjectFieldConfig{Type: graphql.NewNonNull(graphql.String)},
 	}})
@@ -1082,6 +1118,21 @@ func (server *Server) buildSchema() (graphql.Schema, error) {
 		}},
 		"status": &graphql.Field{Type: graphql.String, Resolve: func(params graphql.ResolveParams) (interface{}, error) {
 			return extractCertificatePayload(params.Source).Status, nil
+		}},
+	}})
+	deleteCertificateResultType := graphql.NewObject(graphql.ObjectConfig{Name: "AdminDeleteCertificateResult", Fields: graphql.Fields{
+		"certificateId": &graphql.Field{Type: graphql.NewNonNull(graphql.String), Resolve: func(params graphql.ResolveParams) (interface{}, error) {
+			return extractDeleteCertificatePayload(params.Source).CertificateID, nil
+		}},
+		"affectedProxyIds": &graphql.Field{Type: graphql.NewNonNull(graphql.NewList(graphql.NewNonNull(graphql.String))), Resolve: func(params graphql.ResolveParams) (interface{}, error) {
+			ids := extractDeleteCertificatePayload(params.Source).AffectedProxyIDs
+			if ids == nil {
+				ids = []string{}
+			}
+			return ids, nil
+		}},
+		"requiredConfirm": &graphql.Field{Type: graphql.NewNonNull(graphql.Boolean), Resolve: func(params graphql.ResolveParams) (interface{}, error) {
+			return extractDeleteCertificatePayload(params.Source).RequiredConfirm, nil
 		}},
 	}})
 	providerCredentialPayloadType := graphql.NewObject(graphql.ObjectConfig{Name: "AdminProviderCredentialPayload", Fields: graphql.Fields{
@@ -1344,7 +1395,6 @@ func (server *Server) buildSchema() (graphql.Schema, error) {
 		})},
 		"issueManagedCertificate": &graphql.Field{Type: certificatePayloadType, Args: graphql.FieldConfigArgument{"input": &graphql.ArgumentConfig{Type: graphql.NewNonNull(certificateInput)}}, Resolve: server.wrapResolve(func(params graphql.ResolveParams) (interface{}, error) {
 			input := mapArg(params.Args, "input")
-			proxyID := stringValue(input, "proxyId")
 			certificate, err := server.commands.IssueManagedCertificate(params.Context, certificateMutationInputFromArgs(input, actorFromContext(params.Context)))
 			if err != nil {
 				return nil, err
@@ -1353,11 +1403,11 @@ func (server *Server) buildSchema() (graphql.Schema, error) {
 			if err != nil {
 				return nil, err
 			}
-			return certificatePayload{Certificate: findCertificate(page.Items, certificate.ProxyID), ProxyID: proxyID, Status: string(certificate.Status)}, nil
+			return certificatePayload{Certificate: findCertificateByID(page.Items, certificate.ID), ProxyID: certificate.ProxyID, Status: string(certificate.Status)}, nil
 		})},
 		"renewManagedCertificate": &graphql.Field{Type: certificatePayloadType, Args: graphql.FieldConfigArgument{"input": &graphql.ArgumentConfig{Type: graphql.NewNonNull(certificateInput)}}, Resolve: server.wrapResolve(func(params graphql.ResolveParams) (interface{}, error) {
-			proxyID := stringValue(mapArg(params.Args, "input"), "proxyId")
-			certificate, err := server.commands.RenewManagedCertificate(params.Context, admin.CertificateInput{ProxyID: proxyID, ActorID: actorFromContext(params.Context)})
+			input := mapArg(params.Args, "input")
+			certificate, err := server.commands.RenewManagedCertificate(params.Context, certificateMutationInputFromArgs(input, actorFromContext(params.Context)))
 			if err != nil {
 				return nil, err
 			}
@@ -1365,11 +1415,11 @@ func (server *Server) buildSchema() (graphql.Schema, error) {
 			if err != nil {
 				return nil, err
 			}
-			return certificatePayload{Certificate: findCertificate(page.Items, certificate.ProxyID), ProxyID: proxyID, Status: string(certificate.Status)}, nil
+			return certificatePayload{Certificate: findCertificateByID(page.Items, certificate.ID), ProxyID: certificate.ProxyID, Status: string(certificate.Status)}, nil
 		})},
 		"rotateCloudflareOriginCertificate": &graphql.Field{Type: certificatePayloadType, Args: graphql.FieldConfigArgument{"input": &graphql.ArgumentConfig{Type: graphql.NewNonNull(certificateInput)}}, Resolve: server.wrapResolve(func(params graphql.ResolveParams) (interface{}, error) {
-			proxyID := stringValue(mapArg(params.Args, "input"), "proxyId")
-			certificate, err := server.commands.RotateOriginCACertificate(params.Context, admin.CertificateInput{ProxyID: proxyID, ActorID: actorFromContext(params.Context)})
+			input := mapArg(params.Args, "input")
+			certificate, err := server.commands.RotateOriginCACertificate(params.Context, certificateMutationInputFromArgs(input, actorFromContext(params.Context)))
 			if err != nil {
 				return nil, err
 			}
@@ -1377,11 +1427,11 @@ func (server *Server) buildSchema() (graphql.Schema, error) {
 			if err != nil {
 				return nil, err
 			}
-			return certificatePayload{Certificate: findCertificate(page.Items, certificate.ProxyID), ProxyID: proxyID, Status: string(certificate.Status)}, nil
+			return certificatePayload{Certificate: findCertificateByID(page.Items, certificate.ID), ProxyID: certificate.ProxyID, Status: string(certificate.Status)}, nil
 		})},
 		"syncCloudflareOriginCertificate": &graphql.Field{Type: certificatePayloadType, Args: graphql.FieldConfigArgument{"input": &graphql.ArgumentConfig{Type: graphql.NewNonNull(certificateInput)}}, Resolve: server.wrapResolve(func(params graphql.ResolveParams) (interface{}, error) {
-			proxyID := stringValue(mapArg(params.Args, "input"), "proxyId")
-			certificate, err := server.commands.SyncOriginCACertificate(params.Context, admin.CertificateInput{ProxyID: proxyID, ActorID: actorFromContext(params.Context)})
+			input := mapArg(params.Args, "input")
+			certificate, err := server.commands.SyncOriginCACertificate(params.Context, certificateMutationInputFromArgs(input, actorFromContext(params.Context)))
 			if err != nil {
 				return nil, err
 			}
@@ -1389,12 +1439,11 @@ func (server *Server) buildSchema() (graphql.Schema, error) {
 			if err != nil {
 				return nil, err
 			}
-			return certificatePayload{Certificate: findCertificate(page.Items, certificate.ProxyID), ProxyID: proxyID, Status: string(certificate.Status)}, nil
+			return certificatePayload{Certificate: findCertificateByID(page.Items, certificate.ID), ProxyID: certificate.ProxyID, Status: string(certificate.Status)}, nil
 		})},
 		"revokeCloudflareOriginCertificate": &graphql.Field{Type: certificatePayloadType, Args: graphql.FieldConfigArgument{"input": &graphql.ArgumentConfig{Type: graphql.NewNonNull(revokeOriginCAInput)}}, Resolve: server.wrapResolve(func(params graphql.ResolveParams) (interface{}, error) {
 			input := mapArg(params.Args, "input")
-			proxyID := stringValue(input, "proxyId")
-			certificate, err := server.commands.RevokeOriginCACertificate(params.Context, admin.RevokeOriginCACertificateInput{ProxyID: proxyID, Host: stringValue(input, "host"), CloudflareCertificateID: stringValue(input, "cloudflareCertificateId"), ActorID: actorFromContext(params.Context)})
+			certificate, err := server.commands.RevokeOriginCACertificate(params.Context, admin.RevokeOriginCACertificateInput{ProxyID: stringValue(input, "proxyId"), CertificateID: stringValue(input, "certificateId"), Host: stringValue(input, "host"), CloudflareCertificateID: stringValue(input, "cloudflareCertificateId"), ActorID: actorFromContext(params.Context)})
 			if err != nil {
 				return nil, err
 			}
@@ -1402,7 +1451,51 @@ func (server *Server) buildSchema() (graphql.Schema, error) {
 			if err != nil {
 				return nil, err
 			}
-			return certificatePayload{Certificate: findCertificate(page.Items, certificate.ProxyID), ProxyID: proxyID, Status: string(certificate.Status)}, nil
+			return certificatePayload{Certificate: findCertificateByID(page.Items, certificate.ID), ProxyID: certificate.ProxyID, Status: string(certificate.Status)}, nil
+		})},
+		"createCertificate": &graphql.Field{Type: certificatePayloadType, Args: graphql.FieldConfigArgument{"input": &graphql.ArgumentConfig{Type: graphql.NewNonNull(createCertificateInput)}}, Resolve: server.wrapResolve(func(params graphql.ResolveParams) (interface{}, error) {
+			input := mapArg(params.Args, "input")
+			certificate, err := server.commands.CreateCertificate(params.Context, createCertificateInputFromArgs(input, actorFromContext(params.Context)))
+			if err != nil {
+				return nil, err
+			}
+			page, err := server.query.ListManagedCertificates(params.Context, adminquery.CertificateListInput{Page: adminquery.PageInput{Page: 1, PageSize: 1000}})
+			if err != nil {
+				return nil, err
+			}
+			return certificatePayload{Certificate: findCertificateByID(page.Items, certificate.ID), ProxyID: certificate.ProxyID, Status: string(certificate.Status)}, nil
+		})},
+		"deleteCertificate": &graphql.Field{Type: deleteCertificateResultType, Args: graphql.FieldConfigArgument{"input": &graphql.ArgumentConfig{Type: graphql.NewNonNull(deleteCertificateInput)}}, Resolve: server.wrapResolve(func(params graphql.ResolveParams) (interface{}, error) {
+			input := mapArg(params.Args, "input")
+			result, err := server.commands.DeleteCertificate(params.Context, admin.DeleteCertificateInput{CertificateID: stringValue(input, "certificateId"), ConfirmHost: stringValue(input, "confirmHost"), ConfirmCertificateID: stringValue(input, "confirmCertificateId"), ActorID: actorFromContext(params.Context)})
+			if err != nil {
+				return nil, err
+			}
+			return deleteCertificatePayload{CertificateID: result.CertificateID, AffectedProxyIDs: result.AffectedProxyIDs, RequiredConfirm: result.RequiredConfirm}, nil
+		})},
+		"bindCertificate": &graphql.Field{Type: proxyPayloadType, Args: graphql.FieldConfigArgument{"input": &graphql.ArgumentConfig{Type: graphql.NewNonNull(bindCertificateInput)}}, Resolve: server.wrapResolve(func(params graphql.ResolveParams) (interface{}, error) {
+			input := mapArg(params.Args, "input")
+			proxy, err := server.commands.BindCertificate(params.Context, admin.BindCertificateInput{ProxyID: stringValue(input, "proxyId"), CertificateID: stringValue(input, "certificateId"), ActorID: actorFromContext(params.Context)})
+			if err != nil {
+				return nil, err
+			}
+			detail, err := server.query.ProxyDetail(params.Context, proxy.ID)
+			if err != nil {
+				return nil, err
+			}
+			return proxyPayload{Proxy: detail, ID: proxy.ID, Status: string(detail.Status)}, nil
+		})},
+		"unbindCertificate": &graphql.Field{Type: proxyPayloadType, Args: graphql.FieldConfigArgument{"input": &graphql.ArgumentConfig{Type: graphql.NewNonNull(unbindCertificateInput)}}, Resolve: server.wrapResolve(func(params graphql.ResolveParams) (interface{}, error) {
+			input := mapArg(params.Args, "input")
+			proxy, err := server.commands.UnbindCertificate(params.Context, admin.UnbindCertificateInput{ProxyID: stringValue(input, "proxyId"), ActorID: actorFromContext(params.Context)})
+			if err != nil {
+				return nil, err
+			}
+			detail, err := server.query.ProxyDetail(params.Context, proxy.ID)
+			if err != nil {
+				return nil, err
+			}
+			return proxyPayload{Proxy: detail, ID: proxy.ID, Status: string(detail.Status)}, nil
 		})},
 	}})
 	return graphql.NewSchema(graphql.SchemaConfig{Query: query, Mutation: mutation})
@@ -1464,6 +1557,10 @@ func translateGraphQLError(err error) error {
 	}
 	if errors.Is(err, store.ErrAlreadyExists) || errors.Is(err, store.ErrConflict) {
 		return newGraphQLContractError(contracterr.CodeConflict, "resource conflict", nil, err)
+	}
+	var cloudflareError *certmanager.CloudflareAPIError
+	if errors.As(err, &cloudflareError) {
+		return newGraphQLContractError(contracterr.CodeConflict, cloudflareError.Error(), nil, err)
 	}
 	return newGraphQLContractError(contracterr.CodeInternal, safeMessage(contracterr.CodeInternal), nil, err)
 }
@@ -1602,7 +1699,7 @@ func localIPv4Hosts() []string {
 
 func createProxyInputFromArgs(args map[string]interface{}, actor string) admin.CreateProxyInput {
 	config := mapValue(args, "config")
-	return admin.CreateProxyInput{UserID: stringValue(args, "userId"), ClientID: stringValue(args, "clientId"), Name: stringValue(args, "name"), Type: domain.ProxyType(stringValue(args, "type")), EntryBindHost: stringValue(config, "entryBindHost"), EntryHost: stringValue(config, "entryHost"), EntryPort: intValue(config, "entryPort"), TargetHost: stringValue(config, "targetHost"), TargetPort: intValue(config, "targetPort"), CertFile: stringValue(config, "certFile"), KeyFile: stringValue(config, "keyFile"), Description: stringValue(args, "description"), ActorID: actor}
+	return admin.CreateProxyInput{UserID: stringValue(args, "userId"), ClientID: stringValue(args, "clientId"), Name: stringValue(args, "name"), Type: domain.ProxyType(stringValue(args, "type")), EntryBindHost: stringValue(config, "entryBindHost"), EntryHost: stringValue(config, "entryHost"), EntryPort: intValue(config, "entryPort"), TargetHost: stringValue(config, "targetHost"), TargetPort: intValue(config, "targetPort"), CertFile: stringValue(config, "certFile"), KeyFile: stringValue(config, "keyFile"), CertificateID: stringValue(config, "certificateId"), Description: stringValue(args, "description"), ActorID: actor}
 }
 
 func createClientJoinInputFromArgs(args map[string]interface{}, actor string) admin.CreateClientJoinInput {
@@ -1628,11 +1725,16 @@ func deploymentRelativePath(path string) string {
 
 func updateProxyInputFromArgs(args map[string]interface{}, actor string) admin.UpdateProxyInput {
 	config := mapValue(args, "config")
-	return admin.UpdateProxyInput{ID: stringValue(args, "id"), Type: domain.ProxyType(stringValue(args, "type")), Name: stringValue(args, "name"), EntryBindHost: stringValue(config, "entryBindHost"), EntryHost: stringValue(config, "entryHost"), EntryPort: intValue(config, "entryPort"), TargetHost: stringValue(config, "targetHost"), TargetPort: intValue(config, "targetPort"), CertFile: stringValue(config, "certFile"), KeyFile: stringValue(config, "keyFile"), Description: stringValue(args, "description"), ActorID: actor}
+	_, certificateIDSet := config["certificateId"]
+	return admin.UpdateProxyInput{ID: stringValue(args, "id"), Type: domain.ProxyType(stringValue(args, "type")), Name: stringValue(args, "name"), EntryBindHost: stringValue(config, "entryBindHost"), EntryHost: stringValue(config, "entryHost"), EntryPort: intValue(config, "entryPort"), TargetHost: stringValue(config, "targetHost"), TargetPort: intValue(config, "targetPort"), CertFile: stringValue(config, "certFile"), KeyFile: stringValue(config, "keyFile"), CertificateID: stringValue(config, "certificateId"), CertificateIDSet: certificateIDSet, Description: stringValue(args, "description"), ActorID: actor}
 }
 
 func certificateMutationInputFromArgs(args map[string]interface{}, actor string) admin.CertificateInput {
-	return admin.CertificateInput{ProxyID: stringValue(args, "proxyId"), ProviderType: domain.CertificateProviderType(stringValue(args, "providerType")), CredentialID: stringValue(args, "credentialId"), RequestType: stringValue(args, "requestType"), RequestedValidity: intValue(args, "requestedValidity"), ActorID: actor}
+	return admin.CertificateInput{ProxyID: stringValue(args, "proxyId"), CertificateID: stringValue(args, "certificateId"), ProviderType: domain.CertificateProviderType(stringValue(args, "providerType")), CredentialID: stringValue(args, "credentialId"), RequestType: stringValue(args, "requestType"), RequestedValidity: intValue(args, "requestedValidity"), ActorID: actor}
+}
+
+func createCertificateInputFromArgs(args map[string]interface{}, actor string) admin.CreateCertificateInput {
+	return admin.CreateCertificateInput{Host: stringValue(args, "host"), ProviderType: domain.CertificateProviderType(stringValue(args, "providerType")), CredentialID: stringValue(args, "credentialId"), RequestType: stringValue(args, "requestType"), RequestedValidity: intValue(args, "requestedValidity"), CertFile: stringValue(args, "certFile"), KeyFile: stringValue(args, "keyFile"), ActorID: actor}
 }
 
 func userListInputFromArgs(args map[string]interface{}) adminquery.UserListInput {
@@ -1732,6 +1834,11 @@ func extractCertificatePayload(source interface{}) certificatePayload {
 	return value
 }
 
+func extractDeleteCertificatePayload(source interface{}) deleteCertificatePayload {
+	value, _ := source.(deleteCertificatePayload)
+	return value
+}
+
 func extractProviderCredentialPayload(source interface{}) providerCredentialPayload {
 	value, _ := source.(providerCredentialPayload)
 	return value
@@ -1746,12 +1853,30 @@ func findCertificate(items []adminquery.ManagedCertificateSummary, proxyID strin
 	return adminquery.ManagedCertificateSummary{ProxyID: proxyID}
 }
 
+func findCertificateByID(items []adminquery.ManagedCertificateSummary, certificateID string) adminquery.ManagedCertificateSummary {
+	for _, item := range items {
+		if item.CertificateID == certificateID {
+			return item
+		}
+	}
+	return adminquery.ManagedCertificateSummary{CertificateID: certificateID}
+}
+
 func timeResolve[T any](selector func(T) time.Time) graphql.FieldResolveFn {
 	return func(params graphql.ResolveParams) (interface{}, error) {
 		if value, ok := params.Source.(T); ok {
 			return selector(value).Format(time.RFC3339), nil
 		}
 		return "", nil
+	}
+}
+
+func certificateDeletionRiskResolve() graphql.FieldResolveFn {
+	return func(params graphql.ResolveParams) (interface{}, error) {
+		if value, ok := params.Source.(adminquery.ManagedCertificateSummary); ok {
+			return string(value.DeletionRisk), nil
+		}
+		return nil, nil
 	}
 }
 

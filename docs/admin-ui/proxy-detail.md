@@ -38,7 +38,7 @@
 - EntryBindHost / EntryPort
 - HTTP Host 或 HTTPS SNI 域名
 - TargetHost / TargetPort
-- HTTPS CertFile / KeyFile
+- HTTPS 绑定证书（`certificateId`，未绑定时显示“未绑定”；不再展示 CertFile / KeyFile 文件路径）
 - 活跃连接数
 - 上传流量
 - 下载流量
@@ -61,20 +61,48 @@
 - BindHost 使用后端提供的监听地址选项，不使用自由输入
 - TCP/UDP 编辑 BindHost、EntryPort、TargetHost、TargetPort
 - HTTP/HTTPS 编辑 BindHost、EntryPort、域名、TargetHost、TargetPort
-- HTTPS 可编辑成对的 CertFile / KeyFile
+- HTTPS 通过证书选择控件改绑证书，不再编辑 CertFile / KeyFile 文件路径
 - 更新或启用后若发生监听冲突或 listener 启动失败，展示 `ENTRY_CONFLICT`
 - 错误需定位到对应字段或操作区
 
+### 7.1 HTTPS 证书选择
+
+HTTPS 代理编辑表单通过证书选择控件改绑证书：
+
+- 证书选择器只列出“与该 SNI 域名兼容且可绑定”的证书；可绑定包含未绑定证书，以及当前已绑定到本 proxy 的证书（编辑场景放行）。
+- 选中证书展示证书摘要（provider、hostnames、有效期、服务状态，Origin CA 还展示部署提示）。
+- 当前选中证书若已不在可用列表（例如被其他 proxy 抢绑或失去可服务能力），仍保留展示并提示原因。
+- 提交时只传 `certificateId`，不再提交 `certFile` / `keyFile`。
+
+### 7.2 跳转创建证书与草稿恢复
+
+编辑表单中点击“创建证书”跳转证书页创建流程：
+
+- 跳转前保存编辑表单草稿（不含 secret material），链接携带 `returnTo=/proxies/<id>`、`draftId` 和 `host`。
+- 证书创建成功后返回详情页，重新打开编辑对话框，还原草稿字段并自动选中新证书。
+- 草稿缺失、过期或解析失败时安全降级：回退到当前 proxy 配置并预选新证书，提示草稿已失效。
+
 ## 8. HTTPS 证书区
 
-当代理类型为 HTTPS 时展示：
+当代理类型为 HTTPS 且存在绑定证书时展示该证书摘要：
 
-- 证书状态
+- Serving / Operation 状态
 - Host
 - 到期时间
 - 最近签发时间
 - 最近续签时间
+- 最近检查 / 尝试 / 下次尝试时间
+- 失败次数、指纹
 - 最近错误摘要
+
+证书摘要为只读视图。证书的创建、删除、签发、续期、轮换、同步、撤销等动作只能在证书页执行；本页只负责改绑证书或跳转创建证书。
+
+### 8.1 显式绑定与运行时解析
+
+- HTTPS proxy 通过 `certificateId` 显式绑定证书（数据层为 `proxies.certificate_id`），本次实现一个证书最多绑定一个 proxy。
+- 运行时优先按绑定的 certificate ID 解析 TLS active material，并校验证书覆盖该 proxy 的 SNI host。
+- 没有绑定可服务证书或证书失效（过期、缺失、不可读、域名不匹配、key 不匹配、provider status 阻止服务）的 HTTPS proxy 会被标记为证书失效/需要重新配置，且不对外提供 HTTPS。
+- 在证书页删除仍在服务的绑定证书会解除绑定并把本 proxy 标记为需要重新配置，需重新绑定可用证书后才能恢复 HTTPS。
 
 ## 9. 状态设计
 
@@ -106,3 +134,6 @@
 - 不允许原地修改类型
 - 删除前必须先禁用
 - 冲突错误有明确视觉反馈
+- HTTPS 代理只通过证书选择器改绑证书或跳转创建证书，不再编辑 CertFile / KeyFile
+- 跳转创建证书后能恢复编辑表单草稿并自动选中新证书；草稿失效时安全降级
+- 证书摘要为只读，证书生命周期动作集中在证书页

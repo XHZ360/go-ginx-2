@@ -140,6 +140,14 @@ func startServerWithStore(parent context.Context, cfg config.Server, db store.St
 				return nil, err
 			}
 			adminService.Certificates = certificateService
+		} else {
+			// 即使未启用 ACME/Origin CA，证书管理也需要受管证书目录以支持文件型证书（health/迁移）。
+			adminService.Certificates = certmanager.Service{Storage: httpsproxy.ManagedCertificateStorage{CertificateDir: cfg.CertificateDir}}
+		}
+		// 启动时将旧代理静态证书（cert_file/key_file）迁移为文件型证书资源并绑定。幂等。
+		if _, err := adminService.MigrateLegacyFileCertificates(runtimeCtx); err != nil {
+			_ = runtime.Close()
+			return nil, fmt.Errorf("migrate legacy file certificates: %w", err)
 		}
 		adminJWTSecret, err := config.LoadAdminJWTSecret(cfg.AdminJWTSecretFile)
 		if err != nil {

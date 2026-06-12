@@ -142,6 +142,7 @@ type ProxyRepository interface {
 	ByHTTPSRoute(ctx context.Context, bindHost string, port int, host string, includeDefault bool) (domain.Proxy, error)
 	ByHTTPHost(ctx context.Context, host string) (domain.Proxy, error)
 	ByHTTPSHost(ctx context.Context, host string) (domain.Proxy, error)
+	ByCertificateID(ctx context.Context, certificateID string) (domain.Proxy, error)
 	Update(ctx context.Context, proxy domain.Proxy) error
 	SetStatus(ctx context.Context, id string, status domain.ProxyStatus) error
 	Delete(ctx context.Context, id string) error
@@ -149,8 +150,10 @@ type ProxyRepository interface {
 
 type CertificateRepository interface {
 	Create(ctx context.Context, certificate domain.ManagedCertificate) error
+	ByID(ctx context.Context, id string) (domain.ManagedCertificate, error)
 	ByProxyID(ctx context.Context, proxyID string) (domain.ManagedCertificate, error)
 	ByHost(ctx context.Context, host string) (domain.ManagedCertificate, error)
+	Delete(ctx context.Context, id string) error
 	List(ctx context.Context) ([]domain.ManagedCertificate, error)
 	ListByProxyIDs(ctx context.Context, proxyIDs []string) ([]domain.ManagedCertificate, error)
 	ListRenewable(ctx context.Context, before time.Time, now time.Time) ([]domain.ManagedCertificate, error)

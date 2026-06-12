@@ -725,6 +725,233 @@ insert into managed_certificates (id, proxy_id, host, status, provider, cert_fil
 	}
 }
 
+func TestCertificateBecomesIndependentResource(t *testing.T) {
+	ctx := context.Background()
+	db := openTestStore(t)
+	seedUserAndClient(t, ctx, db)
+	proxy := domain.Proxy{ID: "p1", UserID: "u1", ClientID: "c1", Name: "secure", Type: domain.ProxyHTTPS, Status: domain.ProxyEnabled, EntryHost: "app.example.com", TargetHost: "127.0.0.1", TargetPort: 8080}
+	if err := db.Proxies().Create(ctx, proxy); err != nil {
+		t.Fatalf("create proxy: %v", err)
+	}
+
+	bound := domain.ManagedCertificate{ID: "cert-bound", ProxyID: proxy.ID, Host: "app.example.com", Status: domain.CertificatePending, Provider: "cloudflare"}
+	if err := db.Certificates().Create(ctx, bound); err != nil {
+		t.Fatalf("create bound certificate: %v", err)
+	}
+
+	// (a) 未绑定证书（proxy_id="")可以创建，且多张未绑定证书不会因 proxy_id='' 冲突。
+	unbound := domain.ManagedCertificate{ID: "cert-unbound", ProxyID: "", Host: "free.example.com", Status: domain.CertificatePending, Provider: "cloudflare"}
+	if err := db.Certificates().Create(ctx, unbound); err != nil {
+		t.Fatalf("create unbound certificate: %v", err)
+	}
+	secondUnbound := domain.ManagedCertificate{ID: "cert-unbound-2", ProxyID: "", Host: "free2.example.com", Status: domain.CertificatePending, Provider: "cloudflare"}
+	if err := db.Certificates().Create(ctx, secondUnbound); err != nil {
+		t.Fatalf("create second unbound certificate: %v", err)
+	}
+
+	// (b) ByID 与 Delete 正常工作。
+	loaded, err := db.Certificates().ByID(ctx, unbound.ID)
+	if err != nil {
+		t.Fatalf("lookup certificate by id: %v", err)
+	}
+	if loaded.ID != unbound.ID || loaded.ProxyID != "" || loaded.Host != "free.example.com" {
+		t.Fatalf("unexpected certificate by id: %+v", loaded)
+	}
+	if err := db.Certificates().Delete(ctx, secondUnbound.ID); err != nil {
+		t.Fatalf("delete certificate: %v", err)
+	}
+	if _, err := db.Certificates().ByID(ctx, secondUnbound.ID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("expected deleted certificate not found, got %v", err)
+	}
+	if err := db.Certificates().Delete(ctx, "missing-cert"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("expected delete of missing certificate to report not found, got %v", err)
+	}
+
+	// (c) 删除代理后，其证书作为独立资源存活（不再级联删除）。
+	if err := db.Proxies().Delete(ctx, proxy.ID); err != nil {
+		t.Fatalf("delete proxy: %v", err)
+	}
+	if _, err := db.Proxies().ByID(ctx, proxy.ID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("expected proxy deleted, got %v", err)
+	}
+	survivor, err := db.Certificates().ByID(ctx, bound.ID)
+	if err != nil {
+		t.Fatalf("certificate should survive proxy deletion: %v", err)
+	}
+	if survivor.ID != bound.ID {
+		t.Fatalf("unexpected surviving certificate: %+v", survivor)
+	}
+}
+
+func TestProxyCertificateBindingRoundTrips(t *testing.T) {
+	ctx := context.Background()
+	db := openTestStore(t)
+	seedUserAndClient(t, ctx, db)
+
+	cert := domain.ManagedCertificate{ID: "cert-1", ProxyID: "", Host: "app.example.com", Status: domain.CertificatePending, Provider: "cloudflare"}
+	if err := db.Certificates().Create(ctx, cert); err != nil {
+		t.Fatalf("create certificate: %v", err)
+	}
+	proxy := domain.Proxy{ID: "p1", UserID: "u1", ClientID: "c1", Name: "secure", Type: domain.ProxyHTTPS, Status: domain.ProxyEnabled, EntryHost: "app.example.com", TargetHost: "127.0.0.1", TargetPort: 8080, CertificateID: cert.ID}
+	if err := db.Proxies().Create(ctx, proxy); err != nil {
+		t.Fatalf("create proxy bound to certificate: %v", err)
+	}
+
+	loaded, err := db.Proxies().ByID(ctx, proxy.ID)
+	if err != nil {
+		t.Fatalf("lookup proxy: %v", err)
+	}
+	if loaded.CertificateID != cert.ID {
+		t.Fatalf("expected proxy bound to %s, got %+v", cert.ID, loaded)
+	}
+	byCert, err := db.Proxies().ByCertificateID(ctx, cert.ID)
+	if err != nil {
+		t.Fatalf("lookup proxy by certificate id: %v", err)
+	}
+	if byCert.ID != proxy.ID {
+		t.Fatalf("unexpected proxy by certificate id: %+v", byCert)
+	}
+	if _, err := db.Proxies().ByCertificateID(ctx, "missing"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("expected no proxy for unknown certificate, got %v", err)
+	}
+
+	// 一证一代理：第二个代理绑定同一证书应被部分唯一索引拒绝。
+	other := domain.Proxy{ID: "p2", UserID: "u1", ClientID: "c1", Name: "secure-2", Type: domain.ProxyHTTPS, Status: domain.ProxyEnabled, EntryHost: "alt.example.com", TargetHost: "127.0.0.1", TargetPort: 8081, CertificateID: cert.ID}
+	if err := db.Proxies().Create(ctx, other); !errors.Is(err, store.ErrAlreadyExists) {
+		t.Fatalf("expected one cert -> one proxy to be enforced, got %v", err)
+	}
+}
+
+func TestOpenBackfillsProxyCertificateBindingFromLegacyProxyID(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "legacy-bind.db")
+	legacy, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = legacy.ExecContext(ctx, `
+create table users (
+    id text primary key,
+    username text not null unique,
+    password_hash text not null default '',
+    role text not null,
+    status text not null,
+    created_at timestamp not null,
+    updated_at timestamp not null
+);
+create table clients (
+    id text primary key,
+    user_id text not null references users(id) on delete cascade,
+    name text not null,
+    status text not null,
+    credential_hash text not null,
+    version integer not null default 0,
+    last_online_at timestamp,
+    last_offline_at timestamp,
+    created_at timestamp not null,
+    updated_at timestamp not null
+);
+create table proxies (
+    id text primary key,
+    user_id text not null references users(id) on delete cascade,
+    client_id text not null references clients(id) on delete cascade,
+    name text not null,
+    type text not null,
+    status text not null,
+    entry_bind_host text not null default '',
+    entry_host text not null default '',
+    entry_port integer not null default 0,
+    target_host text not null,
+    target_port integer not null,
+    cert_file text not null default '',
+    key_file text not null default '',
+    description text not null default '',
+    created_at timestamp not null,
+    updated_at timestamp not null
+);
+create table managed_certificates (
+    id text primary key,
+    proxy_id text not null references proxies(id) on delete cascade,
+    host text not null,
+    status text not null,
+    provider text not null default '',
+    cert_file text not null default '',
+    key_file text not null default '',
+    previous_cert_file text not null default '',
+    previous_key_file text not null default '',
+    not_after timestamp,
+    last_issued_at timestamp,
+    last_renewed_at timestamp,
+    last_error text not null default '',
+    created_at timestamp not null,
+    updated_at timestamp not null
+);
+create unique index managed_certificates_proxy_unique on managed_certificates(proxy_id);
+create unique index managed_certificates_host_unique on managed_certificates(lower(host));
+insert into users (id, username, role, status, created_at, updated_at) values ('u1', 'alice', 'user', 'enabled', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+insert into clients (id, user_id, name, status, credential_hash, created_at, updated_at) values ('c1', 'u1', 'home', 'offline', 'hash', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+insert into proxies (id, user_id, client_id, name, type, status, entry_host, target_host, target_port, created_at, updated_at) values ('p1', 'u1', 'c1', 'secure', 'https', 'enabled', 'app.example.com', '127.0.0.1', 8080, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+insert into managed_certificates (id, proxy_id, host, status, provider, cert_file, key_file, created_at, updated_at) values ('cert-1', 'p1', 'app.example.com', 'valid', 'cloudflare', 'active.crt', 'active.key', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP);
+`)
+	if closeErr := legacy.Close(); closeErr != nil {
+		t.Fatal(closeErr)
+	}
+	if err != nil {
+		t.Fatalf("seed legacy db: %v", err)
+	}
+
+	db, err := Open(path)
+	if err != nil {
+		t.Fatalf("open migrated store: %v", err)
+	}
+
+	// 回填：旧 managed cert 的 proxy_id 反向引用迁移为代理侧 certificate_id 权威绑定。
+	proxy, err := db.Proxies().ByID(ctx, "p1")
+	if err != nil {
+		t.Fatalf("lookup migrated proxy: %v", err)
+	}
+	if proxy.CertificateID != "cert-1" {
+		t.Fatalf("expected proxy backfilled with certificate_id=cert-1, got %+v", proxy)
+	}
+	bound, err := db.Proxies().ByCertificateID(ctx, "cert-1")
+	if err != nil {
+		t.Fatalf("lookup proxy by certificate id: %v", err)
+	}
+	if bound.ID != "p1" {
+		t.Fatalf("unexpected proxy bound to cert-1: %+v", bound)
+	}
+
+	// 重建后的旧级联外键已移除：删除代理不再删除证书，证书作为独立资源存活。
+	if err := db.Proxies().Delete(ctx, "p1"); err != nil {
+		t.Fatalf("delete migrated proxy: %v", err)
+	}
+	survivor, err := db.Certificates().ByID(ctx, "cert-1")
+	if err != nil {
+		t.Fatalf("certificate should survive proxy deletion after rebuild: %v", err)
+	}
+	if survivor.ID != "cert-1" {
+		t.Fatalf("unexpected surviving certificate: %+v", survivor)
+	}
+	if indexExists(t, ctx, db.db, "managed_certificates_proxy_unique") {
+		t.Fatal("legacy managed_certificates_proxy_unique index should be dropped")
+	}
+	if !indexExists(t, ctx, db.db, "managed_certificates_host_unique") {
+		t.Fatal("managed_certificates_host_unique index should be preserved")
+	}
+	if !indexExists(t, ctx, db.db, "proxies_certificate_id_unique") {
+		t.Fatal("proxies_certificate_id_unique index should exist after migration")
+	}
+	// 幂等性：再次打开同一数据库不应失败（重建无操作）。
+	if err := db.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+	reopened, err := Open(path)
+	if err != nil {
+		t.Fatalf("reopen migrated store should be idempotent: %v", err)
+	}
+	defer reopened.Close()
+}
+
 func indexExists(t *testing.T, ctx context.Context, db *sql.DB, name string) bool {
 	t.Helper()
 	var count int

@@ -48,7 +48,25 @@ type ManagedCertificateRequest struct {
 	RequestedValidity int
 }
 
+// CertificateIssueRequest 以证书身份（而非 proxyID）为核心描述一次签发/注册。
+// CertificateID 为空表示创建新证书资源；否则在既有资源上重新签发。
+// 对 provider_type=file，仅登记已有的 cert/key 文件路径（校验后写入元数据，不入库私钥）。
+type CertificateIssueRequest struct {
+	CertificateID     string
+	Host              string
+	ProviderType      domain.CertificateProviderType
+	CredentialID      string
+	Hostnames         []string
+	RequestType       string
+	RequestedValidity int
+	// CertFile/KeyFile 仅用于 provider_type=file 的文件型证书登记。
+	CertFile string
+	KeyFile  string
+}
+
 type OriginCARevokeRequest struct {
+	// CertificateID 优先；为空时回退到按 ProxyID 解析绑定证书。
+	CertificateID           string
 	ProxyID                 string
 	Host                    string
 	CloudflareCertificateID string
@@ -69,6 +87,33 @@ func (service Service) Renew(ctx context.Context, proxyID string) (domain.Manage
 	return service.RenewCertificate(ctx, certificate)
 }
 
+// RenewByID 按证书身份（certificateID 优先，否则 proxyID 绑定）续期/重新签发。
+func (service Service) RenewByID(ctx context.Context, certificateID string, proxyID string) (domain.ManagedCertificate, error) {
+	certificate, err := service.resolveCertificate(ctx, certificateID, proxyID)
+	if err != nil {
+		return domain.ManagedCertificate{}, err
+	}
+	return service.RenewCertificate(ctx, certificate)
+}
+
+// RotateOriginCAByID 按证书身份轮换 Origin CA 证书。
+func (service Service) RotateOriginCAByID(ctx context.Context, certificateID string, proxyID string) (domain.ManagedCertificate, error) {
+	certificate, err := service.resolveCertificate(ctx, certificateID, proxyID)
+	if err != nil {
+		return domain.ManagedCertificate{}, err
+	}
+	return service.rotateOriginCACertificate(ctx, certificate)
+}
+
+// SyncOriginCAByID 按证书身份同步 Origin CA 证书状态。
+func (service Service) SyncOriginCAByID(ctx context.Context, certificateID string, proxyID string) (domain.ManagedCertificate, error) {
+	certificate, err := service.resolveCertificate(ctx, certificateID, proxyID)
+	if err != nil {
+		return domain.ManagedCertificate{}, err
+	}
+	return service.SyncOriginCACertificate(ctx, certificate)
+}
+
 func (service Service) IssueWithProvider(ctx context.Context, request ManagedCertificateRequest) (domain.ManagedCertificate, error) {
 	if request.ProviderType == "" {
 		request.ProviderType = domain.CertificateProviderACMEDNS01
@@ -78,6 +123,92 @@ func (service Service) IssueWithProvider(ctx context.Context, request ManagedCer
 		return domain.ManagedCertificate{}, err
 	}
 	return provider.Issue(ctx, service, request, domain.CertificateIssueFailed)
+}
+
+// IssueCertificate 以证书身份签发/注册证书资源（可未绑定代理）。
+//   - acme_dns01：发起 ACME 签发；
+//   - cloudflare_origin_ca：发起 Origin CA 签发；
+//   - file：仅登记已有的 cert/key 文件路径（校验证书对，写入元数据，不入库私钥）。
+//
+// CertificateID 为空表示创建新资源；否则在既有资源上重新签发/重新登记。
+func (service Service) IssueCertificate(ctx context.Context, request CertificateIssueRequest) (domain.ManagedCertificate, error) {
+	if service.Store == nil {
+		return domain.ManagedCertificate{}, errors.New("store is required")
+	}
+	host := strings.ToLower(strings.TrimSpace(request.Host))
+	if host == "" && strings.TrimSpace(request.CertificateID) != "" {
+		existing, err := service.Store.Certificates().ByID(ctx, request.CertificateID)
+		if err != nil {
+			return domain.ManagedCertificate{}, err
+		}
+		host = strings.ToLower(strings.TrimSpace(existing.Host))
+	}
+	if host == "" {
+		return domain.ManagedCertificate{}, errors.New("certificate host is required")
+	}
+	providerType := request.ProviderType
+	if providerType == "" {
+		providerType = domain.CertificateProviderACMEDNS01
+	}
+	proxyID := ""
+	if strings.TrimSpace(request.CertificateID) != "" {
+		if existing, err := service.Store.Certificates().ByID(ctx, request.CertificateID); err == nil {
+			proxyID = existing.ProxyID
+		} else if !errors.Is(err, store.ErrNotFound) {
+			return domain.ManagedCertificate{}, err
+		}
+	}
+	switch providerType {
+	case domain.CertificateProviderACMEDNS01:
+		return service.issueACMEForIdentity(ctx, request.CertificateID, proxyID, host, nil, domain.CertificateIssueFailed)
+	case domain.CertificateProviderCloudflareOriginCA:
+		req := ManagedCertificateRequest{ProviderType: providerType, CredentialID: request.CredentialID, Hostnames: request.Hostnames, RequestType: request.RequestType, RequestedValidity: request.RequestedValidity}
+		return service.issueOriginCAForIdentity(ctx, request.CertificateID, proxyID, host, req, nil, domain.CertificateIssueFailed)
+	case domain.CertificateProviderFile:
+		return service.registerFileCertificate(ctx, request.CertificateID, proxyID, host, request.CertFile, request.KeyFile)
+	default:
+		return domain.ManagedCertificate{}, errors.New("unsupported certificate provider " + string(providerType))
+	}
+}
+
+// registerFileCertificate 登记一对已存在的静态证书/私钥文件为文件型证书资源（provider_type=file）。
+// 仅写入文件路径与从文件派生的健康元数据，私钥内容不入库。
+func (service Service) registerFileCertificate(ctx context.Context, certificateID string, proxyID string, host string, certFile string, keyFile string) (domain.ManagedCertificate, error) {
+	host = strings.ToLower(strings.TrimSpace(host))
+	if host == "" {
+		return domain.ManagedCertificate{}, errors.New("certificate host is required")
+	}
+	certFile = strings.TrimSpace(certFile)
+	keyFile = strings.TrimSpace(keyFile)
+	if certFile == "" || keyFile == "" {
+		return domain.ManagedCertificate{}, errors.New("file certificate requires both cert file and key file")
+	}
+	now := service.now()
+	health := httpsproxy.CheckCertificateFiles(host, certFile, keyFile, service.Storage.CertificateDir, service.scheduler().WindowFor(domain.CertificateProviderFile), now)
+	certificate, err := service.ensureCertificateRecordByIdentity(ctx, certificateID, proxyID, host, domain.CertificateProviderFile, string(domain.CertificateProviderFile), "", nil)
+	if err != nil {
+		return domain.ManagedCertificate{}, err
+	}
+	notAfter := now
+	if health.NotAfter != nil {
+		notAfter = *health.NotAfter
+	}
+	servingStatus := health.ServingStatus
+	if servingStatus == "" {
+		servingStatus = domain.CertificateServingMissing
+	}
+	// 先登记文件路径与基础元数据（provider_type=file），UpdateSuccess 会写入 cert_file/key_file。
+	result := store.CertificateSuccess{CertFile: certFile, KeyFile: keyFile, NotAfter: notAfter, ServingStatus: servingStatus, ProviderStatus: domain.CertificateProviderStatusActive, ProviderType: domain.CertificateProviderFile, ProviderName: string(domain.CertificateProviderFile), Fingerprint: health.Fingerprint, LastCheckedAt: now, LastAttemptedAt: now, CompletedAt: now}
+	if err := service.Store.Certificates().UpdateSuccess(ctx, certificate.ID, result); err != nil {
+		return domain.ManagedCertificate{}, err
+	}
+	if !health.Usable() {
+		// 文件不可用：重放真实健康，使 serving/status 反映问题（代理将被视为 needs_config）。
+		if err := service.Store.Certificates().UpdateHealth(ctx, certificate.ID, store.CertificateHealth{ServingStatus: servingStatus, NotAfter: health.NotAfter, Fingerprint: health.Fingerprint, LastError: defaultString(health.ErrorSummary, "certificate active material is not usable"), CheckedAt: now}); err != nil {
+			return domain.ManagedCertificate{}, err
+		}
+	}
+	return service.Store.Certificates().ByID(ctx, certificate.ID)
 }
 
 func (service Service) RotateOriginCA(ctx context.Context, proxyID string) (domain.ManagedCertificate, error) {
@@ -158,7 +289,7 @@ func (service Service) syncOriginCACertificate(ctx context.Context, certificate 
 	if updateErr := service.Store.Certificates().UpdateProviderSync(ctx, certificate.ID, store.CertificateProviderSync{ProviderStatus: status, LastError: lastError, SyncedAt: now, UpdatedAt: now}); updateErr != nil {
 		return domain.ManagedCertificate{}, updateErr
 	}
-	updated, readErr := service.Store.Certificates().ByProxyID(ctx, certificate.ProxyID)
+	updated, readErr := service.Store.Certificates().ByID(ctx, certificate.ID)
 	if readErr != nil {
 		return domain.ManagedCertificate{}, readErr
 	}
@@ -172,11 +303,31 @@ func (service Service) RevokeOriginCA(ctx context.Context, request OriginCARevok
 	if service.Store == nil {
 		return domain.ManagedCertificate{}, errors.New("store is required")
 	}
-	certificate, err := service.Store.Certificates().ByProxyID(ctx, request.ProxyID)
+	certificate, err := service.resolveCertificate(ctx, request.CertificateID, request.ProxyID)
 	if err != nil {
 		return domain.ManagedCertificate{}, err
 	}
 	return service.RevokeOriginCACertificate(ctx, certificate, request)
+}
+
+// resolveCertificate 按证书身份解析证书：优先 certificateID，其次按绑定 proxyID 反向查找。
+func (service Service) resolveCertificate(ctx context.Context, certificateID string, proxyID string) (domain.ManagedCertificate, error) {
+	if service.Store == nil {
+		return domain.ManagedCertificate{}, errors.New("store is required")
+	}
+	if strings.TrimSpace(certificateID) != "" {
+		return service.Store.Certificates().ByID(ctx, certificateID)
+	}
+	if strings.TrimSpace(proxyID) != "" {
+		proxy, err := service.Store.Proxies().ByID(ctx, proxyID)
+		if err == nil && strings.TrimSpace(proxy.CertificateID) != "" {
+			if certificate, certErr := service.Store.Certificates().ByID(ctx, proxy.CertificateID); certErr == nil {
+				return certificate, nil
+			}
+		}
+		return service.Store.Certificates().ByProxyID(ctx, proxyID)
+	}
+	return domain.ManagedCertificate{}, errors.New("certificate id or proxy id is required")
 }
 
 func (service Service) RevokeOriginCACertificate(ctx context.Context, certificate domain.ManagedCertificate, request OriginCARevokeRequest) (domain.ManagedCertificate, error) {
@@ -217,7 +368,7 @@ func (service Service) revokeOriginCACertificate(ctx context.Context, certificat
 			return domain.ManagedCertificate{}, err
 		}
 	}
-	return service.Store.Certificates().ByProxyID(ctx, request.ProxyID)
+	return service.Store.Certificates().ByID(ctx, certificate.ID)
 }
 
 func (service Service) VerifyProviderCredential(ctx context.Context, credentialID string) error {
@@ -258,20 +409,14 @@ func (service Service) issueACMEForCertificate(ctx context.Context, certificate 
 	if service.Store == nil {
 		return domain.ManagedCertificate{}, errors.New("store is required")
 	}
-	proxy, err := service.Store.Proxies().ByID(ctx, certificate.ProxyID)
-	if err != nil {
-		return domain.ManagedCertificate{}, err
+	host := strings.ToLower(strings.TrimSpace(certificate.Host))
+	if host == "" {
+		return domain.ManagedCertificate{}, errors.New("certificate host is required")
 	}
-	return service.issueACMEForProxy(ctx, proxy, &certificate, failureStatus)
+	return service.issueACMEForIdentity(ctx, certificate.ID, certificate.ProxyID, host, &certificate, failureStatus)
 }
 
 func (service Service) issueACMEForProxy(ctx context.Context, proxy domain.Proxy, existing *domain.ManagedCertificate, failureStatus domain.CertificateStatus) (domain.ManagedCertificate, error) {
-	if service.Issuer == nil {
-		return domain.ManagedCertificate{}, errors.New("issuer is required")
-	}
-	if service.DNSProvider == nil {
-		return domain.ManagedCertificate{}, errors.New("dns challenge provider is required")
-	}
 	if proxy.Type != domain.ProxyHTTPS {
 		return domain.ManagedCertificate{}, errors.New("managed certificates require an https proxy")
 	}
@@ -279,13 +424,33 @@ func (service Service) issueACMEForProxy(ctx context.Context, proxy domain.Proxy
 	if host == "" {
 		return domain.ManagedCertificate{}, errors.New("https proxy host is required")
 	}
-	release, err := acquireOperationLock(ctx, certificateOperationKey(proxy.ID, host))
+	certificateID := ""
+	if existing != nil {
+		certificateID = existing.ID
+	}
+	return service.issueACMEForIdentity(ctx, certificateID, proxy.ID, host, existing, failureStatus)
+}
+
+// issueACMEForIdentity 以证书身份（certificateID/proxyID/host）执行 ACME 签发。
+// proxyID 可为空，表示对未绑定证书资源签发。
+func (service Service) issueACMEForIdentity(ctx context.Context, certificateID string, proxyID string, host string, existing *domain.ManagedCertificate, failureStatus domain.CertificateStatus) (domain.ManagedCertificate, error) {
+	if service.Issuer == nil {
+		return domain.ManagedCertificate{}, errors.New("issuer is required")
+	}
+	if service.DNSProvider == nil {
+		return domain.ManagedCertificate{}, errors.New("dns challenge provider is required")
+	}
+	host = strings.ToLower(strings.TrimSpace(host))
+	if host == "" {
+		return domain.ManagedCertificate{}, errors.New("certificate host is required")
+	}
+	release, err := acquireOperationLock(ctx, certificateOperationKey(host, host))
 	if err != nil {
 		return domain.ManagedCertificate{}, err
 	}
 	defer release()
 	providerName := defaultString(service.Settings.DNSProvider, "cloudflare")
-	certificate, err := service.ensureCertificateRecord(ctx, proxy.ID, host, domain.CertificateProviderACMEDNS01, providerName, "", existing)
+	certificate, err := service.ensureCertificateRecordByIdentity(ctx, certificateID, proxyID, host, domain.CertificateProviderACMEDNS01, providerName, "", existing)
 	if err != nil {
 		return domain.ManagedCertificate{}, err
 	}
@@ -312,7 +477,7 @@ func (service Service) issueACMEForProxy(ctx context.Context, proxy domain.Proxy
 	if err := service.Store.Certificates().UpdateSuccess(ctx, certificate.ID, result); err != nil {
 		return domain.ManagedCertificate{}, err
 	}
-	updated, err := service.Store.Certificates().ByProxyID(ctx, proxy.ID)
+	updated, err := service.Store.Certificates().ByID(ctx, certificate.ID)
 	if err != nil {
 		return domain.ManagedCertificate{}, err
 	}
@@ -334,9 +499,6 @@ func (service Service) issueOriginCA(ctx context.Context, request ManagedCertifi
 }
 
 func (service Service) issueOriginCAForProxy(ctx context.Context, proxy domain.Proxy, request ManagedCertificateRequest, existing *domain.ManagedCertificate, failureStatus domain.CertificateStatus) (domain.ManagedCertificate, error) {
-	if !service.OriginCASettings.Enabled {
-		return domain.ManagedCertificate{}, errors.New("cloudflare origin ca is disabled")
-	}
 	if proxy.Type != domain.ProxyHTTPS {
 		return domain.ManagedCertificate{}, errors.New("managed certificates require an https proxy")
 	}
@@ -344,7 +506,23 @@ func (service Service) issueOriginCAForProxy(ctx context.Context, proxy domain.P
 	if host == "" {
 		return domain.ManagedCertificate{}, errors.New("https proxy host is required")
 	}
-	release, err := acquireOperationLock(ctx, certificateOperationKey(proxy.ID, host))
+	certificateID := ""
+	if existing != nil {
+		certificateID = existing.ID
+	}
+	return service.issueOriginCAForIdentity(ctx, certificateID, proxy.ID, host, request, existing, failureStatus)
+}
+
+// issueOriginCAForIdentity 以证书身份执行 Cloudflare Origin CA 签发/轮换。proxyID 可为空（未绑定证书）。
+func (service Service) issueOriginCAForIdentity(ctx context.Context, certificateID string, proxyID string, host string, request ManagedCertificateRequest, existing *domain.ManagedCertificate, failureStatus domain.CertificateStatus) (domain.ManagedCertificate, error) {
+	if !service.OriginCASettings.Enabled {
+		return domain.ManagedCertificate{}, errors.New("cloudflare origin ca is disabled")
+	}
+	host = strings.ToLower(strings.TrimSpace(host))
+	if host == "" {
+		return domain.ManagedCertificate{}, errors.New("certificate host is required")
+	}
+	release, err := acquireOperationLock(ctx, certificateOperationKey(host, host))
 	if err != nil {
 		return domain.ManagedCertificate{}, err
 	}
@@ -353,7 +531,7 @@ func (service Service) issueOriginCAForProxy(ctx context.Context, proxy domain.P
 	if err != nil {
 		return domain.ManagedCertificate{}, err
 	}
-	certificate, err := service.ensureCertificateRecord(ctx, proxy.ID, host, domain.CertificateProviderCloudflareOriginCA, "cloudflare", credentialID, existing)
+	certificate, err := service.ensureCertificateRecordByIdentity(ctx, certificateID, proxyID, host, domain.CertificateProviderCloudflareOriginCA, "cloudflare", credentialID, existing)
 	if err != nil {
 		return domain.ManagedCertificate{}, err
 	}
@@ -372,21 +550,25 @@ func (service Service) issueOriginCAForProxy(ctx context.Context, proxy domain.P
 	csrPEM, keyPEM, err := BuildOriginCACSR(hostnames, requestType)
 	if err != nil {
 		_ = service.recordFailure(ctx, certificate, host, failureStatus, err)
+		_ = service.cleanupUnusableInitialIssue(ctx, certificate)
 		return domain.ManagedCertificate{}, err
 	}
 	token, err := service.credentialToken(ctx, credentialID)
 	if err != nil {
 		_ = service.recordFailure(ctx, certificate, host, failureStatus, err)
+		_ = service.cleanupUnusableInitialIssue(ctx, certificate)
 		return domain.ManagedCertificate{}, err
 	}
 	remote, err := service.originCAClient().Create(ctx, token, OriginCACreateRequest{CSR: string(csrPEM), Hostnames: hostnames, RequestType: requestType, RequestedValidity: requestedValidity})
 	if err != nil {
 		_ = service.recordFailure(ctx, certificate, host, failureStatus, err)
+		_ = service.cleanupUnusableInitialIssue(ctx, certificate)
 		return domain.ManagedCertificate{}, err
 	}
 	if len(remote.CertificatePEM) == 0 {
 		err := errors.New("cloudflare origin ca response missing certificate")
 		_ = service.recordFailure(ctx, certificate, host, failureStatus, err)
+		_ = service.cleanupUnusableInitialIssue(ctx, certificate)
 		return domain.ManagedCertificate{}, err
 	}
 	now := service.now()
@@ -405,6 +587,7 @@ func (service Service) issueOriginCAForProxy(ctx context.Context, proxy domain.P
 	}
 	if err := validateOriginCASuccess(store.CertificateSuccess{ProviderStatus: domain.CertificateProviderStatusActive, ProviderType: domain.CertificateProviderCloudflareOriginCA, ProviderName: "cloudflare", CredentialID: credentialID, CloudflareID: remote.ID, Hostnames: hostnames, RequestType: requestType, RequestedValidity: requestedValidity, CertFile: "pending.crt", KeyFile: "pending.key", NotAfter: now}); err != nil {
 		_ = service.recordFailure(ctx, certificate, host, failureStatus, err)
+		_ = service.cleanupUnusableInitialIssue(ctx, certificate)
 		return domain.ManagedCertificate{}, err
 	}
 	storage := service.Storage
@@ -414,29 +597,28 @@ func (service Service) issueOriginCAForProxy(ctx context.Context, proxy domain.P
 	stored, err := storage.Store(host, remote.CertificatePEM, keyPEM)
 	if err != nil {
 		_ = service.recordFailure(ctx, certificate, host, failureStatus, err)
+		_ = service.cleanupUnusableInitialIssue(ctx, certificate)
 		return domain.ManagedCertificate{}, err
 	}
 	lastSyncedAt := now
 	result := store.CertificateSuccess{CertFile: stored.CertFile, KeyFile: stored.KeyFile, PreviousCertFile: stored.PreviousCertFile, PreviousKeyFile: stored.PreviousKeyFile, NotAfter: stored.NotAfter, ServingStatus: service.scheduler().ServingStatus(stored.NotAfter, domain.CertificateProviderCloudflareOriginCA, now), ProviderStatus: domain.CertificateProviderStatusActive, ProviderType: domain.CertificateProviderCloudflareOriginCA, ProviderName: "cloudflare", CredentialID: credentialID, CloudflareID: remote.ID, PreviousCloudflareID: previousCloudflareID, Hostnames: hostnames, RequestType: requestType, RequestedValidity: requestedValidity, Fingerprint: stored.Fingerprint, LastCheckedAt: now, LastAttemptedAt: now, LastSyncedAt: &lastSyncedAt, CompletedAt: now}
 	if err := validateProviderSuccess(result); err != nil {
 		_ = service.recordFailure(ctx, certificate, host, failureStatus, err)
+		_ = service.cleanupUnusableInitialIssue(ctx, certificate)
 		return domain.ManagedCertificate{}, err
 	}
 	if err := service.Store.Certificates().UpdateSuccess(ctx, certificate.ID, result); err != nil {
 		return domain.ManagedCertificate{}, err
 	}
-	return service.Store.Certificates().ByProxyID(ctx, proxy.ID)
+	return service.Store.Certificates().ByID(ctx, certificate.ID)
 }
 
 func (service Service) rotateOriginCACertificate(ctx context.Context, certificate domain.ManagedCertificate) (domain.ManagedCertificate, error) {
 	if service.Store == nil {
 		return domain.ManagedCertificate{}, errors.New("store is required")
 	}
-	proxy, err := service.Store.Proxies().ByID(ctx, certificate.ProxyID)
-	if err != nil {
-		return domain.ManagedCertificate{}, err
-	}
-	return service.issueOriginCAForProxy(ctx, proxy, ManagedCertificateRequest{ProxyID: certificate.ProxyID, ProviderType: domain.CertificateProviderCloudflareOriginCA, CredentialID: certificate.CredentialID, Hostnames: certificate.Hostnames, RequestType: certificate.RequestType, RequestedValidity: certificate.RequestedValidity}, &certificate, domain.CertificateRenewalFailed)
+	request := ManagedCertificateRequest{ProxyID: certificate.ProxyID, ProviderType: domain.CertificateProviderCloudflareOriginCA, CredentialID: certificate.CredentialID, Hostnames: certificate.Hostnames, RequestType: certificate.RequestType, RequestedValidity: certificate.RequestedValidity}
+	return service.issueOriginCAForIdentity(ctx, certificate.ID, certificate.ProxyID, certificate.Host, request, &certificate, domain.CertificateRenewalFailed)
 }
 
 func (service Service) recordFailure(ctx context.Context, certificate domain.ManagedCertificate, host string, failureStatus domain.CertificateStatus, cause error) error {
@@ -457,6 +639,19 @@ func (service Service) recordFailure(ctx context.Context, certificate domain.Man
 		FailureCount:    failureCount,
 		CompletedAt:     now,
 	})
+}
+
+func (service Service) cleanupUnusableInitialIssue(ctx context.Context, certificate domain.ManagedCertificate) error {
+	if strings.TrimSpace(certificate.ProxyID) != "" {
+		return nil
+	}
+	if strings.TrimSpace(certificate.CertFile) != "" || strings.TrimSpace(certificate.KeyFile) != "" {
+		return nil
+	}
+	if strings.TrimSpace(certificate.CloudflareCertificateID) != "" {
+		return nil
+	}
+	return service.Store.Certificates().Delete(ctx, certificate.ID)
 }
 
 func (service Service) activeHealth(host string, certificate domain.ManagedCertificate, now time.Time) httpsproxy.CertificateMaterialHealth {
@@ -494,22 +689,45 @@ func acquireOperationLock(ctx context.Context, key string) (func(), error) {
 }
 
 func (service Service) ensureCertificateRecord(ctx context.Context, proxyID string, host string, providerType domain.CertificateProviderType, providerName string, credentialID string, existing *domain.ManagedCertificate) (domain.ManagedCertificate, error) {
+	return service.ensureCertificateRecordByIdentity(ctx, "", proxyID, host, providerType, providerName, credentialID, existing)
+}
+
+// ensureCertificateRecordByIdentity 解析或创建证书记录。优先级：
+//  1. existing（调用方已持有）；
+//  2. certificateID（按证书身份查找，未绑定证书亦可）；
+//  3. proxyID（遗留：按绑定代理反向引用查找）；
+//  4. 创建新资源（proxyID 可为空，表示未绑定证书）。
+func (service Service) ensureCertificateRecordByIdentity(ctx context.Context, certificateID string, proxyID string, host string, providerType domain.CertificateProviderType, providerName string, credentialID string, existing *domain.ManagedCertificate) (domain.ManagedCertificate, error) {
 	if existing != nil && existing.ID != "" {
 		return *existing, nil
 	}
-	certificate, err := service.Store.Certificates().ByProxyID(ctx, proxyID)
-	if err == nil {
-		return certificate, nil
+	if strings.TrimSpace(certificateID) != "" {
+		certificate, err := service.Store.Certificates().ByID(ctx, certificateID)
+		if err == nil {
+			return certificate, nil
+		}
+		if !errors.Is(err, store.ErrNotFound) {
+			return domain.ManagedCertificate{}, err
+		}
+	} else if strings.TrimSpace(proxyID) != "" {
+		certificate, err := service.Store.Certificates().ByProxyID(ctx, proxyID)
+		if err == nil {
+			return certificate, nil
+		}
+		if !errors.Is(err, store.ErrNotFound) {
+			return domain.ManagedCertificate{}, err
+		}
 	}
-	if !errors.Is(err, store.ErrNotFound) {
-		return domain.ManagedCertificate{}, err
-	}
-	id, err := service.newID()
-	if err != nil {
-		return domain.ManagedCertificate{}, err
+	id := strings.TrimSpace(certificateID)
+	if id == "" {
+		newID, err := service.newID()
+		if err != nil {
+			return domain.ManagedCertificate{}, err
+		}
+		id = newID
 	}
 	now := service.now()
-	certificate = domain.ManagedCertificate{ID: id, ProxyID: proxyID, Host: host, Status: domain.CertificatePending, Provider: providerName, ProviderType: providerType, ProviderName: providerName, CredentialID: credentialID, ProviderStatus: domain.CertificateProviderStatusUnknown, CreatedAt: now, UpdatedAt: now}
+	certificate := domain.ManagedCertificate{ID: id, ProxyID: proxyID, Host: host, Status: domain.CertificatePending, Provider: providerName, ProviderType: providerType, ProviderName: providerName, CredentialID: credentialID, ProviderStatus: domain.CertificateProviderStatusUnknown, CreatedAt: now, UpdatedAt: now}
 	if certificate.Provider == "" {
 		certificate.Provider = "cloudflare"
 	}
@@ -596,6 +814,67 @@ func (service Service) resolveCredentialID(ctx context.Context, requested string
 		return "", errors.New("cloudflare origin ca credential id is required when multiple credentials exist")
 	}
 	return credentials[0].ID, nil
+}
+
+// MigrateLegacyFileCertificates 将旧代理静态证书（cert_file/key_file 非空且尚未绑定 certificate_id）
+// 迁移为 provider_type=file 的证书资源，并将代理的 certificate_id 指向该资源。幂等：已绑定的代理跳过。
+// 返回新建并绑定的证书数量。
+func (service Service) MigrateLegacyFileCertificates(ctx context.Context) (int, error) {
+	if service.Store == nil {
+		return 0, errors.New("store is required")
+	}
+	proxies, err := service.Store.Proxies().List(ctx)
+	if err != nil {
+		return 0, err
+	}
+	migrated := 0
+	for _, proxy := range proxies {
+		if strings.TrimSpace(proxy.CertificateID) != "" {
+			continue
+		}
+		if strings.TrimSpace(proxy.CertFile) == "" && strings.TrimSpace(proxy.KeyFile) == "" {
+			continue
+		}
+		host := strings.ToLower(strings.TrimSpace(proxy.EntryHost))
+		if host == "" {
+			continue
+		}
+		certificate, err := service.registerFileCertificate(ctx, "", proxy.ID, host, proxy.CertFile, proxy.KeyFile)
+		if err != nil {
+			return migrated, err
+		}
+		bound, err := service.Store.Proxies().ByID(ctx, proxy.ID)
+		if err != nil {
+			return migrated, err
+		}
+		bound.CertificateID = certificate.ID
+		if err := service.Store.Proxies().Update(ctx, bound); err != nil {
+			return migrated, err
+		}
+		migrated++
+	}
+	return migrated, nil
+}
+
+// CertificateCoversHost 校验给定证书资源的活跃材料是否覆盖指定 SNI 主机（VerifyHostname 语义）。
+// 仅当证书材料可用且主机匹配时返回 nil；否则返回描述性错误。
+func (service Service) CertificateCoversHost(certificate domain.ManagedCertificate, host string) error {
+	host = strings.ToLower(strings.TrimSpace(host))
+	if host == "" {
+		return errors.New("certificate host is required")
+	}
+	if strings.TrimSpace(certificate.CertFile) == "" || strings.TrimSpace(certificate.KeyFile) == "" {
+		return errors.New("certificate active material is missing")
+	}
+	health := httpsproxy.CheckCertificateFiles(host, certificate.CertFile, certificate.KeyFile, service.Storage.CertificateDir, 0, service.now())
+	if health.ServingStatus == domain.CertificateServingInvalid {
+		summary := health.ErrorSummary
+		if summary == "" {
+			summary = "certificate does not cover host " + host
+		}
+		return errors.New(summary)
+	}
+	return nil
 }
 
 func providerStatusAfterFailure(certificate domain.ManagedCertificate) domain.CertificateProviderStatus {

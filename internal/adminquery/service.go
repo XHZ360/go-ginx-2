@@ -194,9 +194,27 @@ type ClientPage struct {
 	Sort       SortInput
 }
 
+// CertificateDeletionRisk 表示删除该证书的风险等级。
+type CertificateDeletionRisk string
+
+const (
+	// CertificateDeletionRiskLow 低风险：可直接删除（未绑定，或材料无效/过期/缺失，或被 provider 状态阻断）。
+	CertificateDeletionRiskLow CertificateDeletionRisk = "low"
+	// CertificateDeletionRiskRequiresStrongConfirmation 高风险：证书既绑定代理又当前可服务，删除前需强确认。
+	CertificateDeletionRiskRequiresStrongConfirmation CertificateDeletionRisk = "requires_strong_confirmation"
+)
+
 type ManagedCertificateSummary struct {
-	ProxyID                 string
-	CertificateID           string
+	ProxyID       string
+	CertificateID string
+	// BoundProxyID 是当前以 certificate_id 权威绑定该证书的代理 ID（未绑定为空）。
+	BoundProxyID string
+	// Referenced 表示该证书当前是否被某个代理绑定（在用）。
+	Referenced bool
+	// Servable 表示该证书当前是否可服务（serving 可用且未被 provider 状态阻断）。
+	Servable bool
+	// DeletionRisk 表示删除该证书的风险等级（用于驱动 UI 强确认）。
+	DeletionRisk            CertificateDeletionRisk
 	Host                    string
 	Status                  domain.CertificateStatus
 	ServingStatus           domain.CertificateServingStatus
@@ -259,6 +277,8 @@ type ProxyTypeConfig struct {
 	TargetPort    int
 	CertFile      string
 	KeyFile       string
+	// CertificateID 是 HTTPS 代理选择的证书资源 ID（权威绑定）。
+	CertificateID string
 }
 
 type ProxySummary struct {
@@ -463,7 +483,7 @@ func (service Service) ClientDetail(ctx context.Context, clientID string) (Clien
 	}
 	statsByProxy := service.statsByProxy()
 	latestByClient := latestByClientID(service.latestSessions())
-	certificatesByProxy, err := service.certificatesByProxyIDs(ctx, proxyIDs(proxies))
+	certificatesByProxy, err := service.certificatesByProxyIDs(ctx, proxies)
 	if err != nil {
 		return ClientDetail{}, err
 	}
@@ -519,39 +539,55 @@ func (service Service) ProxyDetail(ctx context.Context, proxyID string) (ProxyDe
 }
 
 func (service Service) ListManagedCertificates(ctx context.Context, input CertificateListInput) (ManagedCertificatePage, error) {
+	if service.Store == nil {
+		return ManagedCertificatePage{}, nil
+	}
 	proxies, err := service.Store.Proxies().List(ctx)
 	if err != nil {
 		return ManagedCertificatePage{}, err
 	}
-	httpsProxyIDs := make([]string, 0, len(proxies))
+	// 构建 certificate_id -> 绑定代理 的映射（权威绑定）。
+	proxyByCertificateID := make(map[string]domain.Proxy)
 	for _, proxy := range proxies {
-		if proxy.Type == domain.ProxyHTTPS {
-			httpsProxyIDs = append(httpsProxyIDs, proxy.ID)
+		if strings.TrimSpace(proxy.CertificateID) != "" {
+			proxyByCertificateID[proxy.CertificateID] = proxy
 		}
 	}
-	certificatesByProxy, err := service.certificatesByProxyIDs(ctx, httpsProxyIDs)
+	// 枚举所有证书资源（含未绑定）。
+	certificates, err := service.Store.Certificates().List(ctx)
 	if err != nil {
 		return ManagedCertificatePage{}, err
 	}
-	items := make([]ManagedCertificateSummary, 0)
-	for _, proxy := range proxies {
-		if proxy.Type != domain.ProxyHTTPS {
+	items := make([]ManagedCertificateSummary, 0, len(certificates))
+	for _, certificate := range certificates {
+		summary := service.managedCertificateSummary(certificate)
+		boundProxy, referenced := proxyByCertificateID[certificate.ID]
+		service.applyCertificateReferenceFields(&summary, certificate, boundProxy, referenced)
+		if !matchesCertificateFilter(summary, input.Filter) {
 			continue
 		}
-		item, ok := certificatesByProxy[proxy.ID]
-		if !ok {
-			item = service.certificateSummaryForProxy(ctx, proxy, nil)
-		} else {
-			item = service.certificateSummaryForProxy(ctx, proxy, item)
-		}
-		if !matchesCertificateFilter(*item, input.Filter) {
-			continue
-		}
-		items = append(items, *item)
+		items = append(items, summary)
 	}
 	sortCertificates(items, normalizeSort(input.Sort, "host", "asc"))
 	paged, info := pageSlice(items, input.Page)
 	return ManagedCertificatePage{Items: paged, TotalCount: len(items), PageInfo: info, Filter: input.Filter, Sort: normalizeSort(input.Sort, "host", "asc")}, nil
+}
+
+// applyCertificateReferenceFields 填充证书的绑定/在用/可服务/删除风险维度。
+func (service Service) applyCertificateReferenceFields(summary *ManagedCertificateSummary, certificate domain.ManagedCertificate, boundProxy domain.Proxy, referenced bool) {
+	summary.Referenced = referenced
+	if referenced {
+		summary.BoundProxyID = boundProxy.ID
+		if strings.TrimSpace(summary.ProxyID) == "" {
+			summary.ProxyID = boundProxy.ID
+		}
+	}
+	summary.Servable = !certificateInvalid(summary)
+	if referenced && summary.Servable {
+		summary.DeletionRisk = CertificateDeletionRiskRequiresStrongConfirmation
+	} else {
+		summary.DeletionRisk = CertificateDeletionRiskLow
+	}
 }
 
 func (service Service) ListProviderCredentials(ctx context.Context, input PageInput) (ProviderCredentialPage, error) {
@@ -628,25 +664,68 @@ func (service Service) certificatesByProxy(ctx context.Context) (map[string]*Man
 	if err != nil {
 		return nil, err
 	}
+	certificateByID := make(map[string]domain.ManagedCertificate, len(certificates))
 	for _, certificate := range certificates {
+		certificateByID[certificate.ID] = certificate
+		// 遗留回退键：按证书反向引用 proxy_id。
+		if strings.TrimSpace(certificate.ProxyID) != "" {
+			summary := service.managedCertificateSummary(certificate)
+			byProxy[certificate.ProxyID] = &summary
+		}
+	}
+	// 主路径：按代理权威绑定 certificate_id 覆盖。
+	proxies, err := service.Store.Proxies().List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, proxy := range proxies {
+		if strings.TrimSpace(proxy.CertificateID) == "" {
+			continue
+		}
+		certificate, ok := certificateByID[proxy.CertificateID]
+		if !ok {
+			continue
+		}
 		summary := service.managedCertificateSummary(certificate)
-		byProxy[certificate.ProxyID] = &summary
+		service.applyCertificateReferenceFields(&summary, certificate, proxy, true)
+		byProxy[proxy.ID] = &summary
 	}
 	return byProxy, nil
 }
 
-func (service Service) certificatesByProxyIDs(ctx context.Context, proxyIDs []string) (map[string]*ManagedCertificateSummary, error) {
+func (service Service) certificatesByProxyIDs(ctx context.Context, proxies []domain.Proxy) (map[string]*ManagedCertificateSummary, error) {
 	byProxy := make(map[string]*ManagedCertificateSummary)
-	if service.Store == nil || len(proxyIDs) == 0 {
+	if service.Store == nil || len(proxies) == 0 {
 		return byProxy, nil
 	}
-	certificates, err := service.Store.Certificates().ListByProxyIDs(ctx, proxyIDs)
+	ids := make([]string, 0, len(proxies))
+	for _, proxy := range proxies {
+		ids = append(ids, proxy.ID)
+	}
+	// 遗留回退键：按证书反向引用 proxy_id。
+	certificates, err := service.Store.Certificates().ListByProxyIDs(ctx, ids)
 	if err != nil {
 		return nil, err
 	}
 	for _, certificate := range certificates {
 		summary := service.managedCertificateSummary(certificate)
 		byProxy[certificate.ProxyID] = &summary
+	}
+	// 主路径：按代理权威绑定 certificate_id 覆盖。
+	for _, proxy := range proxies {
+		if strings.TrimSpace(proxy.CertificateID) == "" {
+			continue
+		}
+		certificate, err := service.Store.Certificates().ByID(ctx, proxy.CertificateID)
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				continue
+			}
+			return nil, err
+		}
+		summary := service.managedCertificateSummary(certificate)
+		service.applyCertificateReferenceFields(&summary, certificate, proxy, true)
+		byProxy[proxy.ID] = &summary
 	}
 	return byProxy, nil
 }
@@ -655,6 +734,19 @@ func (service Service) certificateByProxyID(ctx context.Context, proxy domain.Pr
 	if service.Store == nil || proxy.Type != domain.ProxyHTTPS {
 		return service.certificateSummaryForProxy(ctx, proxy, nil), nil
 	}
+	// 主路径：通过代理的权威绑定 certificate_id 解析证书。
+	if strings.TrimSpace(proxy.CertificateID) != "" {
+		certificate, err := service.Store.Certificates().ByID(ctx, proxy.CertificateID)
+		if err == nil {
+			summary := service.managedCertificateSummary(certificate)
+			service.applyCertificateReferenceFields(&summary, certificate, proxy, true)
+			return &summary, nil
+		}
+		if !errors.Is(err, store.ErrNotFound) {
+			return nil, err
+		}
+	}
+	// 遗留回退：按证书反向引用 proxy_id 解析。
 	certificate, err := service.Store.Certificates().ByProxyID(ctx, proxy.ID)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
@@ -716,7 +808,7 @@ func proxyListItemFromDomain(proxy domain.Proxy, runtimeSession session.Session,
 			runtimeStatus = domain.ProxyOnline
 		}
 	}
-	return ProxyListItem{ID: proxy.ID, UserID: proxy.UserID, ClientID: proxy.ClientID, Name: proxy.Name, Type: proxy.Type, Status: proxy.Status, Description: proxy.Description, RuntimeStatus: runtimeStatus, ActiveTCPConnections: proxyStats.TCPCurrentConnections, UploadBytes: proxyStats.TCPUploadBytes + proxyStats.UDPUploadBytes + proxyStats.HTTPUploadBytes, DownloadBytes: proxyStats.TCPDownloadBytes + proxyStats.UDPDownloadBytes + proxyStats.HTTPDownloadBytes, TCPErrorCount: proxyStats.TCPErrors, UDPErrorCount: proxyStats.UDPErrors, HTTPErrorCount: proxyStats.HTTPErrors, Config: ProxyTypeConfig{EntryBindHost: proxy.EntryBindHost, EntryHost: proxy.EntryHost, EntryPort: proxy.EntryPort, TargetHost: proxy.TargetHost, TargetPort: proxy.TargetPort, CertFile: proxy.CertFile, KeyFile: proxy.KeyFile}, Certificate: certificate, CreatedAt: proxy.CreatedAt, UpdatedAt: proxy.UpdatedAt}
+	return ProxyListItem{ID: proxy.ID, UserID: proxy.UserID, ClientID: proxy.ClientID, Name: proxy.Name, Type: proxy.Type, Status: proxy.Status, Description: proxy.Description, RuntimeStatus: runtimeStatus, ActiveTCPConnections: proxyStats.TCPCurrentConnections, UploadBytes: proxyStats.TCPUploadBytes + proxyStats.UDPUploadBytes + proxyStats.HTTPUploadBytes, DownloadBytes: proxyStats.TCPDownloadBytes + proxyStats.UDPDownloadBytes + proxyStats.HTTPDownloadBytes, TCPErrorCount: proxyStats.TCPErrors, UDPErrorCount: proxyStats.UDPErrors, HTTPErrorCount: proxyStats.HTTPErrors, Config: ProxyTypeConfig{EntryBindHost: proxy.EntryBindHost, EntryHost: proxy.EntryHost, EntryPort: proxy.EntryPort, TargetHost: proxy.TargetHost, TargetPort: proxy.TargetPort, CertFile: proxy.CertFile, KeyFile: proxy.KeyFile, CertificateID: proxy.CertificateID}, Certificate: certificate, CreatedAt: proxy.CreatedAt, UpdatedAt: proxy.UpdatedAt}
 }
 
 func proxySummaryFromDomain(proxy domain.Proxy, runtimeSession session.Session, proxyStats stats.ProxyStats, certificate *ManagedCertificateSummary) ProxySummary {

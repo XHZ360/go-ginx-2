@@ -792,8 +792,10 @@ func TestManagedCertificateControllerReusesLoadedCandidate(t *testing.T) {
 	if issuer.count != 1 {
 		t.Fatalf("expected one renewal attempt, got %d", issuer.count)
 	}
-	if countingRepo.listLifecycleCandidatesCount != 1 || countingRepo.byProxyIDCount != 1 {
-		t.Fatalf("expected candidate query plus final refresh only, candidates=%d byProxyID=%d", countingRepo.listLifecycleCandidatesCount, countingRepo.byProxyIDCount)
+	// 续期后的最终回读现在按 certificate ID 进行（不再用 proxy ID），
+	// 因此期望：候选查询一次 + 按 ID 回读一次，且不再触发 ByProxyID。
+	if countingRepo.listLifecycleCandidatesCount != 1 || countingRepo.byIDCount != 1 || countingRepo.byProxyIDCount != 0 {
+		t.Fatalf("expected candidate query plus final refresh by id only, candidates=%d byID=%d byProxyID=%d", countingRepo.listLifecycleCandidatesCount, countingRepo.byIDCount, countingRepo.byProxyIDCount)
 	}
 }
 
@@ -836,12 +838,18 @@ func (ds daemonCountingStore) Certificates() store.CertificateRepository {
 type daemonCountingCertificateRepository struct {
 	store.CertificateRepository
 	byProxyIDCount               int
+	byIDCount                    int
 	listLifecycleCandidatesCount int
 }
 
 func (repo *daemonCountingCertificateRepository) ByProxyID(ctx context.Context, proxyID string) (domain.ManagedCertificate, error) {
 	repo.byProxyIDCount++
 	return repo.CertificateRepository.ByProxyID(ctx, proxyID)
+}
+
+func (repo *daemonCountingCertificateRepository) ByID(ctx context.Context, id string) (domain.ManagedCertificate, error) {
+	repo.byIDCount++
+	return repo.CertificateRepository.ByID(ctx, id)
 }
 
 func (repo *daemonCountingCertificateRepository) ListLifecycleCandidates(ctx context.Context, query store.CertificateLifecycleCandidateQuery) ([]domain.ManagedCertificate, error) {

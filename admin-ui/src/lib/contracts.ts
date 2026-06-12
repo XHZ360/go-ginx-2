@@ -5,6 +5,8 @@ export const CONTRACT_ERROR_CODES = [
   'NOT_FOUND',
   'CONFLICT',
   'ENTRY_CONFLICT',
+  'CONFIRMATION_REQUIRED',
+  'CERTIFICATE_INCOMPATIBLE',
   'UNSUPPORTED',
   'INTERNAL',
   'INVALID_CSRF',
@@ -13,6 +15,10 @@ export const CONTRACT_ERROR_CODES = [
 ] as const;
 
 export type ContractErrorCode = (typeof CONTRACT_ERROR_CODES)[number];
+
+export const CERTIFICATE_DELETION_RISKS = ['low', 'requires_strong_confirmation'] as const;
+
+export type CertificateDeletionRisk = (typeof CERTIFICATE_DELETION_RISKS)[number];
 
 export type SessionBootstrap = {
   authenticated: boolean;
@@ -92,6 +98,10 @@ export type ClientDetail = Client & {
 export type ManagedCertificate = {
   proxyId: string;
   certificateId?: string | null;
+  boundProxyId?: string | null;
+  referenced?: boolean | null;
+  servable?: boolean | null;
+  deletionRisk?: CertificateDeletionRisk | string | null;
   host?: string | null;
   status?: string | null;
   servingStatus?: string | null;
@@ -138,6 +148,7 @@ export type ProxyConfig = {
   targetPort?: number | null;
   certFile?: string | null;
   keyFile?: string | null;
+  certificateId?: string | null;
 };
 
 export type ProxyEntryHostOption = {
@@ -251,6 +262,8 @@ export function categorizeError(code: ContractErrorCode): ApiErrorCategory {
       return 'not-found';
     case 'CONFLICT':
     case 'ENTRY_CONFLICT':
+    case 'CONFIRMATION_REQUIRED':
+    case 'CERTIFICATE_INCOMPATIBLE':
       return 'conflict';
     case 'UNSUPPORTED':
       return 'unsupported';

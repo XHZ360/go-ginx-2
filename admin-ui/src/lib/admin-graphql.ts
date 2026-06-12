@@ -1,13 +1,21 @@
 import adminGraphQLDocument from '../graphql/admin.graphql?raw';
 import type {
+  AdminBindCertificateInput,
+  AdminCreateCertificateInput,
+  AdminDeleteCertificateInput,
+  AdminUnbindCertificateInput,
   AuditQuery,
   AuditQueryVariables,
+  BindCertificateMutation,
+  BindCertificateMutationVariables,
   CertificatesQuery,
   CertificatesQueryVariables,
   ClientQuery,
   ClientQueryVariables,
   ClientsQuery,
   ClientsQueryVariables,
+  CreateCertificateMutation,
+  CreateCertificateMutationVariables,
   CreateClientJoinMutation,
   CreateClientJoinMutationVariables,
   CreateClientMutation,
@@ -19,6 +27,8 @@ import type {
   CreateUserMutation,
   CreateUserMutationVariables,
   DashboardQuery,
+  DeleteCertificateMutation,
+  DeleteCertificateMutationVariables,
   DeleteClientMutation,
   DeleteClientMutationVariables,
   DeleteProxyMutation,
@@ -54,6 +64,8 @@ import type {
   SetUserPasswordMutationVariables,
   SyncCloudflareOriginCertificateMutation,
   SyncCloudflareOriginCertificateMutationVariables,
+  UnbindCertificateMutation,
+  UnbindCertificateMutationVariables,
   UpdateProviderCredentialMutation,
   UpdateProviderCredentialMutationVariables,
   UpdateProxyMutation,
@@ -121,12 +133,18 @@ export type AuditFilter = {
 };
 
 export type CertificateMutationInput = {
-  proxyId: string;
+  proxyId?: string;
+  certificateId?: string;
   providerType?: string;
   credentialId?: string;
   requestType?: string;
   requestedValidity?: number;
 };
+
+export type CreateCertificateInput = AdminCreateCertificateInput;
+export type DeleteCertificateInput = AdminDeleteCertificateInput;
+export type BindCertificateInput = AdminBindCertificateInput;
+export type UnbindCertificateInput = AdminUnbindCertificateInput;
 
 export type ProviderCredentialInput = {
   id?: string;
@@ -143,6 +161,7 @@ type ProxyConfigInput = {
   targetPort?: number;
   certFile?: string;
   keyFile?: string;
+  certificateId?: string;
 };
 
 export type ClientJoinInput = {
@@ -401,8 +420,8 @@ export function mutateIssueCertificate(csrfToken: string, input: CertificateMuta
   });
 }
 
-export function mutateRenewCertificate(csrfToken: string, proxyId: string) {
-  const variables = { input: { proxyId } } satisfies RenewManagedCertificateMutationVariables;
+export function mutateRenewCertificate(csrfToken: string, input: CertificateMutationInput | string) {
+  const variables = { input: typeof input === 'string' ? { proxyId: input } : cleanObject(input) } satisfies RenewManagedCertificateMutationVariables;
   return request<RenewManagedCertificateMutation, RenewManagedCertificateMutationVariables>({
     operationName: 'RenewManagedCertificate',
     variables,
@@ -411,8 +430,8 @@ export function mutateRenewCertificate(csrfToken: string, proxyId: string) {
   });
 }
 
-export function mutateRotateOriginCertificate(csrfToken: string, proxyId: string) {
-  const variables = { input: { proxyId } } satisfies RotateCloudflareOriginCertificateMutationVariables;
+export function mutateRotateOriginCertificate(csrfToken: string, input: CertificateMutationInput | string) {
+  const variables = { input: typeof input === 'string' ? { proxyId: input } : cleanObject(input) } satisfies RotateCloudflareOriginCertificateMutationVariables;
   return request<RotateCloudflareOriginCertificateMutation, RotateCloudflareOriginCertificateMutationVariables>({
     operationName: 'RotateCloudflareOriginCertificate',
     variables,
@@ -421,8 +440,8 @@ export function mutateRotateOriginCertificate(csrfToken: string, proxyId: string
   });
 }
 
-export function mutateSyncOriginCertificate(csrfToken: string, proxyId: string) {
-  const variables = { input: { proxyId } } satisfies SyncCloudflareOriginCertificateMutationVariables;
+export function mutateSyncOriginCertificate(csrfToken: string, input: CertificateMutationInput | string) {
+  const variables = { input: typeof input === 'string' ? { proxyId: input } : cleanObject(input) } satisfies SyncCloudflareOriginCertificateMutationVariables;
   return request<SyncCloudflareOriginCertificateMutation, SyncCloudflareOriginCertificateMutationVariables>({
     operationName: 'SyncCloudflareOriginCertificate',
     variables,
@@ -433,11 +452,51 @@ export function mutateSyncOriginCertificate(csrfToken: string, proxyId: string) 
 
 export function mutateRevokeOriginCertificate(
   csrfToken: string,
-  input: { proxyId: string; host: string; cloudflareCertificateId: string },
+  input: { proxyId?: string; certificateId?: string; host: string; cloudflareCertificateId: string },
 ) {
-  const variables = { input } satisfies RevokeCloudflareOriginCertificateMutationVariables;
+  const variables = { input: cleanObject(input) } satisfies RevokeCloudflareOriginCertificateMutationVariables;
   return request<RevokeCloudflareOriginCertificateMutation, RevokeCloudflareOriginCertificateMutationVariables>({
     operationName: 'RevokeCloudflareOriginCertificate',
+    variables,
+    mutation: true,
+    csrfToken,
+  });
+}
+
+export function mutateCreateCertificate(csrfToken: string, input: CreateCertificateInput) {
+  const variables = { input: cleanObject(input) } satisfies CreateCertificateMutationVariables;
+  return request<CreateCertificateMutation, CreateCertificateMutationVariables>({
+    operationName: 'CreateCertificate',
+    variables,
+    mutation: true,
+    csrfToken,
+  });
+}
+
+export function mutateDeleteCertificate(csrfToken: string, input: DeleteCertificateInput) {
+  const variables = { input: cleanObject(input) } satisfies DeleteCertificateMutationVariables;
+  return request<DeleteCertificateMutation, DeleteCertificateMutationVariables>({
+    operationName: 'DeleteCertificate',
+    variables,
+    mutation: true,
+    csrfToken,
+  });
+}
+
+export function mutateBindCertificate(csrfToken: string, input: BindCertificateInput) {
+  const variables = { input } satisfies BindCertificateMutationVariables;
+  return request<BindCertificateMutation, BindCertificateMutationVariables>({
+    operationName: 'BindCertificate',
+    variables,
+    mutation: true,
+    csrfToken,
+  });
+}
+
+export function mutateUnbindCertificate(csrfToken: string, input: UnbindCertificateInput) {
+  const variables = { input } satisfies UnbindCertificateMutationVariables;
+  return request<UnbindCertificateMutation, UnbindCertificateMutationVariables>({
+    operationName: 'UnbindCertificate',
     variables,
     mutation: true,
     csrfToken,

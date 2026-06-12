@@ -130,6 +130,8 @@ type CertificateProviderType string
 const (
 	CertificateProviderACMEDNS01          CertificateProviderType = "acme_dns01"
 	CertificateProviderCloudflareOriginCA CertificateProviderType = "cloudflare_origin_ca"
+	// CertificateProviderFile 表示由静态证书文件（cert_file/key_file）迁移而来的文件型证书。
+	CertificateProviderFile CertificateProviderType = "file"
 )
 
 type CertificateProviderStatus string
@@ -183,7 +185,7 @@ func (status CertificateOperationStatus) Valid() bool {
 
 func (provider CertificateProviderType) Valid() bool {
 	switch provider {
-	case CertificateProviderACMEDNS01, CertificateProviderCloudflareOriginCA:
+	case CertificateProviderACMEDNS01, CertificateProviderCloudflareOriginCA, CertificateProviderFile:
 		return true
 	default:
 		return false
@@ -261,6 +263,8 @@ type Proxy struct {
 	TargetPort    int
 	CertFile      string
 	KeyFile       string
+	// CertificateID 是代理选择的证书资源 ID（权威绑定，证书侧仅保留 ProxyID 作为遗留反向引用）。
+	CertificateID string
 	Description   string
 	CreatedAt     time.Time
 	UpdatedAt     time.Time
@@ -452,9 +456,7 @@ func (certificate ManagedCertificate) Validate() error {
 	if strings.TrimSpace(certificate.ID) == "" {
 		return errors.New("certificate id is required")
 	}
-	if strings.TrimSpace(certificate.ProxyID) == "" {
-		return errors.New("certificate proxy id is required")
-	}
+	// ProxyID 允许为空：证书现在是独立资源，可在未被任何代理绑定前存在（未绑定证书合法）。
 	if strings.TrimSpace(certificate.Host) == "" || !validHostname(certificate.Host) {
 		return errors.New("certificate host is invalid")
 	}

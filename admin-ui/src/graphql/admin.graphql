@@ -90,11 +90,16 @@ fragment ProxyConfigFields on AdminProxyConfig {
   targetPort
   certFile
   keyFile
+  certificateId
 }
 
 fragment ManagedCertificateFields on AdminManagedCertificate {
   proxyId
   certificateId
+  boundProxyId
+  referenced
+  servable
+  deletionRisk
   host
   status
   servingStatus
@@ -428,6 +433,32 @@ mutation SyncCloudflareOriginCertificate($input: AdminCertificateMutationInput!)
 mutation RevokeCloudflareOriginCertificate($input: AdminRevokeOriginCAInput!) {
   revokeCloudflareOriginCertificate(input: $input) {
     ...CertificatePayloadFields
+  }
+}
+
+mutation CreateCertificate($input: AdminCreateCertificateInput!) {
+  createCertificate(input: $input) {
+    ...CertificatePayloadFields
+  }
+}
+
+mutation DeleteCertificate($input: AdminDeleteCertificateInput!) {
+  deleteCertificate(input: $input) {
+    certificateId
+    affectedProxyIds
+    requiredConfirm
+  }
+}
+
+mutation BindCertificate($input: AdminBindCertificateInput!) {
+  bindCertificate(input: $input) {
+    ...ProxyPayloadFields
+  }
+}
+
+mutation UnbindCertificate($input: AdminUnbindCertificateInput!) {
+  unbindCertificate(input: $input) {
+    ...ProxyPayloadFields
   }
 }
 

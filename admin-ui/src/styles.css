@@ -102,6 +102,10 @@ button, input, select, textarea { font: inherit; }
 }
 .banner--danger { border-color: #fecaca; background: #fef2f2; color: #991b1b; }
 .banner--success { border-color: #bbf7d0; background: #f0fdf4; color: #166534; }
+.banner--warning { border-color: #fde68a; background: #fffbeb; color: #92400e; }
+.field-stack { display: grid; gap: 8px; }
+.panel--inset { padding: 12px 14px; background: #f8fafc; }
+.hint-list { margin: 0; padding-left: 18px; }
 .secret-value {
   display: block;
   margin-top: 8px;

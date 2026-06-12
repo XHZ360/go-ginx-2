@@ -26,6 +26,7 @@ import (
 	"github.com/simp-frp/go-ginx-2/internal/control"
 	"github.com/simp-frp/go-ginx-2/internal/domain"
 	"github.com/simp-frp/go-ginx-2/internal/session"
+	"github.com/simp-frp/go-ginx-2/internal/store"
 	"github.com/simp-frp/go-ginx-2/internal/store/sqlite"
 )
 
@@ -674,6 +675,79 @@ func TestCertificateResolverSupportsStaticAndManagedCertificates(t *testing.T) {
 	managedCert, err = managedResolver.Certificate(ctx, "managed.example.com", domain.Proxy{ID: "proxy-1"})
 	if err != nil || managedCert == nil {
 		t.Fatalf("resolve managed certificate after reload: cert=%+v err=%v", managedCert, err)
+	}
+}
+
+func TestCertificateResolverLoadsViaBoundCertificateID(t *testing.T) {
+	ctx := context.Background()
+	certificateDir := t.TempDir()
+	db, err := sqlite.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	seedHTTPSTerminationProxy(t, ctx, db, "127.0.0.1", 8080, "", "")
+	certPEM, keyPEM, _, err := generateTestCertificatePEMAt(t, "managed.example.com", time.Now().Add(-time.Hour), time.Now().Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored, err := ManagedCertificateStorage{CertificateDir: certificateDir}.Store("managed.example.com", certPEM, keyPEM)
+	if err != nil {
+		t.Fatalf("store managed certificate: %v", err)
+	}
+	// 证书的 ProxyID 留空：仅通过代理 CertificateID 权威绑定解析（主路径）。
+	if err := db.Certificates().Create(ctx, domain.ManagedCertificate{ID: "bound-cert-1", Host: "managed.example.com", Status: domain.CertificateValid, ServingStatus: domain.CertificateServingUsable, Provider: "cloudflare", ProviderType: domain.CertificateProviderFile, ProviderName: "file", ProviderStatus: domain.CertificateProviderStatusActive, CertFile: stored.CertFile, KeyFile: stored.KeyFile, NotAfter: &stored.NotAfter}); err != nil {
+		t.Fatalf("create bound certificate metadata: %v", err)
+	}
+	resolver := NewCertificateResolver(db, certificateDir)
+	// SNI host 与证书 ByHost 不同，确保只能经由 CertificateID 命中。
+	certificate, err := resolver.Certificate(ctx, "managed.example.com", domain.Proxy{ID: "proxy-1", CertificateID: "bound-cert-1"})
+	if err != nil {
+		t.Fatalf("resolve certificate via bound id: %v", err)
+	}
+	if certificate == nil || certificate.Leaf == nil || certificate.Leaf.DNSNames[0] != "managed.example.com" {
+		t.Fatalf("unexpected certificate via bound id: %+v", certificate)
+	}
+
+	// 绑定但被 provider 状态阻断 -> 失败闭合（视为证书不可用）。
+	if err := db.Certificates().UpdateProviderSync(ctx, "bound-cert-1", store.CertificateProviderSync{ProviderStatus: domain.CertificateProviderStatusRevoked, SyncedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()}); err != nil {
+		t.Fatalf("mark certificate revoked: %v", err)
+	}
+	resolver.Reload("managed.example.com")
+	if blocked, err := resolver.Certificate(ctx, "managed.example.com", domain.Proxy{ID: "proxy-1", CertificateID: "bound-cert-1"}); err == nil {
+		t.Fatalf("expected blocked certificate to fail closed, got %+v", blocked)
+	}
+}
+
+// TestCertificateResolverBoundCertificateMustCoverSNIHost 覆盖 hostnames 不匹配场景：
+// 代理通过 CertificateID 绑定了证书，但该证书不覆盖请求的 SNI host，
+// 下游 VerifyHostname 必须使解析失败闭合（视为证书不可用 / needs-config）。
+func TestCertificateResolverBoundCertificateMustCoverSNIHost(t *testing.T) {
+	ctx := context.Background()
+	certificateDir := t.TempDir()
+	db, err := sqlite.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	seedHTTPSTerminationProxy(t, ctx, db, "127.0.0.1", 8080, "", "")
+	// 证书材料仅覆盖 other.example.com。
+	certPEM, keyPEM, _, err := generateTestCertificatePEMAt(t, "other.example.com", time.Now().Add(-time.Hour), time.Now().Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored, err := ManagedCertificateStorage{CertificateDir: certificateDir}.Store("other.example.com", certPEM, keyPEM)
+	if err != nil {
+		t.Fatalf("store managed certificate: %v", err)
+	}
+	if err := db.Certificates().Create(ctx, domain.ManagedCertificate{ID: "bound-cert-mismatch", Host: "other.example.com", Status: domain.CertificateValid, ServingStatus: domain.CertificateServingUsable, Provider: "file", ProviderType: domain.CertificateProviderFile, ProviderName: "file", ProviderStatus: domain.CertificateProviderStatusActive, CertFile: stored.CertFile, KeyFile: stored.KeyFile, NotAfter: &stored.NotAfter}); err != nil {
+		t.Fatalf("create bound certificate metadata: %v", err)
+	}
+	resolver := NewCertificateResolver(db, certificateDir)
+	// 代理请求 app.example.com 的 SNI，但绑定的证书只覆盖 other.example.com。
+	certificate, err := resolver.Certificate(ctx, "app.example.com", domain.Proxy{ID: "proxy-1", CertificateID: "bound-cert-mismatch"})
+	if err == nil {
+		t.Fatalf("expected bound certificate not covering SNI host to fail closed, got %+v", certificate)
 	}
 }
 

@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { LinkOutlined, PlusOutlined, ReloadOutlined, ThunderboltOutlined } from '@ant-design/icons';
 import { Button } from 'antd';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { Dialog } from '../components/Dialog';
+import { CertificateSelectField } from '../components/CertificateSelectField';
 import { SelectField, TextAreaField, TextField } from '../components/FormField';
 import { EmptyState, ErrorState, FilteredEmptyState, PageLoading, ValidationBanner } from '../components/PageStates';
 import { ConfirmButton } from '../components/ConfirmButton';
@@ -20,13 +21,37 @@ import {
   type ProxyFilter,
 } from '../lib/admin-graphql';
 import { isApiError, type Client, type ProxyEntryHostOption, type ProxyRecord, type User } from '../lib/contracts';
+import {
+  buildCertificateCreateLink,
+  clearProxyDraft,
+  loadProxyDraft,
+  saveProxyDraft,
+  CREATED_CERT_PARAM,
+  DRAFT_ID_PARAM,
+} from '../lib/proxy-draft';
 import { formatBytes } from '../lib/format';
 import { useSession } from '../session';
 import { PageHeader, Pagination, StatusBadge, Timestamp } from './shared';
 
+// ProxyFormDraft：proxy 创建/编辑表单跳转「创建证书」时的草稿快照。
+// 必须不含任何 secret material（私钥/token），proxy 表单本身也没有这类字段。
+export type ProxyFormDraft = {
+  userId: string;
+  clientId: string;
+  name: string;
+  type: string;
+  description: string;
+  entryBindHost: string;
+  entryHost: string;
+  entryPort: string;
+  targetHost: string;
+  targetPort: string;
+  certificateId: string;
+};
+
 const defaultFilter: ProxyFilter = { query: '', userId: '', clientId: '', type: '', status: '' };
 
-function defaultProxyForm(userId = '', clientId = '') {
+function defaultProxyForm(userId = '', clientId = ''): ProxyFormDraft {
   return {
     userId,
     clientId,
@@ -38,8 +63,7 @@ function defaultProxyForm(userId = '', clientId = '') {
     entryPort: '',
     targetHost: '',
     targetPort: '',
-    certFile: '',
-    keyFile: '',
+    certificateId: '',
   };
 }
 
@@ -49,6 +73,30 @@ function isRouteProxy(type: string) {
 
 function isHTTPSProxy(type: string) {
   return type === 'https';
+}
+
+// ProxyConfigSubmit 与 admin-graphql 的 ProxyConfigInput 结构一致，外加 certificateId 绑定字段。
+// （ProxyConfigInput 未导出；此处的形状与之兼容，可直接作为 config 传入 mutate*Proxy。）
+type ProxyConfigSubmit = {
+  entryBindHost?: string;
+  entryHost?: string;
+  entryPort?: number;
+  targetHost?: string;
+  targetPort?: number;
+  certificateId?: string;
+};
+
+// buildProxyConfig 由表单组装提交用的 config（含 certificateId 绑定）。
+// 注意：不再从主表单提交 certFile/keyFile（证书改由 certificateId 绑定）。
+function buildProxyConfig(form: ProxyFormDraft): ProxyConfigSubmit {
+  return {
+    entryBindHost: form.entryBindHost || undefined,
+    entryHost: form.entryHost || undefined,
+    entryPort: form.entryPort ? Number(form.entryPort) : undefined,
+    targetHost: form.targetHost || undefined,
+    targetPort: form.targetPort ? Number(form.targetPort) : undefined,
+    certificateId: isHTTPSProxy(form.type) ? form.certificateId : undefined,
+  };
 }
 
 function proxyEntryLabel(proxy: ProxyRecord) {
@@ -134,17 +182,60 @@ export function ProxiesPage() {
   const [formError, setFormError] = useState<string>();
   const [actionError, setActionError] = useState<string>();
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>();
+  const [draftNotice, setDraftNotice] = useState<string>();
   const [form, setForm] = useState(defaultProxyForm());
+  // 标记「还原草稿后清理 query param 触发的二次运行」，避免把已还原表单重置为默认值。
+  const justRestoredRef = useRef(false);
 
   useEffect(() => {
     if (searchParams.get('create') !== '1') {
+      // 对话框关闭（create 参数移除）后复位，确保下次重新打开按全新创建处理。
+      justRestoredRef.current = false;
+      return;
+    }
+    // 从「创建证书」流程返回：还原草稿并自动选中新建证书（任务 5.5 / 5.6）。
+    const createdCertificateId = searchParams.get(CREATED_CERT_PARAM);
+    const draftId = searchParams.get(DRAFT_ID_PARAM);
+    if (createdCertificateId) {
+      const draft = loadProxyDraft<ProxyFormDraft>(draftId);
+      if (draft) {
+        setForm({ ...draft, type: 'https', certificateId: createdCertificateId });
+        setDraftNotice(undefined);
+      } else {
+        // 草稿缺失/过期/解析失败：安全降级——仍打开对话框并预选新证书，避免丢失全部工作。
+        setForm({
+          ...defaultProxyForm(searchParams.get('userId') ?? '', searchParams.get('clientId') ?? ''),
+          type: 'https',
+          certificateId: createdCertificateId,
+        });
+        setDraftNotice('表单草稿已失效，请重新填写；已为你选中新创建的证书。');
+      }
+      clearProxyDraft(draftId);
+      setFieldErrors(undefined);
+      setFormError(undefined);
+      setShowDialog(true);
+      // 标记本次为草稿还原；清理已消费的 query param 会再次触发本 effect。
+      justRestoredRef.current = true;
+      // 清理已消费的 query param，避免刷新重复触发还原。
+      setSearchParams((current) => {
+        const next = new URLSearchParams(current);
+        next.delete(CREATED_CERT_PARAM);
+        next.delete(DRAFT_ID_PARAM);
+        return next;
+      }, { replace: true });
+      return;
+    }
+    if (justRestoredRef.current) {
+      // 这是上一步清理 param 触发的二次运行：保留已还原的表单，不做默认重置。
+      justRestoredRef.current = false;
       return;
     }
     setForm(defaultProxyForm(searchParams.get('userId') ?? '', searchParams.get('clientId') ?? ''));
+    setDraftNotice(undefined);
     setFieldErrors(undefined);
     setFormError(undefined);
     setShowDialog(true);
-  }, [searchParams]);
+  }, [searchParams, setSearchParams]);
 
   const query = useAuthedQuery({
     queryKey: ['proxies', page, filter],
@@ -177,15 +268,7 @@ export function ProxiesPage() {
         name: form.name,
         type: form.type,
         description: form.description,
-        config: {
-          entryBindHost: form.entryBindHost || undefined,
-          entryHost: form.entryHost || undefined,
-          entryPort: form.entryPort ? Number(form.entryPort) : undefined,
-          targetHost: form.targetHost || undefined,
-          targetPort: form.targetPort ? Number(form.targetPort) : undefined,
-          certFile: form.certFile || undefined,
-          keyFile: form.keyFile || undefined,
-        },
+        config: buildProxyConfig(form),
       }),
     onSuccess: async () => {
       setShowDialog(false);
@@ -243,11 +326,13 @@ export function ProxiesPage() {
     setForm(defaultProxyForm());
     setFieldErrors(undefined);
     setFormError(undefined);
+    setDraftNotice(undefined);
     setShowDialog(true);
   };
 
   const closeCreateDialog = () => {
     setShowDialog(false);
+    setDraftNotice(undefined);
     setSearchParams((current) => {
       const next = new URLSearchParams(current);
       next.delete('create');
@@ -259,6 +344,21 @@ export function ProxiesPage() {
 
   const updateFormUser = (userId: string) => {
     setForm((current) => ({ ...current, userId, clientId: '' }));
+  };
+
+  // handleCreateCertificate：保存当前表单草稿（不含 secret material）并跳转到证书创建流程。
+  // 返回路径携带 user/client 上下文，确保返回时重新打开创建对话框（其余字段由草稿还原）。
+  const handleCreateCertificate = () => {
+    const draftId = saveProxyDraft<ProxyFormDraft>({ ...form });
+    const returnParams = new URLSearchParams({ create: '1' });
+    if (form.userId) {
+      returnParams.set('userId', form.userId);
+    }
+    if (form.clientId) {
+      returnParams.set('clientId', form.clientId);
+    }
+    const returnTo = `/proxies?${returnParams.toString()}`;
+    navigate(buildCertificateCreateLink({ returnTo, draftId, host: form.entryHost || undefined }));
   };
 
   if (query.isLoading) {
@@ -387,6 +487,7 @@ export function ProxiesPage() {
         }
       >
         {formError ? <div className="banner banner--danger">{formError}</div> : null}
+        {draftNotice ? <div className="banner banner--warning">{draftNotice}</div> : null}
         {usersQuery.error ? <div className="banner banner--danger">User options failed to load: {usersQuery.error.message}</div> : null}
         {clientsQuery.error ? <div className="banner banner--danger">Client options failed to load: {clientsQuery.error.message}</div> : null}
         {entryOptionsQuery.error ? <div className="banner banner--danger">Entry options failed to load: {entryOptionsQuery.error.message}</div> : null}
@@ -401,8 +502,7 @@ export function ProxiesPage() {
               ...current,
               type,
               entryHost: isRouteProxy(type) ? current.entryHost : '',
-              certFile: isHTTPSProxy(type) ? current.certFile : '',
-              keyFile: isHTTPSProxy(type) ? current.keyFile : '',
+              certificateId: isHTTPSProxy(type) ? current.certificateId : '',
             };
           })}>
             <option value="tcp">TCP</option>
@@ -424,10 +524,13 @@ export function ProxiesPage() {
           <TextField label="Target host" value={form.targetHost} error={fieldErrors?.targetHost} onChange={(event) => setForm((current) => ({ ...current, targetHost: event.target.value }))} />
           <TextField label="Target port" value={form.targetPort} error={fieldErrors?.targetPort} onChange={(event) => setForm((current) => ({ ...current, targetPort: event.target.value }))} />
           {usesCertificates ? (
-            <>
-              <TextField label="Certificate file" value={form.certFile} error={fieldErrors?.certFile} onChange={(event) => setForm((current) => ({ ...current, certFile: event.target.value }))} />
-              <TextField label="Private key file" value={form.keyFile} error={fieldErrors?.keyFile} onChange={(event) => setForm((current) => ({ ...current, keyFile: event.target.value }))} />
-            </>
+            <CertificateSelectField
+              entryHost={form.entryHost}
+              value={form.certificateId}
+              onChange={(certificateId) => setForm((current) => ({ ...current, certificateId }))}
+              onCreateCertificate={handleCreateCertificate}
+              error={fieldErrors?.certificateId}
+            />
           ) : null}
           <TextAreaField label="Description" value={form.description} onChange={(event) => setForm((current) => ({ ...current, description: event.target.value }))} />
         </div>

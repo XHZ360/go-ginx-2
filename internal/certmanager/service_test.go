@@ -44,6 +44,31 @@ func TestServiceIssuesManagedCertificate(t *testing.T) {
 	}
 }
 
+func TestServiceIssueCertificateCreatesUnboundACMECertificate(t *testing.T) {
+	ctx := context.Background()
+	db := openTestStore(t)
+	certPEM, keyPEM := testCertificatePEM(t, "free.example.com", time.Now().Add(time.Hour))
+	service := Service{Store: db, Issuer: fakeIssuer{certPEM: certPEM, keyPEM: keyPEM}, DNSProvider: fakeDNSProvider{}, Storage: httpsproxy.ManagedCertificateStorage{CertificateDir: t.TempDir()}, Settings: domain.ACMEProviderSettings{AccountEmail: "ops@example.com", TermsAccepted: true, DNSProvider: "cloudflare"}, NewID: func() (string, error) { return "cert-unbound-1", nil }}
+
+	certificate, err := service.IssueCertificate(ctx, CertificateIssueRequest{Host: "free.example.com", ProviderType: domain.CertificateProviderACMEDNS01})
+	if err != nil {
+		t.Fatalf("issue unbound certificate: %v", err)
+	}
+	if certificate.ID != "cert-unbound-1" || certificate.ProxyID != "" {
+		t.Fatalf("expected unbound certificate resource, got %+v", certificate)
+	}
+	if certificate.Status != domain.CertificateValid || certificate.CertFile == "" || certificate.KeyFile == "" || certificate.NotAfter == nil {
+		t.Fatalf("unexpected unbound certificate: %+v", certificate)
+	}
+	loaded, err := db.Certificates().ByID(ctx, certificate.ID)
+	if err != nil {
+		t.Fatalf("load unbound certificate: %v", err)
+	}
+	if loaded.ProxyID != "" {
+		t.Fatalf("expected persisted certificate to remain unbound, got %+v", loaded)
+	}
+}
+
 func TestServiceRecordsIssueFailure(t *testing.T) {
 	ctx := context.Background()
 	db := openTestStore(t)
@@ -220,8 +245,12 @@ func TestServiceRenewCertificateReusesLoadedRecord(t *testing.T) {
 	if renewed.LastRenewedAt == nil {
 		t.Fatalf("expected renewal to complete: %+v", renewed)
 	}
-	if countingRepo.byProxyIDCount != 1 {
-		t.Fatalf("expected only final certificate refresh by proxy id, got %d", countingRepo.byProxyIDCount)
+	// 续期复用已加载记录：不应按 proxy_id 重新拉取；最终仅按证书身份（id）回读一次。
+	if countingRepo.byProxyIDCount != 0 {
+		t.Fatalf("expected no certificate refresh by proxy id, got %d", countingRepo.byProxyIDCount)
+	}
+	if countingRepo.byIDCount != 1 {
+		t.Fatalf("expected only final certificate refresh by certificate id, got %d", countingRepo.byIDCount)
 	}
 }
 
@@ -283,6 +312,25 @@ func TestServiceIssuesOriginCACertificateWithProviderMetadata(t *testing.T) {
 	}
 	if certificate.CertFile == "" || certificate.KeyFile == "" || certificate.Status != domain.CertificateValid || certificate.ServingStatus != domain.CertificateServingUsable || certificate.Fingerprint == "" {
 		t.Fatalf("unexpected origin ca material metadata: %+v", certificate)
+	}
+}
+
+func TestServiceOriginCAInitialIssueFailureRemovesUnusableCertificateRecord(t *testing.T) {
+	ctx := context.Background()
+	db := openTestStore(t)
+	secrets := testSecretStore{values: map[string]string{"cred-1.secret": "cf-api-token"}}
+	seedOriginCACredential(t, ctx, db)
+	now := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
+	client := testOriginCAClient{create: func(ctx context.Context, token string, request OriginCACreateRequest) (OriginCACertificate, error) {
+		return OriginCACertificate{}, &CloudflareAPIError{FailureMessage: "cloudflare origin ca request failed", StatusCode: 400, Errors: []CloudflareAPIErrorDetail{{Code: 1010}}}
+	}}
+	service := Service{Store: db, OriginCAClient: client, ProviderSecretStore: secrets, Storage: httpsproxy.ManagedCertificateStorage{CertificateDir: t.TempDir()}, OriginCASettings: domain.OriginCAProviderSettings{Enabled: true, DefaultRequestType: OriginCARequestTypeECC, RequestedValidity: 365}, NewID: func() (string, error) { return "cert-1", nil }, Now: func() time.Time { return now }}
+
+	if _, err := service.IssueCertificate(ctx, CertificateIssueRequest{Host: "www.example.com", ProviderType: domain.CertificateProviderCloudflareOriginCA, CredentialID: "cred-1"}); err == nil {
+		t.Fatal("expected origin ca issue failure")
+	}
+	if _, err := db.Certificates().ByID(ctx, "cert-1"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("expected unusable initial certificate record to be removed, got %v", err)
 	}
 }
 
@@ -656,11 +704,17 @@ func (cs countingStore) ProviderCredentials() store.ProviderCredentialRepository
 type countingCertificateRepository struct {
 	store.CertificateRepository
 	byProxyIDCount int
+	byIDCount      int
 }
 
 func (repo *countingCertificateRepository) ByProxyID(ctx context.Context, proxyID string) (domain.ManagedCertificate, error) {
 	repo.byProxyIDCount++
 	return repo.CertificateRepository.ByProxyID(ctx, proxyID)
+}
+
+func (repo *countingCertificateRepository) ByID(ctx context.Context, id string) (domain.ManagedCertificate, error) {
+	repo.byIDCount++
+	return repo.CertificateRepository.ByID(ctx, id)
 }
 
 type countingProviderCredentialRepository struct {

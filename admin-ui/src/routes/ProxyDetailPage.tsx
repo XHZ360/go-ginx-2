@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react';
 import { EditOutlined, ThunderboltOutlined } from '@ant-design/icons';
 import { Button } from 'antd';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { ConfirmButton } from '../components/ConfirmButton';
 import { Dialog } from '../components/Dialog';
+import { CertificateSelectField } from '../components/CertificateSelectField';
 import { SelectField, TextAreaField, TextField } from '../components/FormField';
 import { ErrorState, NotFoundState, PageLoading, ValidationBanner } from '../components/PageStates';
 import { useAuthedQuery } from '../hooks/useAuthedQuery';
@@ -18,9 +19,39 @@ import {
   queryProxy,
 } from '../lib/admin-graphql';
 import { isApiError, isNotFoundError, type ProxyEntryHostOption, type ProxyRecord } from '../lib/contracts';
+import {
+  buildCertificateCreateLink,
+  clearProxyDraft,
+  loadProxyDraft,
+  saveProxyDraft,
+  CREATED_CERT_PARAM,
+  DRAFT_ID_PARAM,
+} from '../lib/proxy-draft';
 import { formatBytes } from '../lib/format';
 import { useSession } from '../session';
 import { DetailBackLink, PageHeader, StatusBadge, Timestamp } from './shared';
+
+// ProxyEditDraft：编辑表单跳转「创建证书」时的草稿快照（不含 secret material）。
+type ProxyEditDraft = {
+  name: string;
+  description: string;
+  entryBindHost: string;
+  entryHost: string;
+  entryPort: string;
+  targetHost: string;
+  targetPort: string;
+  certificateId: string;
+};
+
+// ProxyConfigSubmit 与 admin-graphql 的 ProxyConfigInput 兼容，外加 certificateId 绑定字段。
+type ProxyConfigSubmit = {
+  entryBindHost?: string;
+  entryHost?: string;
+  entryPort?: number;
+  targetHost?: string;
+  targetPort?: number;
+  certificateId?: string;
+};
 
 function isRouteProxy(type: string) {
   return type === 'http' || type === 'https';
@@ -44,15 +75,30 @@ function hostOptionsWithCurrent(options: ProxyEntryHostOption[], current: string
   return [{ value: current, label: current, isDefault: false }, ...options];
 }
 
+// buildUpdateConfig 组装更新用的 config（含 certificateId 绑定）。
+// 注意：不再提交 certFile/keyFile（证书改由 certificateId 绑定）。
+function buildUpdateConfig(input: ProxyEditDraft, type?: string): ProxyConfigSubmit {
+  return {
+    entryBindHost: input.entryBindHost || undefined,
+    entryHost: input.entryHost || undefined,
+    entryPort: input.entryPort ? Number(input.entryPort) : undefined,
+    targetHost: input.targetHost || undefined,
+    targetPort: input.targetPort ? Number(input.targetPort) : undefined,
+    certificateId: type && isHTTPSProxy(type) ? input.certificateId : undefined,
+  };
+}
+
 export function ProxyDetailPage() {
   const { id = '' } = useParams();
   const navigate = useNavigate();
   const session = useSession();
   const queryClient = useQueryClient();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [editing, setEditing] = useState(false);
   const [formError, setFormError] = useState<string>();
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>();
-  const [localForm, setLocalForm] = useState({
+  const [draftNotice, setDraftNotice] = useState<string>();
+  const [localForm, setLocalForm] = useState<ProxyEditDraft>({
     name: '',
     description: '',
     entryBindHost: '',
@@ -60,8 +106,7 @@ export function ProxyDetailPage() {
     entryPort: '',
     targetHost: '',
     targetPort: '',
-    certFile: '',
-    keyFile: '',
+    certificateId: '',
   });
 
   const query = useAuthedQuery({
@@ -78,6 +123,10 @@ export function ProxyDetailPage() {
     if (!query.data) {
       return;
     }
+    // 编辑中（或从证书创建流程返回）时不要用轮询数据覆盖表单，避免丢失未保存的修改。
+    if (editing) {
+      return;
+    }
     setLocalForm({
       name: query.data.name,
       description: query.data.description ?? '',
@@ -86,27 +135,60 @@ export function ProxyDetailPage() {
       entryPort: query.data.config.entryPort?.toString() ?? '',
       targetHost: query.data.config.targetHost ?? '',
       targetPort: query.data.config.targetPort?.toString() ?? '',
-      certFile: query.data.config.certFile ?? '',
-      keyFile: query.data.config.keyFile ?? '',
+      certificateId: query.data.config.certificateId ?? '',
     });
-  }, [query.data]);
+  }, [query.data, editing]);
+
+  // 从「创建证书」流程返回：还原草稿并自动选中新建证书（任务 5.5 / 5.6）。
+  useEffect(() => {
+    const createdCertificateId = searchParams.get(CREATED_CERT_PARAM);
+    if (!createdCertificateId) {
+      return;
+    }
+    const draftId = searchParams.get(DRAFT_ID_PARAM);
+    const draft = loadProxyDraft<ProxyEditDraft>(draftId);
+    if (draft) {
+      setLocalForm({ ...draft, certificateId: createdCertificateId });
+      setDraftNotice(undefined);
+    } else {
+      // 草稿缺失/过期/解析失败：安全降级——回退到当前 proxy 配置（若已加载），并预选新证书。
+      const fallback = query.data;
+      setLocalForm((current) =>
+        fallback
+          ? {
+              name: fallback.name,
+              description: fallback.description ?? '',
+              entryBindHost: fallback.config.entryBindHost ?? '',
+              entryHost: fallback.config.entryHost ?? '',
+              entryPort: fallback.config.entryPort?.toString() ?? '',
+              targetHost: fallback.config.targetHost ?? '',
+              targetPort: fallback.config.targetPort?.toString() ?? '',
+              certificateId: createdCertificateId,
+            }
+          : { ...current, certificateId: createdCertificateId },
+      );
+      setDraftNotice('表单草稿已失效，请重新填写；已为你选中新创建的证书。');
+    }
+    clearProxyDraft(draftId);
+    setFieldErrors(undefined);
+    setFormError(undefined);
+    setEditing(true);
+    setSearchParams((current) => {
+      const next = new URLSearchParams(current);
+      next.delete(CREATED_CERT_PARAM);
+      next.delete(DRAFT_ID_PARAM);
+      return next;
+    }, { replace: true });
+  }, [searchParams, setSearchParams]);
 
   const updateMutation = useMutationWithAuth({
-    mutationFn: (input: { name: string; description: string; entryBindHost: string; entryHost: string; entryPort: string; targetHost: string; targetPort: string; certFile: string; keyFile: string }) =>
+    mutationFn: (input: ProxyEditDraft) =>
       mutateUpdateProxy(session.csrfToken ?? '', {
         id,
         type: query.data?.type,
         name: input.name,
         description: input.description,
-        config: {
-          entryBindHost: input.entryBindHost || undefined,
-          entryHost: input.entryHost || undefined,
-          entryPort: input.entryPort ? Number(input.entryPort) : undefined,
-          targetHost: input.targetHost || undefined,
-          targetPort: input.targetPort ? Number(input.targetPort) : undefined,
-          certFile: input.certFile || undefined,
-          keyFile: input.keyFile || undefined,
-        },
+        config: buildUpdateConfig(input, query.data?.type),
       }),
     onSuccess: async () => {
       setEditing(false);
@@ -164,6 +246,24 @@ export function ProxyDetailPage() {
     },
   });
 
+  const openEdit = () => {
+    setDraftNotice(undefined);
+    setFieldErrors(undefined);
+    setFormError(undefined);
+    setEditing(true);
+  };
+
+  const closeEdit = () => {
+    setEditing(false);
+    setDraftNotice(undefined);
+  };
+
+  // handleCreateCertificate：保存当前编辑表单草稿并跳转到证书创建流程，返回 /proxies/<id> 重新打开编辑对话框。
+  const handleCreateCertificate = () => {
+    const draftId = saveProxyDraft<ProxyEditDraft>({ ...localForm });
+    navigate(buildCertificateCreateLink({ returnTo: `/proxies/${id}`, draftId, host: localForm.entryHost || undefined }));
+  };
+
   if (query.isLoading) {
     return <PageLoading label="Loading proxy..." />;
   }
@@ -190,7 +290,7 @@ export function ProxyDetailPage() {
         description={`Proxy ID: ${proxy.id}`}
         actions={
           <>
-            <Button type="default" icon={<EditOutlined aria-hidden="true" />} onClick={() => setEditing(true)}>
+            <Button type="default" icon={<EditOutlined aria-hidden="true" />} onClick={openEdit}>
               Edit proxy
             </Button>
             {proxy.status === 'disabled' ? (
@@ -217,7 +317,7 @@ export function ProxyDetailPage() {
             <div><dt>Entry</dt><dd>{proxyEntryLabel(proxy)}</dd></div>
             {usesRouteHost ? <div><dt>Domain</dt><dd>{proxy.config.entryHost || 'Not set'}</dd></div> : null}
             <div><dt>Target</dt><dd>{proxy.config.targetHost ?? '-'}:{proxy.config.targetPort ?? '-'}</dd></div>
-            {usesCertificates ? <div><dt>Certificate files</dt><dd>{proxy.config.certFile || 'Not set'} / {proxy.config.keyFile || 'Not set'}</dd></div> : null}
+            {usesCertificates ? <div><dt>绑定证书</dt><dd>{proxy.config.certificateId || '未绑定'}</dd></div> : null}
             <div><dt>Description</dt><dd>{proxy.description || 'No description'}</dd></div>
           </dl>
         </article>
@@ -257,10 +357,10 @@ export function ProxyDetailPage() {
       <Dialog
         open={editing}
         title="Edit proxy"
-        onClose={() => setEditing(false)}
+        onClose={closeEdit}
         footer={
           <>
-            <Button type="default" onClick={() => setEditing(false)}>
+            <Button type="default" onClick={closeEdit}>
               Cancel
             </Button>
             <Button type="primary" onClick={() => updateMutation.mutate(localForm)} disabled={updateMutation.isPending}>
@@ -270,6 +370,7 @@ export function ProxyDetailPage() {
         }
       >
         {formError ? <div className="banner banner--danger">{formError}</div> : null}
+        {draftNotice ? <div className="banner banner--warning">{draftNotice}</div> : null}
         {entryOptionsQuery.error ? <div className="banner banner--danger">Entry options failed to load: {entryOptionsQuery.error.message}</div> : null}
         <ValidationBanner fields={fieldErrors} />
         <div className="stack">
@@ -288,10 +389,14 @@ export function ProxyDetailPage() {
           <TextField label="Target host" value={localForm.targetHost} error={fieldErrors?.targetHost} onChange={(event) => setLocalForm((current) => ({ ...current, targetHost: event.target.value }))} />
           <TextField label="Target port" value={localForm.targetPort} error={fieldErrors?.targetPort} onChange={(event) => setLocalForm((current) => ({ ...current, targetPort: event.target.value }))} />
           {usesCertificates ? (
-            <>
-              <TextField label="Certificate file" value={localForm.certFile} error={fieldErrors?.certFile} onChange={(event) => setLocalForm((current) => ({ ...current, certFile: event.target.value }))} />
-              <TextField label="Private key file" value={localForm.keyFile} error={fieldErrors?.keyFile} onChange={(event) => setLocalForm((current) => ({ ...current, keyFile: event.target.value }))} />
-            </>
+            <CertificateSelectField
+              entryHost={localForm.entryHost}
+              proxyId={proxy.id}
+              value={localForm.certificateId}
+              onChange={(certificateId) => setLocalForm((current) => ({ ...current, certificateId }))}
+              onCreateCertificate={handleCreateCertificate}
+              error={fieldErrors?.certificateId}
+            />
           ) : null}
           <TextAreaField label="Description" value={localForm.description} onChange={(event) => setLocalForm((current) => ({ ...current, description: event.target.value }))} />
         </div>

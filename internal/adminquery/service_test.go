@@ -181,11 +181,16 @@ func TestServiceCertificateDetailUsesScopedCertificateLookup(t *testing.T) {
 	}
 }
 
-func TestServiceManagedCertificateListUsesBatchCertificateLookup(t *testing.T) {
+func TestServiceManagedCertificateListEnumeratesAllCertificateResources(t *testing.T) {
 	ctx := context.Background()
 	db := openQueryTestStore(t)
 	seedQueryTestData(t, ctx, db)
-	seedQueryHTTPSCertificate(t, ctx, db)
+	proxy := seedQueryBoundHTTPSCertificate(t, ctx, db)
+	// 额外种入一个未绑定证书资源，验证其出现在清单中。
+	unbound := domain.ManagedCertificate{ID: "cert-unbound", Host: "unbound.example.com", Status: domain.CertificatePending, ServingStatus: domain.CertificateServingMissing, OperationStatus: domain.CertificateOperationIdle, ProviderType: domain.CertificateProviderACMEDNS01, ProviderName: "cloudflare", ProviderStatus: domain.CertificateProviderStatusUnknown}
+	if err := db.Certificates().Create(ctx, unbound); err != nil {
+		t.Fatalf("create unbound certificate: %v", err)
+	}
 	countingRepo := &queryCountingCertificateRepository{CertificateRepository: db.Certificates()}
 	service := Service{Store: queryCountingStore{Store: db, certificates: countingRepo}}
 
@@ -193,11 +198,24 @@ func TestServiceManagedCertificateListUsesBatchCertificateLookup(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list managed certificates: %v", err)
 	}
-	if len(page.Items) != 1 || page.Items[0].ProxyID != "proxy-https" {
-		t.Fatalf("unexpected certificate page: %+v", page.Items)
+	if len(page.Items) != 2 {
+		t.Fatalf("expected bound and unbound certificates, got %+v", page.Items)
 	}
-	if countingRepo.listCount != 0 || countingRepo.byProxyIDCount != 0 || countingRepo.listByProxyIDsCount != 1 {
-		t.Fatalf("expected batch certificate lookup, list=%d byProxyID=%d listByProxyIDs=%d", countingRepo.listCount, countingRepo.byProxyIDCount, countingRepo.listByProxyIDsCount)
+	byID := make(map[string]ManagedCertificateSummary, len(page.Items))
+	for _, item := range page.Items {
+		byID[item.CertificateID] = item
+	}
+	bound, ok := byID["cert-https"]
+	if !ok || bound.BoundProxyID != proxy.ID || !bound.Referenced || !bound.Servable || bound.DeletionRisk != CertificateDeletionRiskRequiresStrongConfirmation {
+		t.Fatalf("unexpected bound certificate summary: %+v", bound)
+	}
+	free, ok := byID["cert-unbound"]
+	if !ok || free.Referenced || free.BoundProxyID != "" || free.Servable || free.DeletionRisk != CertificateDeletionRiskLow {
+		t.Fatalf("unexpected unbound certificate summary: %+v", free)
+	}
+	// 清单经由 List() 枚举全部证书资源，不再按 proxy_id 批量回查。
+	if countingRepo.listCount != 1 || countingRepo.listByProxyIDsCount != 0 {
+		t.Fatalf("expected single List() enumeration, list=%d listByProxyIDs=%d", countingRepo.listCount, countingRepo.listByProxyIDsCount)
 	}
 }
 
@@ -246,6 +264,26 @@ func seedQueryHTTPSCertificate(t *testing.T, ctx context.Context, db *sqlite.Sto
 		t.Fatalf("store certificate material: %v", err)
 	}
 	certificate := domain.ManagedCertificate{ID: "cert-https", ProxyID: proxy.ID, Host: proxy.EntryHost, Status: domain.CertificateValid, ServingStatus: domain.CertificateServingUsable, OperationStatus: domain.CertificateOperationIdle, ProviderType: domain.CertificateProviderACMEDNS01, ProviderName: "cloudflare", ProviderStatus: domain.CertificateProviderStatusUnknown, CertFile: stored.CertFile, KeyFile: stored.KeyFile, NotAfter: &notAfter}
+	if err := db.Certificates().Create(ctx, certificate); err != nil {
+		t.Fatalf("create certificate: %v", err)
+	}
+	return proxy
+}
+
+// seedQueryBoundHTTPSCertificate 种入一个通过 certificate_id 权威绑定到代理的可服务证书。
+func seedQueryBoundHTTPSCertificate(t *testing.T, ctx context.Context, db *sqlite.Store) domain.Proxy {
+	t.Helper()
+	proxy := domain.Proxy{ID: "proxy-https", UserID: "user-1", ClientID: "client-1", Name: "secure", Type: domain.ProxyHTTPS, Status: domain.ProxyEnabled, EntryHost: "secure.example.com", TargetHost: "127.0.0.1", TargetPort: 8443, CertificateID: "cert-https"}
+	if err := db.Proxies().Create(ctx, proxy); err != nil {
+		t.Fatalf("create https proxy: %v", err)
+	}
+	notAfter := time.Now().UTC().Add(24 * time.Hour).Truncate(time.Second)
+	certPEM, keyPEM := queryTestCertificatePEM(t, proxy.EntryHost, notAfter)
+	stored, err := httpsproxy.ManagedCertificateStorage{CertificateDir: t.TempDir()}.Store(proxy.EntryHost, certPEM, keyPEM)
+	if err != nil {
+		t.Fatalf("store certificate material: %v", err)
+	}
+	certificate := domain.ManagedCertificate{ID: "cert-https", Host: proxy.EntryHost, Status: domain.CertificateValid, ServingStatus: domain.CertificateServingUsable, OperationStatus: domain.CertificateOperationIdle, ProviderType: domain.CertificateProviderACMEDNS01, ProviderName: "cloudflare", ProviderStatus: domain.CertificateProviderStatusUnknown, CertFile: stored.CertFile, KeyFile: stored.KeyFile, NotAfter: &notAfter}
 	if err := db.Certificates().Create(ctx, certificate); err != nil {
 		t.Fatalf("create certificate: %v", err)
 	}

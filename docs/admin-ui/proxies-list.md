@@ -72,10 +72,32 @@
 - 通用字段：名称、所属用户、所属客户端、描述
 - TCP/UDP：BindHost 选项、EntryPort、TargetHost、TargetPort
 - HTTP/HTTPS：BindHost 选项、EntryPort、HTTP Host 或 HTTPS SNI 域名、TargetHost、TargetPort
-- HTTPS：可选 CertFile 和 KeyFile
+- HTTPS：证书选择控件（只选择证书或跳转创建证书，见下方“HTTPS 证书选择”）；不再在主流程填写 CertFile / KeyFile 文件路径
 - 当 URL 或路由状态携带 `userId` 和 `clientId` 时，创建表单默认选中对应用户和客户端，并在候选项未加载完成时保留 ID fallback
 - 用户和客户端选择器必须允许管理员修改；修改用户后，如果当前客户端不属于新用户，应清空或要求重新选择客户端
 - BindHost 必须来自管理员 API 返回的监听地址选项，包含默认监听、wildcard、loopback 和可发现的本机地址
+
+### 8.1 HTTPS 证书选择
+
+HTTPS 代理的证书不在 proxy 主流程维护文件路径，而是通过证书选择控件显式绑定证书：
+
+- 证书选择器只列出“与该 SNI 域名兼容且可绑定”的证书：
+  - **兼容**：证书的 host 或 hostnames 覆盖该 proxy 的 SNI 域名（支持 `*.` 单级通配）。
+  - **可绑定**：证书未被任何 proxy 绑定（创建场景仅此一种）。
+  - **可服务**：证书当前可服务。
+- 未填写 SNI 域名前，选择器禁用并提示“请先填写 SNI 域名以匹配可用证书”。
+- 选中证书后展示证书摘要（provider、hostnames、有效期、服务状态，Origin CA 还展示部署提示）。
+- 当前 SNI 下没有可用证书时，给出提示并说明被过滤原因（例如 N 个匹配域名的证书已绑定到其他 proxy、N 个当前不可服务）。
+- 可选择“不绑定证书（稍后配置）”；HTTPS proxy 在绑定可服务证书前不会对外提供 HTTPS。
+
+### 8.2 跳转创建证书与草稿恢复
+
+当没有合适证书时，点击“创建证书”跳转到证书页创建流程：
+
+- 跳转前保存当前 proxy 表单草稿（不含任何 secret material）到 sessionStorage，并在链接中携带 `returnTo`、`draftId` 和 `host` 提示。
+- 返回链接携带 `userId` / `clientId` 上下文，确保返回时重新打开创建对话框。
+- 证书创建成功后自动返回 proxy 创建表单（`?create=1` 带 `createdCertificateId` 与 `draftId`），还原已填字段并把证书类型固定为 HTTPS、自动选中新创建的证书。
+- 草稿缺失、过期（默认 30 分钟 TTL）或解析失败时安全降级：仍打开对话框并预选新证书，提示“表单草稿已失效，请重新填写；已为你选中新创建的证书”。
 
 ## 9. 列表交互
 
@@ -119,3 +141,5 @@
 - 对 `ENTRY_CONFLICT` 有清晰 UI 提示
 - 支持从客户端页面携带默认 `userId` 和 `clientId` 打开创建代理弹窗
 - 创建弹窗在小视口中可内部滚动且不会溢出视口
+- HTTPS 代理只通过证书选择器绑定证书或跳转创建证书，主流程不出现 CertFile / KeyFile 文件路径输入
+- 跳转创建证书后能恢复 proxy 表单草稿并自动选中新证书；草稿失效时安全降级并允许手动选择

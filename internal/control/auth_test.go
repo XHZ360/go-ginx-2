@@ -231,6 +231,10 @@ func (r authProxyRepository) ByHTTPSHost(context.Context, string) (domain.Proxy,
 	return domain.Proxy{}, store.ErrNotFound
 }
 
+func (r authProxyRepository) ByCertificateID(context.Context, string) (domain.Proxy, error) {
+	return domain.Proxy{}, store.ErrNotFound
+}
+
 func (r authProxyRepository) SetStatus(context.Context, string, domain.ProxyStatus) error { return nil }
 
 func (r authProxyRepository) Update(context.Context, domain.Proxy) error { return nil }
@@ -251,6 +255,14 @@ func (authCertificateRepository) ByProxyID(context.Context, string) (domain.Mana
 
 func (authCertificateRepository) ByHost(context.Context, string) (domain.ManagedCertificate, error) {
 	return domain.ManagedCertificate{}, store.ErrNotFound
+}
+
+func (authCertificateRepository) ByID(context.Context, string) (domain.ManagedCertificate, error) {
+	return domain.ManagedCertificate{}, store.ErrNotFound
+}
+
+func (authCertificateRepository) Delete(context.Context, string) error {
+	return nil
 }
 
 func (authCertificateRepository) List(context.Context) ([]domain.ManagedCertificate, error) {

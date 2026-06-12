@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -92,6 +93,8 @@ type CreateProxyInput struct {
 	TargetPort    int
 	CertFile      string
 	KeyFile       string
+	// CertificateID 选择一个既有证书资源进行绑定（权威绑定路径）。
+	CertificateID string
 	Description   string
 	ActorID       string
 }
@@ -107,17 +110,64 @@ type UpdateProxyInput struct {
 	TargetPort    int
 	CertFile      string
 	KeyFile       string
-	Description   string
-	ActorID       string
+	// CertificateID 选择/清除绑定的证书资源；CertificateIDSet 为 true 且值为空时表示清除绑定。
+	CertificateID    string
+	CertificateIDSet bool
+	Description      string
+	ActorID          string
 }
 
 type CertificateInput struct {
+	// CertificateID 可选；提供时按证书身份寻址（用于未绑定证书的续期/轮换/同步）。
+	CertificateID     string
 	ProxyID           string
 	ProviderType      domain.CertificateProviderType
 	CredentialID      string
 	RequestType       string
 	RequestedValidity int
 	ActorID           string
+}
+
+// CreateCertificateInput 描述创建一个证书资源（可未绑定代理）。
+type CreateCertificateInput struct {
+	Host              string
+	ProviderType      domain.CertificateProviderType
+	CredentialID      string
+	RequestType       string
+	RequestedValidity int
+	// CertFile/KeyFile 仅用于 provider_type=file 的文件型证书登记。
+	CertFile string
+	KeyFile  string
+	ActorID  string
+}
+
+// DeleteCertificateInput 描述删除一个证书资源；高风险删除需提供匹配的强确认。
+type DeleteCertificateInput struct {
+	CertificateID string
+	// ConfirmHost 或 ConfirmCertificateID 任一与目标证书匹配即视为已确认。
+	ConfirmHost          string
+	ConfirmCertificateID string
+	ActorID              string
+}
+
+// DeleteCertificateResult 返回删除影响的代理与是否曾要求强确认。
+type DeleteCertificateResult struct {
+	CertificateID    string
+	AffectedProxyIDs []string
+	RequiredConfirm  bool
+}
+
+// BindCertificateInput 将证书绑定到代理（一对一）。
+type BindCertificateInput struct {
+	ProxyID       string
+	CertificateID string
+	ActorID       string
+}
+
+// UnbindCertificateInput 清除代理的证书绑定（证书保留为未绑定资源）。
+type UnbindCertificateInput struct {
+	ProxyID string
+	ActorID string
 }
 
 type ProviderCredentialInput struct {
@@ -137,6 +187,8 @@ type UpdateProviderCredentialInput struct {
 }
 
 type RevokeOriginCACertificateInput struct {
+	// CertificateID 可选；提供时按证书身份寻址（支持未绑定证书的吊销）。
+	CertificateID           string
 	ProxyID                 string
 	Host                    string
 	CloudflareCertificateID string
@@ -528,7 +580,12 @@ func (service Service) CreateProxy(ctx context.Context, input CreateProxyInput) 
 	if _, err := service.Store.Clients().ByID(ctx, input.ClientID); err != nil {
 		return domain.Proxy{}, err
 	}
-	proxy := domain.Proxy{ID: input.ID, UserID: input.UserID, ClientID: input.ClientID, Name: input.Name, Type: input.Type, Status: domain.ProxyEnabled, EntryBindHost: input.EntryBindHost, EntryHost: input.EntryHost, EntryPort: input.EntryPort, TargetHost: input.TargetHost, TargetPort: input.TargetPort, CertFile: input.CertFile, KeyFile: input.KeyFile, Description: input.Description}
+	certificateID, err := service.resolveProxyCertificateSelection(ctx, input.Type, "", input.CertificateID, true, input.EntryHost, input.CertFile, input.KeyFile, input.ActorID)
+	if err != nil {
+		return domain.Proxy{}, err
+	}
+	// 证书绑定为权威路径：代理记录不再持久化原始静态证书路径。
+	proxy := domain.Proxy{ID: input.ID, UserID: input.UserID, ClientID: input.ClientID, Name: input.Name, Type: input.Type, Status: domain.ProxyEnabled, EntryBindHost: input.EntryBindHost, EntryHost: input.EntryHost, EntryPort: input.EntryPort, TargetHost: input.TargetHost, TargetPort: input.TargetPort, CertificateID: certificateID, Description: input.Description}
 	if err := service.ensureProxyAdmission(ctx, proxy, ""); err != nil {
 		return domain.Proxy{}, err
 	}
@@ -580,12 +637,18 @@ func (service Service) UpdateProxy(ctx context.Context, input UpdateProxyInput) 
 	existing.EntryPort = input.EntryPort
 	existing.TargetHost = input.TargetHost
 	existing.TargetPort = input.TargetPort
-	existing.CertFile = input.CertFile
-	existing.KeyFile = input.KeyFile
 	existing.Description = input.Description
-	if err := validateProxyEntryFields(existing.Type, existing.EntryBindHost, existing.EntryHost, existing.EntryPort, existing.CertFile, existing.KeyFile); err != nil {
+	if err := validateProxyEntryFields(existing.Type, existing.EntryBindHost, existing.EntryHost, existing.EntryPort, input.CertFile, input.KeyFile); err != nil {
 		return domain.Proxy{}, err
 	}
+	certificateID, err := service.resolveProxyCertificateSelection(ctx, existing.Type, existing.ID, input.CertificateID, input.CertificateIDSet, existing.EntryHost, input.CertFile, input.KeyFile, input.ActorID)
+	if err != nil {
+		return domain.Proxy{}, err
+	}
+	existing.CertificateID = certificateID
+	// 证书绑定为权威路径：代理记录不再持久化原始静态证书路径。
+	existing.CertFile = ""
+	existing.KeyFile = ""
 	if err := service.ensureProxyAdmission(ctx, existing, existing.ID); err != nil {
 		return domain.Proxy{}, err
 	}
@@ -673,12 +736,40 @@ func (service Service) IssueManagedCertificate(ctx context.Context, input Certif
 	if err != nil {
 		return domain.ManagedCertificate{}, err
 	}
-	certificate, err := manager.IssueWithProvider(ctx, certmanager.ManagedCertificateRequest{ProxyID: input.ProxyID, ProviderType: input.ProviderType, CredentialID: input.CredentialID, RequestType: input.RequestType, RequestedValidity: input.RequestedValidity})
+	providerType := input.ProviderType
+	var certificate domain.ManagedCertificate
+	if strings.TrimSpace(input.CertificateID) != "" {
+		if service.Store == nil {
+			return domain.ManagedCertificate{}, errors.New("store is required")
+		}
+		existing, err := service.Store.Certificates().ByID(ctx, input.CertificateID)
+		if err != nil {
+			return domain.ManagedCertificate{}, err
+		}
+		if providerType == "" {
+			providerType = existing.ProviderType
+		}
+		credentialID := input.CredentialID
+		if credentialID == "" {
+			credentialID = existing.CredentialID
+		}
+		requestType := input.RequestType
+		if requestType == "" {
+			requestType = existing.RequestType
+		}
+		requestedValidity := input.RequestedValidity
+		if requestedValidity == 0 {
+			requestedValidity = existing.RequestedValidity
+		}
+		certificate, err = manager.IssueCertificate(ctx, certmanager.CertificateIssueRequest{CertificateID: input.CertificateID, Host: existing.Host, ProviderType: providerType, CredentialID: credentialID, RequestType: requestType, RequestedValidity: requestedValidity})
+	} else {
+		certificate, err = manager.IssueWithProvider(ctx, certmanager.ManagedCertificateRequest{ProxyID: input.ProxyID, ProviderType: providerType, CredentialID: input.CredentialID, RequestType: input.RequestType, RequestedValidity: input.RequestedValidity})
+	}
 	if err != nil {
 		return domain.ManagedCertificate{}, err
 	}
 	action := "issue_managed_certificate"
-	if input.ProviderType == domain.CertificateProviderCloudflareOriginCA {
+	if providerType == domain.CertificateProviderCloudflareOriginCA {
 		action = "issue_cloudflare_origin_certificate"
 	}
 	return certificate, service.audit(ctx, input.ActorID, "certificate", certificate.ID, action)
@@ -689,7 +780,7 @@ func (service Service) RenewManagedCertificate(ctx context.Context, input Certif
 	if err != nil {
 		return domain.ManagedCertificate{}, err
 	}
-	certificate, err := manager.Renew(ctx, input.ProxyID)
+	certificate, err := manager.RenewByID(ctx, input.CertificateID, input.ProxyID)
 	if err != nil {
 		return domain.ManagedCertificate{}, err
 	}
@@ -701,7 +792,7 @@ func (service Service) RotateOriginCACertificate(ctx context.Context, input Cert
 	if err != nil {
 		return domain.ManagedCertificate{}, err
 	}
-	certificate, err := manager.RotateOriginCA(ctx, input.ProxyID)
+	certificate, err := manager.RotateOriginCAByID(ctx, input.CertificateID, input.ProxyID)
 	if err != nil {
 		return domain.ManagedCertificate{}, err
 	}
@@ -713,7 +804,7 @@ func (service Service) SyncOriginCACertificate(ctx context.Context, input Certif
 	if err != nil {
 		return domain.ManagedCertificate{}, err
 	}
-	certificate, err := manager.SyncOriginCA(ctx, input.ProxyID)
+	certificate, err := manager.SyncOriginCAByID(ctx, input.CertificateID, input.ProxyID)
 	if err != nil {
 		return domain.ManagedCertificate{}, err
 	}
@@ -725,11 +816,353 @@ func (service Service) RevokeOriginCACertificate(ctx context.Context, input Revo
 	if err != nil {
 		return domain.ManagedCertificate{}, err
 	}
-	certificate, err := manager.RevokeOriginCA(ctx, certmanager.OriginCARevokeRequest{ProxyID: input.ProxyID, Host: input.Host, CloudflareCertificateID: input.CloudflareCertificateID})
+	certificate, err := manager.RevokeOriginCA(ctx, certmanager.OriginCARevokeRequest{CertificateID: input.CertificateID, ProxyID: input.ProxyID, Host: input.Host, CloudflareCertificateID: input.CloudflareCertificateID})
 	if err != nil {
 		return domain.ManagedCertificate{}, err
 	}
 	return certificate, service.audit(ctx, input.ActorID, "certificate", certificate.ID, "revoke_cloudflare_origin_certificate")
+}
+
+// CreateCertificate 创建一个证书资源（可未绑定代理），委托 certmanager 的身份化签发/登记。
+func (service Service) CreateCertificate(ctx context.Context, input CreateCertificateInput) (domain.ManagedCertificate, error) {
+	manager, err := service.certificateManager()
+	if err != nil {
+		return domain.ManagedCertificate{}, err
+	}
+	host := strings.ToLower(strings.TrimSpace(input.Host))
+	if host == "" {
+		return domain.ManagedCertificate{}, contracterr.Validation("validation failed", map[string]string{"host": "certificate host is required"})
+	}
+	providerType := input.ProviderType
+	if providerType == "" {
+		providerType = domain.CertificateProviderACMEDNS01
+	}
+	if !providerType.Valid() {
+		return domain.ManagedCertificate{}, contracterr.Validation("validation failed", map[string]string{"providerType": "certificate provider type is invalid"})
+	}
+	if providerType == domain.CertificateProviderFile && (strings.TrimSpace(input.CertFile) == "" || strings.TrimSpace(input.KeyFile) == "") {
+		return domain.ManagedCertificate{}, contracterr.Validation("validation failed", map[string]string{"certFile": "file certificate requires both cert file and key file", "keyFile": "file certificate requires both cert file and key file"})
+	}
+	certificate, err := manager.IssueCertificate(ctx, certmanager.CertificateIssueRequest{Host: host, ProviderType: providerType, CredentialID: input.CredentialID, RequestType: input.RequestType, RequestedValidity: input.RequestedValidity, CertFile: input.CertFile, KeyFile: input.KeyFile})
+	if err != nil {
+		return domain.ManagedCertificate{}, err
+	}
+	action := "create_managed_certificate"
+	if providerType == domain.CertificateProviderCloudflareOriginCA {
+		action = "create_cloudflare_origin_certificate"
+	}
+	if providerType == domain.CertificateProviderFile {
+		action = "create_file_certificate"
+	}
+	return certificate, service.audit(ctx, input.ActorID, "certificate", certificate.ID, action)
+}
+
+// DeleteCertificate 删除证书资源，按风险分级要求强确认。
+// 当证书既绑定代理又当前可服务时（移除会影响正在服务的活跃材料）必须提供匹配的 ConfirmHost/ConfirmCertificateID；
+// 未绑定、无效/过期/缺失材料或被 provider 状态阻断的证书可直接删除。
+func (service Service) DeleteCertificate(ctx context.Context, input DeleteCertificateInput) (DeleteCertificateResult, error) {
+	if service.Store == nil {
+		return DeleteCertificateResult{}, errors.New("store is required")
+	}
+	certificateID := strings.TrimSpace(input.CertificateID)
+	if certificateID == "" {
+		return DeleteCertificateResult{}, contracterr.Validation("validation failed", map[string]string{"id": "certificate id is required"})
+	}
+	certificate, err := service.Store.Certificates().ByID(ctx, certificateID)
+	if err != nil {
+		return DeleteCertificateResult{}, err
+	}
+	boundProxy, hasBinding, err := service.proxyBoundToCertificate(ctx, certificateID)
+	if err != nil {
+		return DeleteCertificateResult{}, err
+	}
+	servable := service.certificateServable(certificate)
+	requireConfirm := hasBinding && servable
+	if requireConfirm && !service.deleteConfirmationMatches(certificate, input) {
+		return DeleteCertificateResult{RequiredConfirm: true, CertificateID: certificateID}, contracterr.ConfirmationRequired("certificate is bound to a proxy and currently serving; confirm deletion with a matching host or certificate id", map[string]string{"confirmHost": certificate.Host, "confirmCertificateId": certificate.ID})
+	}
+	affected := make([]string, 0, 1)
+	if hasBinding {
+		if err := service.unbindProxyCertificate(ctx, boundProxy); err != nil {
+			return DeleteCertificateResult{}, err
+		}
+		affected = append(affected, boundProxy.ID)
+	}
+	if err := service.Store.Certificates().Delete(ctx, certificateID); err != nil {
+		return DeleteCertificateResult{}, err
+	}
+	service.cleanupManagedCertificateFiles(certificate)
+	if err := service.reconcileProxyListeners(ctx); err != nil {
+		return DeleteCertificateResult{}, err
+	}
+	if err := service.audit(ctx, input.ActorID, "certificate", certificateID, "delete_managed_certificate"); err != nil {
+		return DeleteCertificateResult{}, err
+	}
+	return DeleteCertificateResult{CertificateID: certificateID, AffectedProxyIDs: affected, RequiredConfirm: requireConfirm}, nil
+}
+
+// BindCertificate 将证书绑定到代理（一对一）。
+func (service Service) BindCertificate(ctx context.Context, input BindCertificateInput) (domain.Proxy, error) {
+	if service.Store == nil {
+		return domain.Proxy{}, errors.New("store is required")
+	}
+	if strings.TrimSpace(input.ProxyID) == "" {
+		return domain.Proxy{}, contracterr.Validation("validation failed", map[string]string{"proxyId": "proxy id is required"})
+	}
+	if strings.TrimSpace(input.CertificateID) == "" {
+		return domain.Proxy{}, contracterr.Validation("validation failed", map[string]string{"certificateId": "certificate id is required"})
+	}
+	proxy, err := service.Store.Proxies().ByID(ctx, input.ProxyID)
+	if err != nil {
+		return domain.Proxy{}, err
+	}
+	if proxy.Type != domain.ProxyHTTPS {
+		return domain.Proxy{}, contracterr.Validation("validation failed", map[string]string{"type": "certificate binding requires an https proxy"})
+	}
+	if err := service.validateCertificateBinding(ctx, input.CertificateID, proxy.EntryHost, proxy.ID); err != nil {
+		return domain.Proxy{}, err
+	}
+	proxy.CertificateID = input.CertificateID
+	proxy.CertFile = ""
+	proxy.KeyFile = ""
+	if err := service.Store.Proxies().Update(ctx, proxy); err != nil {
+		return domain.Proxy{}, err
+	}
+	if err := service.reconcileProxyListeners(ctx); err != nil {
+		return domain.Proxy{}, err
+	}
+	return proxy, service.audit(ctx, input.ActorID, "proxy", proxy.ID, "bind_certificate")
+}
+
+// UnbindCertificate 清除代理的证书绑定（证书保留为未绑定资源）。
+func (service Service) UnbindCertificate(ctx context.Context, input UnbindCertificateInput) (domain.Proxy, error) {
+	if service.Store == nil {
+		return domain.Proxy{}, errors.New("store is required")
+	}
+	if strings.TrimSpace(input.ProxyID) == "" {
+		return domain.Proxy{}, contracterr.Validation("validation failed", map[string]string{"proxyId": "proxy id is required"})
+	}
+	proxy, err := service.Store.Proxies().ByID(ctx, input.ProxyID)
+	if err != nil {
+		return domain.Proxy{}, err
+	}
+	if strings.TrimSpace(proxy.CertificateID) == "" {
+		return proxy, nil
+	}
+	if err := service.unbindProxyCertificate(ctx, proxy); err != nil {
+		return domain.Proxy{}, err
+	}
+	proxy.CertificateID = ""
+	if err := service.reconcileProxyListeners(ctx); err != nil {
+		return domain.Proxy{}, err
+	}
+	return proxy, service.audit(ctx, input.ActorID, "proxy", proxy.ID, "unbind_certificate")
+}
+
+// MigrateLegacyFileCertificates 在启动时将旧代理静态证书迁移为文件型证书资源并绑定。幂等。
+func (service Service) MigrateLegacyFileCertificates(ctx context.Context) (int, error) {
+	manager, err := service.certificateManager()
+	if err != nil {
+		return 0, err
+	}
+	return manager.MigrateLegacyFileCertificates(ctx)
+}
+
+// resolveProxyCertificateSelection 解析代理的证书选择并返回应绑定的 certificateID：
+//   - 显式 certificateID：校验存在/主机覆盖/一对一后返回；
+//   - 否则若提供遗留 certFile/keyFile：登记为文件型证书资源并返回其 ID（兼容旧客户端）；
+//   - 否则若是更新且未显式提供 certificateID：保留既有绑定；
+//   - 否则返回空（无绑定/清除绑定）。
+//
+// 非 HTTPS 代理始终返回空。
+func (service Service) resolveProxyCertificateSelection(ctx context.Context, proxyType domain.ProxyType, proxyID string, certificateID string, certificateIDSet bool, entryHost string, certFile string, keyFile string, actorID string) (string, error) {
+	if proxyType != domain.ProxyHTTPS {
+		return "", nil
+	}
+	certificateID = strings.TrimSpace(certificateID)
+	host := strings.ToLower(strings.TrimSpace(entryHost))
+	if certificateID != "" {
+		if err := service.validateCertificateBinding(ctx, certificateID, host, proxyID); err != nil {
+			return "", err
+		}
+		return certificateID, nil
+	}
+	certFile = strings.TrimSpace(certFile)
+	keyFile = strings.TrimSpace(keyFile)
+	if certFile == "" && keyFile == "" {
+		if certificateIDSet {
+			return "", nil
+		}
+		// 未选择证书：若代理已绑定既有证书（更新场景），保留绑定。
+		if strings.TrimSpace(proxyID) != "" {
+			if existing, err := service.Store.Proxies().ByID(ctx, proxyID); err == nil {
+				return existing.CertificateID, nil
+			}
+		}
+		return "", nil
+	}
+	// 遗留兼容：将静态 cert/key 文件登记为文件型证书资源并绑定。
+	manager, err := service.certificateManager()
+	if err != nil {
+		return "", err
+	}
+	certificate, err := manager.IssueCertificate(ctx, certmanager.CertificateIssueRequest{Host: host, ProviderType: domain.CertificateProviderFile, CertFile: certFile, KeyFile: keyFile})
+	if err != nil {
+		return "", err
+	}
+	_ = service.audit(ctx, actorID, "certificate", certificate.ID, "migrate_file_certificate")
+	return certificate.ID, nil
+}
+
+// validateCertificateBinding 校验证书可绑定到指定 HTTPS 代理：
+//
+//	(a) 证书存在；(b) 主机覆盖；(c) 一对一（未被其他代理绑定）。
+func (service Service) validateCertificateBinding(ctx context.Context, certificateID string, host string, proxyID string) error {
+	certificate, err := service.Store.Certificates().ByID(ctx, certificateID)
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return contracterr.Validation("validation failed", map[string]string{"certificateId": "certificate was not found"})
+		}
+		return err
+	}
+	host = strings.ToLower(strings.TrimSpace(host))
+	if host == "" {
+		return contracterr.Validation("validation failed", map[string]string{"entryHost": "https proxy route host is required"})
+	}
+	if !hostnameWithinCertificate(certificate, host) {
+		return contracterr.CertificateIncompatible("certificate does not cover proxy route host "+host, map[string]string{"entryHost": host, "certificateId": certificateID})
+	}
+	bound, err := service.Store.Proxies().ByCertificateID(ctx, certificateID)
+	if err != nil && !errors.Is(err, store.ErrNotFound) {
+		return err
+	}
+	if err == nil && bound.ID != proxyID {
+		return contracterr.CertificateIncompatible("certificate is already bound to proxy "+bound.ID, map[string]string{"certificateId": certificateID, "proxyId": bound.ID})
+	}
+	return nil
+}
+
+// proxyBoundToCertificate 返回绑定到证书的代理（若有）。
+func (service Service) proxyBoundToCertificate(ctx context.Context, certificateID string) (domain.Proxy, bool, error) {
+	proxy, err := service.Store.Proxies().ByCertificateID(ctx, certificateID)
+	if errors.Is(err, store.ErrNotFound) {
+		return domain.Proxy{}, false, nil
+	}
+	if err != nil {
+		return domain.Proxy{}, false, err
+	}
+	return proxy, true, nil
+}
+
+// unbindProxyCertificate 清除代理的证书绑定并将 HTTPS 代理标记为 needs_config。
+func (service Service) unbindProxyCertificate(ctx context.Context, proxy domain.Proxy) error {
+	proxy.CertificateID = ""
+	proxy.CertFile = ""
+	proxy.KeyFile = ""
+	if proxy.Type == domain.ProxyHTTPS && proxy.Status == domain.ProxyEnabled {
+		proxy.Status = domain.ProxyNeedsConf
+	}
+	return service.Store.Proxies().Update(ctx, proxy)
+}
+
+// certificateServable 判断证书当前是否可服务（serving 可用且未被 provider 状态阻断且材料存在）。
+func (service Service) certificateServable(certificate domain.ManagedCertificate) bool {
+	if certificate.ProviderStatus.BlocksServing() {
+		return false
+	}
+	if strings.TrimSpace(certificate.CertFile) == "" || strings.TrimSpace(certificate.KeyFile) == "" {
+		return false
+	}
+	manager, err := service.certificateManager()
+	if err != nil {
+		return false
+	}
+	now := time.Now().UTC()
+	health := httpsproxy.CheckCertificateFiles(certificate.Host, certificate.CertFile, certificate.KeyFile, manager.Storage.CertificateDir, 0, now)
+	return health.ServingStatus.ServesTLS()
+}
+
+// deleteConfirmationMatches 校验强确认是否匹配目标证书（host 或 cert id 任一相等即可）。
+func (service Service) deleteConfirmationMatches(certificate domain.ManagedCertificate, input DeleteCertificateInput) bool {
+	if strings.EqualFold(strings.TrimSpace(input.ConfirmCertificateID), strings.TrimSpace(certificate.ID)) && strings.TrimSpace(input.ConfirmCertificateID) != "" {
+		return true
+	}
+	confirmHost := strings.ToLower(strings.TrimSpace(input.ConfirmHost))
+	return confirmHost != "" && confirmHost == strings.ToLower(strings.TrimSpace(certificate.Host))
+}
+
+// cleanupManagedCertificateFiles 仅清理位于受管证书目录下的活跃/历史材料文件，绝不删除任意外部路径。
+func (service Service) cleanupManagedCertificateFiles(certificate domain.ManagedCertificate) {
+	manager, err := service.certificateManager()
+	if err != nil {
+		return
+	}
+	certificateDir := strings.TrimSpace(manager.Storage.CertificateDir)
+	if certificateDir == "" {
+		return
+	}
+	for _, path := range []string{certificate.CertFile, certificate.KeyFile, certificate.PreviousCertFile, certificate.PreviousKeyFile} {
+		removeManagedFile(certificateDir, path)
+	}
+}
+
+// removeManagedFile 仅删除位于受管证书目录下的文件，绝不删除目录外的任意路径。
+func removeManagedFile(certificateDir string, path string) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return
+	}
+	absDir, err := filepath.Abs(certificateDir)
+	if err != nil {
+		return
+	}
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return
+	}
+	relative, err := filepath.Rel(absDir, absPath)
+	if err != nil {
+		return
+	}
+	if relative == "." || strings.HasPrefix(relative, "..") || filepath.IsAbs(relative) {
+		return
+	}
+	_ = os.Remove(absPath)
+}
+
+// hostnameWithinCertificate 以 VerifyHostname 风格（含通配符）判断证书元数据声明的主机集合是否覆盖 host。
+// 用于绑定校验：此时证书材料文件可能尚未签发，因此基于 Host/Hostnames 元数据判断。
+func hostnameWithinCertificate(certificate domain.ManagedCertificate, host string) bool {
+	host = strings.ToLower(strings.TrimSpace(host))
+	if host == "" {
+		return false
+	}
+	candidates := append([]string{certificate.Host}, certificate.Hostnames...)
+	for _, candidate := range candidates {
+		if hostnameMatchesPattern(host, candidate) {
+			return true
+		}
+	}
+	return false
+}
+
+func hostnameMatchesPattern(host string, pattern string) bool {
+	pattern = strings.ToLower(strings.TrimSpace(pattern))
+	if pattern == "" {
+		return false
+	}
+	if pattern == host {
+		return true
+	}
+	if strings.HasPrefix(pattern, "*.") {
+		suffix := pattern[1:] // ".example.com"
+		if !strings.HasSuffix(host, suffix) {
+			return false
+		}
+		label := host[:len(host)-len(suffix)]
+		return label != "" && !strings.Contains(label, ".")
+	}
+	return false
 }
 
 func (service Service) CreateProviderCredential(ctx context.Context, input ProviderCredentialInput) (domain.ProviderCredential, error) {

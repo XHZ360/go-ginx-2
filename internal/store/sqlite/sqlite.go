@@ -79,6 +79,17 @@ func (s *Store) migrate(ctx context.Context) error {
 	if err := addCertificateQueryIndexes(ctx, s.db); err != nil {
 		return err
 	}
+	// 证书集中化：先补充代理侧 certificate_id 列与唯一索引，
+	// 再重建 managed_certificates 去除级联外键，最后回填代理绑定。
+	if err := migrateProxyCertificateBinding(ctx, s.db); err != nil {
+		return err
+	}
+	if err := migrateManagedCertificateProxyOptional(ctx, s.db); err != nil {
+		return err
+	}
+	if err := migrateBindProxyCertificates(ctx, s.db); err != nil {
+		return err
+	}
 	return addUserPasswordColumn(ctx, s.db)
 }
 
@@ -249,7 +260,7 @@ func (r clientEnrollmentRepository) MarkUsed(ctx context.Context, id string, use
 
 type proxyRepository struct{ db *sql.DB }
 
-const proxySelectColumns = `id, user_id, client_id, name, type, status, entry_bind_host, entry_host, entry_port, target_host, target_port, cert_file, key_file, description, created_at, updated_at`
+const proxySelectColumns = `id, user_id, client_id, name, type, status, entry_bind_host, entry_host, entry_port, target_host, target_port, cert_file, key_file, certificate_id, description, created_at, updated_at`
 
 func (r proxyRepository) Create(ctx context.Context, proxy domain.Proxy) error {
 	if err := proxy.Validate(); err != nil {
@@ -262,7 +273,7 @@ func (r proxyRepository) Create(ctx context.Context, proxy domain.Proxy) error {
 	if proxy.UpdatedAt.IsZero() {
 		proxy.UpdatedAt = now
 	}
-	_, err := r.db.ExecContext(ctx, `insert into proxies (id, user_id, client_id, name, type, status, entry_bind_host, entry_host, entry_port, target_host, target_port, cert_file, key_file, description, created_at, updated_at) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, proxy.ID, proxy.UserID, proxy.ClientID, proxy.Name, proxy.Type, proxy.Status, domain.NormalizeBindHost(proxy.EntryBindHost), proxy.EntryHost, proxy.EntryPort, proxy.TargetHost, proxy.TargetPort, proxy.CertFile, proxy.KeyFile, proxy.Description, proxy.CreatedAt, proxy.UpdatedAt)
+	_, err := r.db.ExecContext(ctx, `insert into proxies (id, user_id, client_id, name, type, status, entry_bind_host, entry_host, entry_port, target_host, target_port, cert_file, key_file, certificate_id, description, created_at, updated_at) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, proxy.ID, proxy.UserID, proxy.ClientID, proxy.Name, proxy.Type, proxy.Status, domain.NormalizeBindHost(proxy.EntryBindHost), proxy.EntryHost, proxy.EntryPort, proxy.TargetHost, proxy.TargetPort, proxy.CertFile, proxy.KeyFile, proxy.CertificateID, proxy.Description, proxy.CreatedAt, proxy.UpdatedAt)
 	return translateError(err)
 }
 
@@ -364,6 +375,11 @@ func (r proxyRepository) ByHTTPSHost(ctx context.Context, host string) (domain.P
 	return scanProxy(r.db.QueryRowContext(ctx, `select `+proxySelectColumns+` from proxies where type = ? and lower(entry_host) = lower(?) order by entry_bind_host <> '', entry_port <> 0 limit 1`, domain.ProxyHTTPS, host))
 }
 
+// ByCertificateID 返回绑定到指定证书资源的代理；若无绑定则返回 store.ErrNotFound。
+func (r proxyRepository) ByCertificateID(ctx context.Context, certificateID string) (domain.Proxy, error) {
+	return scanProxy(r.db.QueryRowContext(ctx, `select `+proxySelectColumns+` from proxies where certificate_id = ?`, certificateID))
+}
+
 func (r proxyRepository) byEntry(ctx context.Context, proxyType domain.ProxyType, bindHost string, port int, routeHost string, includeDefault bool) (domain.Proxy, error) {
 	args := []any{proxyType, domain.NormalizeBindHost(bindHost), port}
 	routeClause := ""
@@ -399,7 +415,7 @@ func (r proxyRepository) Update(ctx context.Context, proxy domain.Proxy) error {
 	if err := proxy.Validate(); err != nil {
 		return err
 	}
-	result, err := r.db.ExecContext(ctx, `update proxies set name = ?, status = ?, entry_bind_host = ?, entry_host = ?, entry_port = ?, target_host = ?, target_port = ?, cert_file = ?, key_file = ?, description = ?, updated_at = ? where id = ?`, proxy.Name, proxy.Status, domain.NormalizeBindHost(proxy.EntryBindHost), proxy.EntryHost, proxy.EntryPort, proxy.TargetHost, proxy.TargetPort, proxy.CertFile, proxy.KeyFile, proxy.Description, time.Now().UTC(), proxy.ID)
+	result, err := r.db.ExecContext(ctx, `update proxies set name = ?, status = ?, entry_bind_host = ?, entry_host = ?, entry_port = ?, target_host = ?, target_port = ?, cert_file = ?, key_file = ?, certificate_id = ?, description = ?, updated_at = ? where id = ?`, proxy.Name, proxy.Status, domain.NormalizeBindHost(proxy.EntryBindHost), proxy.EntryHost, proxy.EntryPort, proxy.TargetHost, proxy.TargetPort, proxy.CertFile, proxy.KeyFile, proxy.CertificateID, proxy.Description, time.Now().UTC(), proxy.ID)
 	return resultError(result, err)
 }
 
@@ -430,12 +446,22 @@ func (r certificateRepository) Create(ctx context.Context, certificate domain.Ma
 	return translateError(err)
 }
 
+func (r certificateRepository) ByID(ctx context.Context, id string) (domain.ManagedCertificate, error) {
+	return scanManagedCertificate(r.db.QueryRowContext(ctx, managedCertificateSelect+` where id = ?`, id))
+}
+
 func (r certificateRepository) ByProxyID(ctx context.Context, proxyID string) (domain.ManagedCertificate, error) {
 	return scanManagedCertificate(r.db.QueryRowContext(ctx, managedCertificateSelect+` where proxy_id = ?`, proxyID))
 }
 
 func (r certificateRepository) ByHost(ctx context.Context, host string) (domain.ManagedCertificate, error) {
 	return scanManagedCertificate(r.db.QueryRowContext(ctx, managedCertificateSelect+` where lower(host) = lower(?)`, host))
+}
+
+// Delete 按 ID 删除证书资源；若不存在则返回 store.ErrNotFound。
+func (r certificateRepository) Delete(ctx context.Context, id string) error {
+	result, err := r.db.ExecContext(ctx, `delete from managed_certificates where id = ?`, id)
+	return resultError(result, err)
 }
 
 func (r certificateRepository) List(ctx context.Context) ([]domain.ManagedCertificate, error) {
@@ -936,13 +962,13 @@ func scanClientEnrollment(row *sql.Row) (domain.ClientEnrollment, error) {
 
 func scanProxy(row *sql.Row) (domain.Proxy, error) {
 	var proxy domain.Proxy
-	err := row.Scan(&proxy.ID, &proxy.UserID, &proxy.ClientID, &proxy.Name, &proxy.Type, &proxy.Status, &proxy.EntryBindHost, &proxy.EntryHost, &proxy.EntryPort, &proxy.TargetHost, &proxy.TargetPort, &proxy.CertFile, &proxy.KeyFile, &proxy.Description, &proxy.CreatedAt, &proxy.UpdatedAt)
+	err := row.Scan(&proxy.ID, &proxy.UserID, &proxy.ClientID, &proxy.Name, &proxy.Type, &proxy.Status, &proxy.EntryBindHost, &proxy.EntryHost, &proxy.EntryPort, &proxy.TargetHost, &proxy.TargetPort, &proxy.CertFile, &proxy.KeyFile, &proxy.CertificateID, &proxy.Description, &proxy.CreatedAt, &proxy.UpdatedAt)
 	return proxy, translateError(err)
 }
 
 func scanProxyRows(rows *sql.Rows) (domain.Proxy, error) {
 	var proxy domain.Proxy
-	err := rows.Scan(&proxy.ID, &proxy.UserID, &proxy.ClientID, &proxy.Name, &proxy.Type, &proxy.Status, &proxy.EntryBindHost, &proxy.EntryHost, &proxy.EntryPort, &proxy.TargetHost, &proxy.TargetPort, &proxy.CertFile, &proxy.KeyFile, &proxy.Description, &proxy.CreatedAt, &proxy.UpdatedAt)
+	err := rows.Scan(&proxy.ID, &proxy.UserID, &proxy.ClientID, &proxy.Name, &proxy.Type, &proxy.Status, &proxy.EntryBindHost, &proxy.EntryHost, &proxy.EntryPort, &proxy.TargetHost, &proxy.TargetPort, &proxy.CertFile, &proxy.KeyFile, &proxy.CertificateID, &proxy.Description, &proxy.CreatedAt, &proxy.UpdatedAt)
 	return proxy, err
 }
 
@@ -1276,6 +1302,142 @@ func addCertificateQueryIndexes(ctx context.Context, db *sql.DB) error {
 	return nil
 }
 
+// migrateProxyCertificateBinding 为已有数据库的 proxies 表补充 certificate_id 列，
+// 并建立“一证一代理”的部分唯一索引（仅对非空 certificate_id 生效）。幂等。
+func migrateProxyCertificateBinding(ctx context.Context, db *sql.DB) error {
+	if err := addColumnIfMissing(ctx, db, "proxies", "certificate_id", "text not null default ''"); err != nil {
+		return err
+	}
+	if _, err := db.ExecContext(ctx, `create unique index if not exists proxies_certificate_id_unique on proxies(certificate_id) where certificate_id != ''`); err != nil {
+		return err
+	}
+	return nil
+}
+
+// migrateManagedCertificateProxyOptional 重建 managed_certificates 表，
+// 去除 proxy_id 上的 on delete cascade 外键以及 managed_certificates_proxy_unique 唯一索引，
+// 使证书成为独立资源（proxy_id 仅作为遗留反向引用，可为空）。
+// 幂等保护：通过 PRAGMA foreign_key_list 检测是否仍存在指向 proxies 的外键，
+// 若已无外键则说明重建已完成，直接返回。
+func migrateManagedCertificateProxyOptional(ctx context.Context, db *sql.DB) error {
+	hasProxyFK, err := managedCertificatesHasProxyForeignKey(ctx, db)
+	if err != nil {
+		return err
+	}
+	if !hasProxyFK {
+		// 已经重建过（或属于全新数据库，建表时即无外键），无需处理。
+		return nil
+	}
+
+	// 关闭外键约束以便安全重建表（必须在事务之外执行）。
+	if _, err := db.ExecContext(ctx, `pragma foreign_keys=off`); err != nil {
+		return err
+	}
+	// 无论成功与否，结束时恢复外键约束。
+	defer func() { _, _ = db.ExecContext(ctx, `pragma foreign_keys=on`) }()
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	// 新表列顺序/类型必须与当前表完全一致，仅将 proxy_id 改为无外键、默认 '' 的普通列。
+	statements := []string{
+		`create table managed_certificates_new (
+    id text primary key,
+    proxy_id text not null default '',
+    host text not null,
+    status text not null,
+    serving_status text not null default '',
+    operation_status text not null default '',
+    provider text not null default '',
+    provider_type text not null default '',
+    provider_name text not null default '',
+    credential_id text not null default '',
+    provider_status text not null default '',
+    cloudflare_certificate_id text not null default '',
+    previous_cloudflare_certificate_id text not null default '',
+    hostnames text not null default '[]',
+    request_type text not null default '',
+    requested_validity integer not null default 0,
+    cert_file text not null default '',
+    key_file text not null default '',
+    previous_cert_file text not null default '',
+    previous_key_file text not null default '',
+    not_after timestamp,
+    last_issued_at timestamp,
+    last_renewed_at timestamp,
+    last_checked_at timestamp,
+    last_synced_at timestamp,
+    last_attempted_at timestamp,
+    next_attempt_at timestamp,
+    failure_count integer not null default 0,
+    fingerprint text not null default '',
+    last_error text not null default '',
+    created_at timestamp not null,
+    updated_at timestamp not null
+)`,
+		`insert into managed_certificates_new (id, proxy_id, host, status, serving_status, operation_status, provider, provider_type, provider_name, credential_id, provider_status, cloudflare_certificate_id, previous_cloudflare_certificate_id, hostnames, request_type, requested_validity, cert_file, key_file, previous_cert_file, previous_key_file, not_after, last_issued_at, last_renewed_at, last_checked_at, last_synced_at, last_attempted_at, next_attempt_at, failure_count, fingerprint, last_error, created_at, updated_at)
+select id, proxy_id, host, status, serving_status, operation_status, provider, provider_type, provider_name, credential_id, provider_status, cloudflare_certificate_id, previous_cloudflare_certificate_id, hostnames, request_type, requested_validity, cert_file, key_file, previous_cert_file, previous_key_file, not_after, last_issued_at, last_renewed_at, last_checked_at, last_synced_at, last_attempted_at, next_attempt_at, failure_count, fingerprint, last_error, created_at, updated_at from managed_certificates`,
+		`drop table managed_certificates`,
+		`alter table managed_certificates_new rename to managed_certificates`,
+		// 重建表会丢弃旧索引：恢复 host 唯一索引与生命周期查询索引；
+		// 不再重建 proxy 唯一索引（绑定关系已迁移到代理侧）。
+		`create unique index if not exists managed_certificates_host_unique on managed_certificates(lower(host))`,
+		`create index if not exists managed_certificates_lifecycle_provider_idx on managed_certificates(provider_type, not_after, next_attempt_at)`,
+	}
+	for _, statement := range statements {
+		if _, err := tx.ExecContext(ctx, statement); err != nil {
+			return err
+		}
+	}
+
+	// 校验外键完整性（此时应不再有指向 proxies 的外键违例）。
+	if _, err := tx.ExecContext(ctx, `pragma foreign_key_check`); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+// managedCertificatesHasProxyForeignKey 检测 managed_certificates 是否仍持有指向 proxies 的外键。
+func managedCertificatesHasProxyForeignKey(ctx context.Context, db *sql.DB) (bool, error) {
+	rows, err := db.QueryContext(ctx, `pragma foreign_key_list(managed_certificates)`)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var (
+			id       int
+			seq      int
+			table    string
+			from     string
+			to       sql.NullString
+			onUpdate string
+			onDelete string
+			match    string
+		)
+		if err := rows.Scan(&id, &seq, &table, &from, &to, &onUpdate, &onDelete, &match); err != nil {
+			return false, err
+		}
+		if strings.EqualFold(table, "proxies") {
+			return true, rows.Err()
+		}
+	}
+	return false, rows.Err()
+}
+
+// migrateBindProxyCertificates 将旧的“证书反向引用 proxy_id”回填为代理侧的权威绑定
+// proxies.certificate_id（设计迁移步骤 2：旧 managed cert -> proxy.certificate_id）。
+// 仅当代理尚未绑定证书（certificate_id = ''）且存在对应反向引用证书时才回填。幂等。
+// TODO(phase2): 旧代理静态证书（cert_file/key_file）迁移为文件型证书资源
+// （provider_type=file）需要 ID 生成与 certmanager 逻辑，留待 Phase 2 服务层实现。
+func migrateBindProxyCertificates(ctx context.Context, db *sql.DB) error {
+	_, err := db.ExecContext(ctx, `update proxies set certificate_id = (select mc.id from managed_certificates mc where mc.proxy_id = proxies.id) where certificate_id = '' and exists(select 1 from managed_certificates mc where mc.proxy_id = proxies.id)`)
+	return err
+}
+
 func addColumnIfMissing(ctx context.Context, db *sql.DB, table string, column string, definition string) error {
 	rows, err := db.QueryContext(ctx, `pragma table_info(`+table+`)`)
 	if err != nil {
@@ -1402,6 +1564,7 @@ create table if not exists proxies (
     target_port integer not null,
     cert_file text not null default '',
     key_file text not null default '',
+    certificate_id text not null default '',
     description text not null default '',
     created_at timestamp not null,
     updated_at timestamp not null
@@ -1409,7 +1572,7 @@ create table if not exists proxies (
 
 create table if not exists managed_certificates (
     id text primary key,
-    proxy_id text not null references proxies(id) on delete cascade,
+    proxy_id text not null default '',
     host text not null,
     status text not null,
     serving_status text not null default '',
@@ -1442,7 +1605,6 @@ create table if not exists managed_certificates (
     updated_at timestamp not null
 );
 
-create unique index if not exists managed_certificates_proxy_unique on managed_certificates(proxy_id);
 create unique index if not exists managed_certificates_host_unique on managed_certificates(lower(host));
 
 create table if not exists provider_credentials (
