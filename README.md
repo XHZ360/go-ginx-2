@@ -559,6 +559,18 @@ pnpm build
 
 本节只面向开发机、CI 或发布机。部署环境不需要执行这些命令，也不需要安装 Go。
 
+### Docker 开发环境
+
+可以使用仓库内置的 Docker Compose 配置在容器中运行后端、Admin UI、测试和构建：
+
+```powershell
+docker compose up --build
+```
+
+启动后访问 `http://localhost:5173`。初始化管理员、运行测试和清理 volume 的详细说明见 `docs/docker-development.md`。
+
+### 本机开发命令
+
 完整验证：
 
 ```powershell

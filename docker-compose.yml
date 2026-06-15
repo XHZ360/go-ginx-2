@@ -1,0 +1,69 @@
+name: go-ginx-dev
+
+x-dev-base: &dev-base
+  build:
+    context: .
+    dockerfile: Dockerfile.dev
+  image: go-ginx-2-dev:latest
+  working_dir: /workspace
+  environment:
+    CGO_ENABLED: "0"
+  volumes:
+    - .:/workspace
+    - go-mod-cache:/go/pkg/mod
+    - go-build-cache:/root/.cache/go-build
+    - pnpm-store:/pnpm/store
+    - admin-ui-node-modules:/workspace/admin-ui/node_modules
+
+services:
+  server:
+    <<: *dev-base
+    command: bash scripts/docker-dev-server.sh
+    environment:
+      CGO_ENABLED: "0"
+      GOGINX_ADMIN_LISTEN: 127.0.0.1:8080
+      GOGINX_CLIENT_ENROLLMENT_LISTEN: 0.0.0.0:8081
+      GOGINX_CONTROL_QUIC_LISTEN: 0.0.0.0:8443
+      GOGINX_CONTROL_TLS_LISTEN: 0.0.0.0:9443
+      GOGINX_HTTP_ENTRY_LISTEN: 0.0.0.0:18080
+      GOGINX_HTTPS_ENTRY_LISTEN: 0.0.0.0:18443
+      GOGINX_JOIN_SERVICE_HOST: localhost
+    ports:
+      - "5173:5173"
+      - "8081:8081"
+      - "8443:8443/udp"
+      - "9443:9443"
+      - "18080:18080"
+      - "18443:18443"
+    volumes:
+      - .:/workspace
+      - go-mod-cache:/go/pkg/mod
+      - go-build-cache:/root/.cache/go-build
+      - pnpm-store:/pnpm/store
+      - admin-ui-node-modules:/workspace/admin-ui/node_modules
+      - goginx-dev-data:/workspace/.tmp/docker/data
+      - goginx-dev-logs:/workspace/.tmp/docker/logs
+
+  admin-ui:
+    <<: *dev-base
+    command: bash scripts/docker-dev-ui.sh
+    depends_on:
+      - server
+    environment:
+      CGO_ENABLED: "0"
+      ADMIN_UI_API_TARGET: http://127.0.0.1:8080
+    network_mode: service:server
+
+  dev:
+    <<: *dev-base
+    command: sleep infinity
+    profiles:
+      - tools
+
+volumes:
+  admin-ui-node-modules:
+  go-build-cache:
+  go-mod-cache:
+  goginx-dev-data:
+  goginx-dev-logs:
+  pnpm-store:

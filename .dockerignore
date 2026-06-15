@@ -1,0 +1,16 @@
+.git/
+.codex/
+.kilocode/
+.opencode/
+.tmp/
+data/
+dist/
+logs/
+admin-ui/node_modules/
+admin-ui/dist/
+admin-ui/.vite/
+admin-ui/coverage/
+*.log
+*.local*
+*.private*
+deploye*.jsonc

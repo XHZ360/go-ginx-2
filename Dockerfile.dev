@@ -1,0 +1,50 @@
+# syntax=docker/dockerfile:1.7
+
+FROM node:24-bookworm AS node
+
+FROM golang:1.25-bookworm
+
+ARG PNPM_VERSION=10.33.2
+ARG GOPROXY=https://goproxy.cn,direct
+ARG NPM_CONFIG_REGISTRY=https://registry.npmmirror.com
+
+ENV CGO_ENABLED=0
+ENV GOFLAGS=-buildvcs=false
+ENV GOMODCACHE=/go/pkg/mod
+ENV GOCACHE=/root/.cache/go-build
+ENV GOPROXY=${GOPROXY}
+ENV NPM_CONFIG_REGISTRY=${NPM_CONFIG_REGISTRY}
+ENV COREPACK_NPM_REGISTRY=${NPM_CONFIG_REGISTRY}
+ENV PNPM_HOME=/pnpm
+ENV PATH=/pnpm:/usr/local/go/bin:/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
+
+COPY --from=node /usr/local/ /usr/local/
+
+RUN find /etc/apt -type f -exec sed -i 's|http://deb.debian.org|https://deb.debian.org|g' {} + \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        curl \
+        git \
+        make \
+        netcat-openbsd \
+        procps \
+        sqlite3 \
+    && rm -rf /var/lib/apt/lists/* \
+    && mkdir -p /pnpm/store \
+    && corepack enable pnpm \
+    && corepack prepare pnpm@${PNPM_VERSION} --activate \
+    && pnpm config set registry ${NPM_CONFIG_REGISTRY} \
+    && pnpm config set store-dir /pnpm/store \
+    && ln -sf /usr/local/go/bin/go /usr/local/bin/go \
+    && ln -sf /usr/local/go/bin/gofmt /usr/local/bin/gofmt
+
+WORKDIR /workspace
+
+COPY go.mod go.sum ./
+RUN go mod download
+
+COPY admin-ui/package.json admin-ui/pnpm-lock.yaml ./admin-ui/
+RUN cd admin-ui && pnpm install --frozen-lockfile
+
+CMD ["bash"]
