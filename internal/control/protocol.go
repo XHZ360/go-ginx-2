@@ -21,11 +21,13 @@ const MaxDatagramFrameSize = maxFrameSize
 type MessageType string
 
 const (
-	MessageAuthRequest   MessageType = "auth_request"
-	MessageAuthResponse  MessageType = "auth_response"
-	MessageHeartbeat     MessageType = "heartbeat"
-	MessageOpenStream    MessageType = "open_stream"
-	MessageProxySnapshot MessageType = "proxy_snapshot"
+	MessageAuthRequest      MessageType = "auth_request"
+	MessageAuthResponse     MessageType = "auth_response"
+	MessageHeartbeat        MessageType = "heartbeat"
+	MessageOpenStream       MessageType = "open_stream"
+	MessageProxySnapshot    MessageType = "proxy_snapshot"
+	MessageProxyListRequest MessageType = "proxy_list_request"
+	MessageProxyListResponse MessageType = "proxy_list_response"
 )
 
 type Envelope struct {
@@ -64,6 +66,15 @@ type Heartbeat struct {
 }
 
 type ProxySnapshot struct {
+	Version int64          `json:"version"`
+	Proxies []domain.Proxy `json:"proxies"`
+}
+
+type ProxyListRequest struct {
+	ConfigVersion int64 `json:"config_version"`
+}
+
+type ProxyListResponse struct {
 	Version int64          `json:"version"`
 	Proxies []domain.Proxy `json:"proxies"`
 }
@@ -273,6 +284,21 @@ func DecodePayload[T any](envelope Envelope) (T, error) {
 			return payload, err
 		}
 		*target = proxySnapshotFromProto(&message)
+	case *ProxyListRequest:
+		if len(envelope.Payload) == 0 {
+			return payload, errors.New("message payload is required")
+		}
+		var message controlpb.ProxyListRequest
+		if err := proto.Unmarshal(envelope.Payload, &message); err != nil {
+			return payload, err
+		}
+		*target = proxyListRequestFromProto(&message)
+	case *ProxyListResponse:
+		var message controlpb.ProxyListResponse
+		if err := proto.Unmarshal(envelope.Payload, &message); err != nil {
+			return payload, err
+		}
+		*target = proxyListResponseFromProto(&message)
 	default:
 		return payload, fmt.Errorf("unsupported payload type %T", payload)
 	}
@@ -311,6 +337,18 @@ func marshalPayload(messageType MessageType, payload any) ([]byte, error) {
 			return nil, fmt.Errorf("%s payload must be ProxySnapshot", messageType)
 		}
 		return proto.Marshal(proxySnapshotToProto(value))
+	case MessageProxyListRequest:
+		value, ok := payload.(ProxyListRequest)
+		if !ok {
+			return nil, fmt.Errorf("%s payload must be ProxyListRequest", messageType)
+		}
+		return proto.Marshal(proxyListRequestToProto(value))
+	case MessageProxyListResponse:
+		value, ok := payload.(ProxyListResponse)
+		if !ok {
+			return nil, fmt.Errorf("%s payload must be ProxyListResponse", messageType)
+		}
+		return proto.Marshal(proxyListResponseToProto(value))
 	default:
 		return nil, fmt.Errorf("unsupported message type %s", messageType)
 	}
@@ -328,6 +366,10 @@ func toProtoMessageType(messageType MessageType) controlpb.MessageType {
 		return controlpb.MessageType_MESSAGE_TYPE_OPEN_STREAM
 	case MessageProxySnapshot:
 		return controlpb.MessageType_MESSAGE_TYPE_PROXY_SNAPSHOT
+	case MessageProxyListRequest:
+		return controlpb.MessageType_MESSAGE_TYPE_PROXY_LIST_REQUEST
+	case MessageProxyListResponse:
+		return controlpb.MessageType_MESSAGE_TYPE_PROXY_LIST_RESPONSE
 	default:
 		return controlpb.MessageType_MESSAGE_TYPE_UNSPECIFIED
 	}
@@ -345,6 +387,10 @@ func fromProtoMessageType(messageType controlpb.MessageType) MessageType {
 		return MessageOpenStream
 	case controlpb.MessageType_MESSAGE_TYPE_PROXY_SNAPSHOT:
 		return MessageProxySnapshot
+	case controlpb.MessageType_MESSAGE_TYPE_PROXY_LIST_REQUEST:
+		return MessageProxyListRequest
+	case controlpb.MessageType_MESSAGE_TYPE_PROXY_LIST_RESPONSE:
+		return MessageProxyListResponse
 	default:
 		return ""
 	}
@@ -388,6 +434,30 @@ func openStreamToProto(stream OpenStream) *controlpb.OpenStream {
 
 func openStreamFromProto(stream *controlpb.OpenStream) OpenStream {
 	return OpenStream{Kind: stream.GetKind(), ProxyID: stream.GetProxyId(), ConnectionID: stream.GetConnectionId(), TargetHost: stream.GetTargetHost(), TargetPort: int(stream.GetTargetPort())}
+}
+
+func proxyListRequestToProto(request ProxyListRequest) *controlpb.ProxyListRequest {
+	return &controlpb.ProxyListRequest{ConfigVersion: request.ConfigVersion}
+}
+
+func proxyListRequestFromProto(request *controlpb.ProxyListRequest) ProxyListRequest {
+	return ProxyListRequest{ConfigVersion: request.GetConfigVersion()}
+}
+
+func proxyListResponseToProto(response ProxyListResponse) *controlpb.ProxyListResponse {
+	proxies := make([]*controlpb.Proxy, 0, len(response.Proxies))
+	for _, proxy := range response.Proxies {
+		proxies = append(proxies, proxyToProto(proxy))
+	}
+	return &controlpb.ProxyListResponse{Version: response.Version, Proxies: proxies}
+}
+
+func proxyListResponseFromProto(response *controlpb.ProxyListResponse) ProxyListResponse {
+	proxies := make([]domain.Proxy, 0, len(response.GetProxies()))
+	for _, proxy := range response.GetProxies() {
+		proxies = append(proxies, proxyFromProto(proxy))
+	}
+	return ProxyListResponse{Version: response.GetVersion(), Proxies: proxies}
 }
 
 func proxySnapshotToProto(snapshot ProxySnapshot) *controlpb.ProxySnapshot {

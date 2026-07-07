@@ -90,7 +90,10 @@ func (s *Store) migrate(ctx context.Context) error {
 	if err := migrateBindProxyCertificates(ctx, s.db); err != nil {
 		return err
 	}
-	return addUserPasswordColumn(ctx, s.db)
+	if err := addUserPasswordColumn(ctx, s.db); err != nil {
+		return err
+	}
+	return addClientKindColumn(ctx, s.db)
 }
 
 type userRepository struct{ db *sql.DB }
@@ -166,16 +169,17 @@ func (r clientRepository) Create(ctx context.Context, client domain.Client) erro
 	if client.UpdatedAt.IsZero() {
 		client.UpdatedAt = now
 	}
-	_, err := r.db.ExecContext(ctx, `insert into clients (id, user_id, name, status, credential_hash, version, last_online_at, last_offline_at, created_at, updated_at) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, client.ID, client.UserID, client.Name, client.Status, client.CredentialHash, client.Version, client.LastOnlineAt, client.LastOfflineAt, client.CreatedAt, client.UpdatedAt)
+	kind := domain.NormalizeClientKind(client.Kind)
+	_, err := r.db.ExecContext(ctx, `insert into clients (id, user_id, name, kind, status, credential_hash, version, last_online_at, last_offline_at, created_at, updated_at) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, client.ID, client.UserID, client.Name, kind, client.Status, client.CredentialHash, client.Version, client.LastOnlineAt, client.LastOfflineAt, client.CreatedAt, client.UpdatedAt)
 	return translateError(err)
 }
 
 func (r clientRepository) ByID(ctx context.Context, id string) (domain.Client, error) {
-	return scanClient(r.db.QueryRowContext(ctx, `select id, user_id, name, status, credential_hash, version, last_online_at, last_offline_at, created_at, updated_at from clients where id = ?`, id))
+	return scanClient(r.db.QueryRowContext(ctx, `select id, user_id, name, kind, status, credential_hash, version, last_online_at, last_offline_at, created_at, updated_at from clients where id = ?`, id))
 }
 
 func (r clientRepository) List(ctx context.Context) ([]domain.Client, error) {
-	rows, err := r.db.QueryContext(ctx, `select id, user_id, name, status, credential_hash, version, last_online_at, last_offline_at, created_at, updated_at from clients order by created_at, id`)
+	rows, err := r.db.QueryContext(ctx, `select id, user_id, name, kind, status, credential_hash, version, last_online_at, last_offline_at, created_at, updated_at from clients order by created_at, id`)
 	if err != nil {
 		return nil, err
 	}
@@ -303,6 +307,27 @@ func (r proxyRepository) List(ctx context.Context) ([]domain.Proxy, error) {
 
 func (r proxyRepository) ByClientID(ctx context.Context, clientID string) ([]domain.Proxy, error) {
 	rows, err := r.db.QueryContext(ctx, `select `+proxySelectColumns+` from proxies where client_id = ? order by created_at, id`, clientID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	proxies := make([]domain.Proxy, 0)
+	for rows.Next() {
+		proxy, err := scanProxyRows(rows)
+		if err != nil {
+			return nil, err
+		}
+		proxies = append(proxies, proxy)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return proxies, nil
+}
+
+func (r proxyRepository) ByUserID(ctx context.Context, userID string) ([]domain.Proxy, error) {
+	rows, err := r.db.QueryContext(ctx, `select `+proxySelectColumns+` from proxies where user_id = ? order by created_at, id`, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -940,13 +965,19 @@ func scanUserRows(rows *sql.Rows) (domain.User, error) {
 
 func scanClient(row *sql.Row) (domain.Client, error) {
 	var client domain.Client
-	err := row.Scan(&client.ID, &client.UserID, &client.Name, &client.Status, &client.CredentialHash, &client.Version, &client.LastOnlineAt, &client.LastOfflineAt, &client.CreatedAt, &client.UpdatedAt)
+	err := row.Scan(&client.ID, &client.UserID, &client.Name, &client.Kind, &client.Status, &client.CredentialHash, &client.Version, &client.LastOnlineAt, &client.LastOfflineAt, &client.CreatedAt, &client.UpdatedAt)
+	if client.Kind == "" {
+		client.Kind = domain.ClientKindProvider
+	}
 	return client, translateError(err)
 }
 
 func scanClientRows(rows *sql.Rows) (domain.Client, error) {
 	var client domain.Client
-	err := rows.Scan(&client.ID, &client.UserID, &client.Name, &client.Status, &client.CredentialHash, &client.Version, &client.LastOnlineAt, &client.LastOfflineAt, &client.CreatedAt, &client.UpdatedAt)
+	err := rows.Scan(&client.ID, &client.UserID, &client.Name, &client.Kind, &client.Status, &client.CredentialHash, &client.Version, &client.LastOnlineAt, &client.LastOfflineAt, &client.CreatedAt, &client.UpdatedAt)
+	if client.Kind == "" {
+		client.Kind = domain.ClientKindProvider
+	}
 	return client, err
 }
 
@@ -1191,6 +1222,10 @@ func migrateProxyEntryIndexes(ctx context.Context, db *sql.DB) error {
 
 func addUserPasswordColumn(ctx context.Context, db *sql.DB) error {
 	return addColumnIfMissing(ctx, db, "users", "password_hash", "text not null default ''")
+}
+
+func addClientKindColumn(ctx context.Context, db *sql.DB) error {
+	return addColumnIfMissing(ctx, db, "clients", "kind", "text not null default 'provider'")
 }
 
 func addClientEnrollmentTokenColumn(ctx context.Context, db *sql.DB) error {
@@ -1527,6 +1562,7 @@ create table if not exists clients (
     id text primary key,
     user_id text not null references users(id) on delete cascade,
     name text not null,
+    kind text not null default 'provider',
     status text not null,
     credential_hash text not null,
     version integer not null default 0,

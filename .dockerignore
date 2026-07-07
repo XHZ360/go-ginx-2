@@ -14,3 +14,4 @@ admin-ui/coverage/
 *.local*
 *.private*
 deploye*.jsonc
+*.exe

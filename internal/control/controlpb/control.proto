@@ -11,6 +11,8 @@ enum MessageType {
   MESSAGE_TYPE_HEARTBEAT = 3;
   MESSAGE_TYPE_OPEN_STREAM = 4;
   MESSAGE_TYPE_PROXY_SNAPSHOT = 5;
+  MESSAGE_TYPE_PROXY_LIST_REQUEST = 6;
+  MESSAGE_TYPE_PROXY_LIST_RESPONSE = 7;
 }
 
 message Envelope {
@@ -75,6 +77,15 @@ message OpenStream {
   string connection_id = 3;
   string target_host = 4;
   int32 target_port = 5;
+}
+
+message ProxyListRequest {
+  int64 config_version = 1;
+}
+
+message ProxyListResponse {
+  int64 version = 1;
+  repeated Proxy proxies = 2;
 }
 
 enum MuxFrameType {

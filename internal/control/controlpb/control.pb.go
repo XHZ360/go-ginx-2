@@ -24,12 +24,14 @@ const (
 type MessageType int32
 
 const (
-	MessageType_MESSAGE_TYPE_UNSPECIFIED    MessageType = 0
-	MessageType_MESSAGE_TYPE_AUTH_REQUEST   MessageType = 1
-	MessageType_MESSAGE_TYPE_AUTH_RESPONSE  MessageType = 2
-	MessageType_MESSAGE_TYPE_HEARTBEAT      MessageType = 3
-	MessageType_MESSAGE_TYPE_OPEN_STREAM    MessageType = 4
-	MessageType_MESSAGE_TYPE_PROXY_SNAPSHOT MessageType = 5
+	MessageType_MESSAGE_TYPE_UNSPECIFIED         MessageType = 0
+	MessageType_MESSAGE_TYPE_AUTH_REQUEST        MessageType = 1
+	MessageType_MESSAGE_TYPE_AUTH_RESPONSE       MessageType = 2
+	MessageType_MESSAGE_TYPE_HEARTBEAT           MessageType = 3
+	MessageType_MESSAGE_TYPE_OPEN_STREAM         MessageType = 4
+	MessageType_MESSAGE_TYPE_PROXY_SNAPSHOT      MessageType = 5
+	MessageType_MESSAGE_TYPE_PROXY_LIST_REQUEST  MessageType = 6
+	MessageType_MESSAGE_TYPE_PROXY_LIST_RESPONSE MessageType = 7
 )
 
 // Enum value maps for MessageType.
@@ -41,14 +43,18 @@ var (
 		3: "MESSAGE_TYPE_HEARTBEAT",
 		4: "MESSAGE_TYPE_OPEN_STREAM",
 		5: "MESSAGE_TYPE_PROXY_SNAPSHOT",
+		6: "MESSAGE_TYPE_PROXY_LIST_REQUEST",
+		7: "MESSAGE_TYPE_PROXY_LIST_RESPONSE",
 	}
 	MessageType_value = map[string]int32{
-		"MESSAGE_TYPE_UNSPECIFIED":    0,
-		"MESSAGE_TYPE_AUTH_REQUEST":   1,
-		"MESSAGE_TYPE_AUTH_RESPONSE":  2,
-		"MESSAGE_TYPE_HEARTBEAT":      3,
-		"MESSAGE_TYPE_OPEN_STREAM":    4,
-		"MESSAGE_TYPE_PROXY_SNAPSHOT": 5,
+		"MESSAGE_TYPE_UNSPECIFIED":         0,
+		"MESSAGE_TYPE_AUTH_REQUEST":        1,
+		"MESSAGE_TYPE_AUTH_RESPONSE":       2,
+		"MESSAGE_TYPE_HEARTBEAT":           3,
+		"MESSAGE_TYPE_OPEN_STREAM":         4,
+		"MESSAGE_TYPE_PROXY_SNAPSHOT":      5,
+		"MESSAGE_TYPE_PROXY_LIST_REQUEST":  6,
+		"MESSAGE_TYPE_PROXY_LIST_RESPONSE": 7,
 	}
 )
 
@@ -730,6 +736,102 @@ func (x *OpenStream) GetTargetPort() int32 {
 	return 0
 }
 
+type ProxyListRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	ConfigVersion int64                  `protobuf:"varint,1,opt,name=config_version,json=configVersion,proto3" json:"config_version,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ProxyListRequest) Reset() {
+	*x = ProxyListRequest{}
+	mi := &file_internal_control_controlpb_control_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ProxyListRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ProxyListRequest) ProtoMessage() {}
+
+func (x *ProxyListRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_internal_control_controlpb_control_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ProxyListRequest.ProtoReflect.Descriptor instead.
+func (*ProxyListRequest) Descriptor() ([]byte, []int) {
+	return file_internal_control_controlpb_control_proto_rawDescGZIP(), []int{7}
+}
+
+func (x *ProxyListRequest) GetConfigVersion() int64 {
+	if x != nil {
+		return x.ConfigVersion
+	}
+	return 0
+}
+
+type ProxyListResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Version       int64                  `protobuf:"varint,1,opt,name=version,proto3" json:"version,omitempty"`
+	Proxies       []*Proxy               `protobuf:"bytes,2,rep,name=proxies,proto3" json:"proxies,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ProxyListResponse) Reset() {
+	*x = ProxyListResponse{}
+	mi := &file_internal_control_controlpb_control_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ProxyListResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ProxyListResponse) ProtoMessage() {}
+
+func (x *ProxyListResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_internal_control_controlpb_control_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ProxyListResponse.ProtoReflect.Descriptor instead.
+func (*ProxyListResponse) Descriptor() ([]byte, []int) {
+	return file_internal_control_controlpb_control_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *ProxyListResponse) GetVersion() int64 {
+	if x != nil {
+		return x.Version
+	}
+	return 0
+}
+
+func (x *ProxyListResponse) GetProxies() []*Proxy {
+	if x != nil {
+		return x.Proxies
+	}
+	return nil
+}
+
 type MuxFrame struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	StreamId      uint64                 `protobuf:"varint,1,opt,name=stream_id,json=streamId,proto3" json:"stream_id,omitempty"`
@@ -742,7 +844,7 @@ type MuxFrame struct {
 
 func (x *MuxFrame) Reset() {
 	*x = MuxFrame{}
-	mi := &file_internal_control_controlpb_control_proto_msgTypes[7]
+	mi := &file_internal_control_controlpb_control_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -754,7 +856,7 @@ func (x *MuxFrame) String() string {
 func (*MuxFrame) ProtoMessage() {}
 
 func (x *MuxFrame) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_control_controlpb_control_proto_msgTypes[7]
+	mi := &file_internal_control_controlpb_control_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -767,7 +869,7 @@ func (x *MuxFrame) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MuxFrame.ProtoReflect.Descriptor instead.
 func (*MuxFrame) Descriptor() ([]byte, []int) {
-	return file_internal_control_controlpb_control_proto_rawDescGZIP(), []int{7}
+	return file_internal_control_controlpb_control_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *MuxFrame) GetStreamId() uint64 {
@@ -864,19 +966,26 @@ const file_internal_control_controlpb_control_proto_rawDesc = "" +
 	"\vtarget_host\x18\x04 \x01(\tR\n" +
 	"targetHost\x12\x1f\n" +
 	"\vtarget_port\x18\x05 \x01(\x05R\n" +
-	"targetPort\"\x8e\x01\n" +
+	"targetPort\"9\n" +
+	"\x10ProxyListRequest\x12%\n" +
+	"\x0econfig_version\x18\x01 \x01(\x03R\rconfigVersion\"a\n" +
+	"\x11ProxyListResponse\x12\x18\n" +
+	"\aversion\x18\x01 \x01(\x03R\aversion\x122\n" +
+	"\aproxies\x18\x02 \x03(\v2\x18.goginx.control.v1.ProxyR\aproxies\"\x8e\x01\n" +
 	"\bMuxFrame\x12\x1b\n" +
 	"\tstream_id\x18\x01 \x01(\x04R\bstreamId\x123\n" +
 	"\x04type\x18\x02 \x01(\x0e2\x1f.goginx.control.v1.MuxFrameTypeR\x04type\x12\x18\n" +
 	"\apayload\x18\x03 \x01(\fR\apayload\x12\x16\n" +
-	"\x06reason\x18\x04 \x01(\tR\x06reason*\xc5\x01\n" +
+	"\x06reason\x18\x04 \x01(\tR\x06reason*\x90\x02\n" +
 	"\vMessageType\x12\x1c\n" +
 	"\x18MESSAGE_TYPE_UNSPECIFIED\x10\x00\x12\x1d\n" +
 	"\x19MESSAGE_TYPE_AUTH_REQUEST\x10\x01\x12\x1e\n" +
 	"\x1aMESSAGE_TYPE_AUTH_RESPONSE\x10\x02\x12\x1a\n" +
 	"\x16MESSAGE_TYPE_HEARTBEAT\x10\x03\x12\x1c\n" +
 	"\x18MESSAGE_TYPE_OPEN_STREAM\x10\x04\x12\x1f\n" +
-	"\x1bMESSAGE_TYPE_PROXY_SNAPSHOT\x10\x05*\x94\x01\n" +
+	"\x1bMESSAGE_TYPE_PROXY_SNAPSHOT\x10\x05\x12#\n" +
+	"\x1fMESSAGE_TYPE_PROXY_LIST_REQUEST\x10\x06\x12$\n" +
+	" MESSAGE_TYPE_PROXY_LIST_RESPONSE\x10\a*\x94\x01\n" +
 	"\fMuxFrameType\x12\x1e\n" +
 	"\x1aMUX_FRAME_TYPE_UNSPECIFIED\x10\x00\x12\x17\n" +
 	"\x13MUX_FRAME_TYPE_OPEN\x10\x01\x12\x17\n" +
@@ -897,28 +1006,31 @@ func file_internal_control_controlpb_control_proto_rawDescGZIP() []byte {
 }
 
 var file_internal_control_controlpb_control_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_internal_control_controlpb_control_proto_msgTypes = make([]protoimpl.MessageInfo, 8)
+var file_internal_control_controlpb_control_proto_msgTypes = make([]protoimpl.MessageInfo, 10)
 var file_internal_control_controlpb_control_proto_goTypes = []any{
-	(MessageType)(0),      // 0: goginx.control.v1.MessageType
-	(MuxFrameType)(0),     // 1: goginx.control.v1.MuxFrameType
-	(*Envelope)(nil),      // 2: goginx.control.v1.Envelope
-	(*AuthRequest)(nil),   // 3: goginx.control.v1.AuthRequest
-	(*AuthResponse)(nil),  // 4: goginx.control.v1.AuthResponse
-	(*Heartbeat)(nil),     // 5: goginx.control.v1.Heartbeat
-	(*ProxySnapshot)(nil), // 6: goginx.control.v1.ProxySnapshot
-	(*Proxy)(nil),         // 7: goginx.control.v1.Proxy
-	(*OpenStream)(nil),    // 8: goginx.control.v1.OpenStream
-	(*MuxFrame)(nil),      // 9: goginx.control.v1.MuxFrame
+	(MessageType)(0),          // 0: goginx.control.v1.MessageType
+	(MuxFrameType)(0),         // 1: goginx.control.v1.MuxFrameType
+	(*Envelope)(nil),          // 2: goginx.control.v1.Envelope
+	(*AuthRequest)(nil),       // 3: goginx.control.v1.AuthRequest
+	(*AuthResponse)(nil),      // 4: goginx.control.v1.AuthResponse
+	(*Heartbeat)(nil),         // 5: goginx.control.v1.Heartbeat
+	(*ProxySnapshot)(nil),     // 6: goginx.control.v1.ProxySnapshot
+	(*Proxy)(nil),             // 7: goginx.control.v1.Proxy
+	(*OpenStream)(nil),        // 8: goginx.control.v1.OpenStream
+	(*ProxyListRequest)(nil),  // 9: goginx.control.v1.ProxyListRequest
+	(*ProxyListResponse)(nil), // 10: goginx.control.v1.ProxyListResponse
+	(*MuxFrame)(nil),          // 11: goginx.control.v1.MuxFrame
 }
 var file_internal_control_controlpb_control_proto_depIdxs = []int32{
 	0, // 0: goginx.control.v1.Envelope.type:type_name -> goginx.control.v1.MessageType
 	7, // 1: goginx.control.v1.ProxySnapshot.proxies:type_name -> goginx.control.v1.Proxy
-	1, // 2: goginx.control.v1.MuxFrame.type:type_name -> goginx.control.v1.MuxFrameType
-	3, // [3:3] is the sub-list for method output_type
-	3, // [3:3] is the sub-list for method input_type
-	3, // [3:3] is the sub-list for extension type_name
-	3, // [3:3] is the sub-list for extension extendee
-	0, // [0:3] is the sub-list for field type_name
+	7, // 2: goginx.control.v1.ProxyListResponse.proxies:type_name -> goginx.control.v1.Proxy
+	1, // 3: goginx.control.v1.MuxFrame.type:type_name -> goginx.control.v1.MuxFrameType
+	4, // [4:4] is the sub-list for method output_type
+	4, // [4:4] is the sub-list for method input_type
+	4, // [4:4] is the sub-list for extension type_name
+	4, // [4:4] is the sub-list for extension extendee
+	0, // [0:4] is the sub-list for field type_name
 }
 
 func init() { file_internal_control_controlpb_control_proto_init() }
@@ -932,7 +1044,7 @@ func file_internal_control_controlpb_control_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_internal_control_controlpb_control_proto_rawDesc), len(file_internal_control_controlpb_control_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   8,
+			NumMessages:   10,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

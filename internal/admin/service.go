@@ -45,6 +45,7 @@ type CreateClientInput struct {
 	ID         string
 	UserID     string
 	Name       string
+	Kind       domain.ClientKind
 	Credential string
 	ActorID    string
 }
@@ -320,7 +321,8 @@ func (service Service) CreateClient(ctx context.Context, input CreateClientInput
 	if _, err := service.Store.Users().ByID(ctx, input.UserID); err != nil {
 		return domain.Client{}, err
 	}
-	client := domain.Client{ID: input.ID, UserID: input.UserID, Name: input.Name, Status: domain.ClientOffline, CredentialHash: domain.HashCredential(input.Credential)}
+	kind := domain.NormalizeClientKind(input.Kind)
+	client := domain.Client{ID: input.ID, UserID: input.UserID, Name: input.Name, Kind: kind, Status: domain.ClientOffline, CredentialHash: domain.HashCredential(input.Credential)}
 	if err := service.Store.Clients().Create(ctx, client); err != nil {
 		return domain.Client{}, err
 	}
@@ -1553,6 +1555,10 @@ func validateCreateClientInput(input CreateClientInput) error {
 	}
 	if strings.TrimSpace(input.Name) == "" {
 		fields["name"] = "client name is required"
+	}
+	kind := domain.NormalizeClientKind(input.Kind)
+	if !kind.Valid() {
+		fields["kind"] = "client kind is invalid"
 	}
 	if len(fields) > 0 {
 		return contracterr.Validation("validation failed", fields)

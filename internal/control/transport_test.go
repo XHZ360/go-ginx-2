@@ -712,6 +712,109 @@ func clientStatusLogMatches(got []domain.ClientStatus, want []domain.ClientStatu
 	return true
 }
 
+func TestConsumerQUICReceivesProxyListInsteadOfSnapshot(t *testing.T) {
+	now := time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC)
+	authStore := newConsumerAuthStore(domain.HashCredential("secret"))
+	authStore.proxies = []domain.Proxy{
+		{ID: "p1", UserID: "user-1", ClientID: "client-provider", Name: "ssh", Type: domain.ProxyTCP, Status: domain.ProxyEnabled, EntryPort: 10022, TargetHost: "127.0.0.1", TargetPort: 22},
+		{ID: "p2", UserID: "user-1", ClientID: "client-provider", Name: "web", Type: domain.ProxyHTTP, Status: domain.ProxyEnabled, EntryHost: "app.example.com", TargetHost: "127.0.0.1", TargetPort: 8080},
+		{ID: "p3", UserID: "user-1", ClientID: "client-provider", Name: "disabled", Type: domain.ProxyTCP, Status: domain.ProxyDisabled, EntryPort: 10023, TargetHost: "127.0.0.1", TargetPort: 23},
+		{ID: "p4", UserID: "user-2", ClientID: "other-client", Name: "other", Type: domain.ProxyTCP, Status: domain.ProxyEnabled, EntryPort: 10024, TargetHost: "127.0.0.1", TargetPort: 24},
+	}
+	listener, _ := startTestListener(t, Authenticator{Store: authStore, Now: func() time.Time { return now }})
+
+	client, response, err := DialAndAuthenticate(context.Background(), listener.Addr().String(), testClientTLSConfig(t), nil, AuthRequest{ClientID: "client-consumer", Credential: "secret", Timestamp: now, Protocols: []domain.Protocol{domain.ProtocolQUIC}})
+	if err != nil {
+		t.Fatalf("dial authenticate: %v", err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+	if !response.Accepted {
+		t.Fatalf("expected accepted: %+v", response)
+	}
+
+	// Consumer should receive ProxyListResponse, not ProxySnapshot.
+	envelope, err := ReadMessage(client.stream)
+	if err != nil {
+		t.Fatalf("read proxy list: %v", err)
+	}
+	if envelope.Type != MessageProxyListResponse {
+		t.Fatalf("expected proxy list response, got %s", envelope.Type)
+	}
+	listResp, err := DecodePayload[ProxyListResponse](envelope)
+	if err != nil {
+		t.Fatalf("decode proxy list: %v", err)
+	}
+	// Should include enabled proxies for user-1 only (p1, p2), not disabled (p3) or other user (p4).
+	if len(listResp.Proxies) != 2 {
+		t.Fatalf("expected 2 enabled proxies, got %d", len(listResp.Proxies))
+	}
+	if listResp.Proxies[0].ID != "p1" || listResp.Proxies[1].ID != "p2" {
+		t.Fatalf("unexpected proxies: %+v", listResp.Proxies)
+	}
+}
+
+func TestConsumerConnectionDoesNotReplaceProviderSession(t *testing.T) {
+	now := time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC)
+	authStore := newConsumerAuthStore(domain.HashCredential("secret"))
+	listener, sessions := startTestListener(t, Authenticator{
+		Store:             authStore,
+		HeartbeatInterval: 10 * time.Second,
+		Now:               func() time.Time { return now },
+	})
+
+	// First, connect as provider.
+	providerClient, providerResp, err := DialAndAuthenticate(context.Background(), listener.Addr().String(), testClientTLSConfig(t), nil, AuthRequest{ClientID: "client-provider", Credential: "secret", Timestamp: now, Protocols: []domain.Protocol{domain.ProtocolQUIC}})
+	if err != nil {
+		t.Fatalf("provider dial: %v", err)
+	}
+	t.Cleanup(func() { _ = providerClient.Close() })
+	if !providerResp.Accepted {
+		t.Fatalf("provider not accepted: %+v", providerResp)
+	}
+	if _, err := providerClient.ReadProxySnapshot(); err != nil {
+		t.Fatalf("provider read snapshot: %v", err)
+	}
+
+	// Then, connect as consumer.
+	consumerClient, consumerResp, err := DialAndAuthenticate(context.Background(), listener.Addr().String(), testClientTLSConfig(t), nil, AuthRequest{ClientID: "client-consumer", Credential: "secret", Timestamp: now, Protocols: []domain.Protocol{domain.ProtocolQUIC}})
+	if err != nil {
+		t.Fatalf("consumer dial: %v", err)
+	}
+	t.Cleanup(func() { _ = consumerClient.Close() })
+	if !consumerResp.Accepted {
+		t.Fatalf("consumer not accepted: %+v", consumerResp)
+	}
+	// Read the proxy list response.
+	envelope, err := ReadMessage(consumerClient.stream)
+	if err != nil {
+		t.Fatalf("consumer read proxy list: %v", err)
+	}
+	if envelope.Type != MessageProxyListResponse {
+		t.Fatalf("expected proxy list response, got %s", envelope.Type)
+	}
+
+	// Provider session should still be the latest for client-provider.
+	providerLatest, ok := sessions.Latest("client-provider")
+	if !ok {
+		t.Fatal("provider session should still exist")
+	}
+	if providerLatest.ID != providerResp.SessionID {
+		t.Fatalf("provider session replaced: expected %s, got %s", providerResp.SessionID, providerLatest.ID)
+	}
+
+	// Consumer session should be the latest for client-consumer.
+	consumerLatest, ok := sessions.Latest("client-consumer")
+	if !ok {
+		t.Fatal("consumer session should exist")
+	}
+	if consumerLatest.ID != consumerResp.SessionID {
+		t.Fatalf("consumer session mismatch: expected %s, got %s", consumerResp.SessionID, consumerLatest.ID)
+	}
+	if consumerLatest.ClientKind != domain.ClientKindConsumer {
+		t.Fatalf("expected consumer kind, got %s", consumerLatest.ClientKind)
+	}
+}
+
 func parseTestPort(port string) (int, bool) {
 	value := 0
 	for _, char := range port {

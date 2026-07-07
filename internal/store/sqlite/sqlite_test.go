@@ -952,6 +952,160 @@ insert into managed_certificates (id, proxy_id, host, status, provider, cert_fil
 	defer reopened.Close()
 }
 
+func TestClientKindDefaultsToProviderOnLegacyDB(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "legacy-kind.db")
+	legacy, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if _, err := legacy.ExecContext(ctx, `
+create table users (
+    id text primary key,
+    username text not null unique,
+    role text not null,
+    status text not null,
+    created_at timestamp not null,
+    updated_at timestamp not null
+);
+create table clients (
+    id text primary key,
+    user_id text not null references users(id) on delete cascade,
+    name text not null,
+    status text not null,
+    credential_hash text not null,
+    version integer not null default 0,
+    last_online_at timestamp,
+    last_offline_at timestamp,
+    created_at timestamp not null,
+    updated_at timestamp not null
+);
+insert into users (id, username, role, status, created_at, updated_at) values ('u1', 'alice', 'user', 'enabled', ?, ?);
+insert into clients (id, user_id, name, status, credential_hash, created_at, updated_at) values ('c1', 'u1', 'home', 'offline', 'hash', ?, ?);
+`, now, now, now, now); err != nil {
+		t.Fatalf("seed legacy db: %v", err)
+	}
+	if err := legacy.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	db, err := Open(path)
+	if err != nil {
+		t.Fatalf("open migrated db: %v", err)
+	}
+	defer db.Close()
+
+	loaded, err := db.Clients().ByID(ctx, "c1")
+	if err != nil {
+		t.Fatalf("load migrated client: %v", err)
+	}
+	if loaded.Kind != domain.ClientKindProvider {
+		t.Fatalf("expected legacy client kind to be provider, got %q", loaded.Kind)
+	}
+}
+
+func TestClientConsumerKindPersists(t *testing.T) {
+	ctx := context.Background()
+	db := openTestStore(t)
+
+	user := domain.User{ID: "u1", Username: "alice", Role: domain.RoleUser, Status: domain.UserEnabled}
+	if err := db.Users().Create(ctx, user); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+
+	provider := domain.Client{ID: "c-provider", UserID: "u1", Name: "provider", Status: domain.ClientOffline, CredentialHash: domain.HashCredential("s1")}
+	consumer := domain.Client{ID: "c-consumer", UserID: "u1", Name: "consumer", Kind: domain.ClientKindConsumer, Status: domain.ClientOffline, CredentialHash: domain.HashCredential("s2")}
+	if err := db.Clients().Create(ctx, provider); err != nil {
+		t.Fatalf("create provider: %v", err)
+	}
+	if err := db.Clients().Create(ctx, consumer); err != nil {
+		t.Fatalf("create consumer: %v", err)
+	}
+
+	loadedProvider, err := db.Clients().ByID(ctx, "c-provider")
+	if err != nil {
+		t.Fatalf("load provider: %v", err)
+	}
+	if loadedProvider.Kind != domain.ClientKindProvider {
+		t.Fatalf("expected provider kind, got %q", loadedProvider.Kind)
+	}
+
+	loadedConsumer, err := db.Clients().ByID(ctx, "c-consumer")
+	if err != nil {
+		t.Fatalf("load consumer: %v", err)
+	}
+	if loadedConsumer.Kind != domain.ClientKindConsumer {
+		t.Fatalf("expected consumer kind, got %q", loadedConsumer.Kind)
+	}
+
+	listed, err := db.Clients().List(ctx)
+	if err != nil {
+		t.Fatalf("list clients: %v", err)
+	}
+	if len(listed) != 2 {
+		t.Fatalf("expected 2 clients, got %d", len(listed))
+	}
+}
+
+func TestProxyByUserIDReturnsUserProxies(t *testing.T) {
+	ctx := context.Background()
+	db := openTestStore(t)
+
+	user1 := domain.User{ID: "u1", Username: "alice", Role: domain.RoleUser, Status: domain.UserEnabled}
+	user2 := domain.User{ID: "u2", Username: "bob", Role: domain.RoleUser, Status: domain.UserEnabled}
+	if err := db.Users().Create(ctx, user1); err != nil {
+		t.Fatalf("create user1: %v", err)
+	}
+	if err := db.Users().Create(ctx, user2); err != nil {
+		t.Fatalf("create user2: %v", err)
+	}
+	client1 := domain.Client{ID: "c1", UserID: "u1", Name: "home", Status: domain.ClientOffline, CredentialHash: domain.HashCredential("s1")}
+	client2 := domain.Client{ID: "c2", UserID: "u2", Name: "office", Status: domain.ClientOffline, CredentialHash: domain.HashCredential("s2")}
+	if err := db.Clients().Create(ctx, client1); err != nil {
+		t.Fatalf("create client1: %v", err)
+	}
+	if err := db.Clients().Create(ctx, client2); err != nil {
+		t.Fatalf("create client2: %v", err)
+	}
+
+	proxy1 := domain.Proxy{ID: "p1", UserID: "u1", ClientID: "c1", Name: "ssh", Type: domain.ProxyTCP, Status: domain.ProxyEnabled, EntryPort: 10022, TargetHost: "127.0.0.1", TargetPort: 22}
+	proxy2 := domain.Proxy{ID: "p2", UserID: "u1", ClientID: "c1", Name: "web", Type: domain.ProxyHTTP, Status: domain.ProxyEnabled, EntryHost: "app.example.com", TargetHost: "127.0.0.1", TargetPort: 8080}
+	proxy3 := domain.Proxy{ID: "p3", UserID: "u2", ClientID: "c2", Name: "other", Type: domain.ProxyTCP, Status: domain.ProxyEnabled, EntryPort: 10023, TargetHost: "127.0.0.1", TargetPort: 23}
+	for _, p := range []domain.Proxy{proxy1, proxy2, proxy3} {
+		if err := db.Proxies().Create(ctx, p); err != nil {
+			t.Fatalf("create proxy %s: %v", p.ID, err)
+		}
+	}
+
+	found, err := db.Proxies().ByUserID(ctx, "u1")
+	if err != nil {
+		t.Fatalf("by user id: %v", err)
+	}
+	if len(found) != 2 {
+		t.Fatalf("expected 2 proxies for u1, got %d", len(found))
+	}
+	if found[0].ID != "p1" || found[1].ID != "p2" {
+		t.Fatalf("unexpected proxy order: %s, %s", found[0].ID, found[1].ID)
+	}
+
+	found2, err := db.Proxies().ByUserID(ctx, "u2")
+	if err != nil {
+		t.Fatalf("by user id u2: %v", err)
+	}
+	if len(found2) != 1 || found2[0].ID != "p3" {
+		t.Fatalf("expected 1 proxy for u2, got %+v", found2)
+	}
+
+	foundEmpty, err := db.Proxies().ByUserID(ctx, "u-missing")
+	if err != nil {
+		t.Fatalf("by missing user: %v", err)
+	}
+	if len(foundEmpty) != 0 {
+		t.Fatalf("expected 0 proxies for missing user, got %d", len(foundEmpty))
+	}
+}
+
 func indexExists(t *testing.T, ctx context.Context, db *sql.DB, name string) bool {
 	t.Helper()
 	var count int

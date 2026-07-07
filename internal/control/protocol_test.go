@@ -163,3 +163,79 @@ func TestMuxFrameRejectsOversizedPayload(t *testing.T) {
 		t.Fatal("expected oversized mux payload error")
 	}
 }
+
+func TestProxyListRequestRoundTrip(t *testing.T) {
+	request := ProxyListRequest{ConfigVersion: 5}
+
+	var buffer bytes.Buffer
+	if err := WriteMessage(&buffer, MessageProxyListRequest, request); err != nil {
+		t.Fatalf("write proxy list request: %v", err)
+	}
+	envelope, err := ReadMessage(&buffer)
+	if err != nil {
+		t.Fatalf("read proxy list request: %v", err)
+	}
+	if envelope.Type != MessageProxyListRequest {
+		t.Fatalf("expected %s, got %s", MessageProxyListRequest, envelope.Type)
+	}
+	decoded, err := DecodePayload[ProxyListRequest](envelope)
+	if err != nil {
+		t.Fatalf("decode proxy list request: %v", err)
+	}
+	if decoded.ConfigVersion != 5 {
+		t.Fatalf("unexpected config version: %d", decoded.ConfigVersion)
+	}
+}
+
+func TestProxyListResponseRoundTrip(t *testing.T) {
+	response := ProxyListResponse{
+		Version: 3,
+		Proxies: []domain.Proxy{
+			{ID: "p1", UserID: "u1", ClientID: "c1", Name: "ssh", Type: domain.ProxyTCP, Status: domain.ProxyEnabled, EntryPort: 10022, TargetHost: "127.0.0.1", TargetPort: 22},
+			{ID: "p2", UserID: "u1", ClientID: "c1", Name: "web", Type: domain.ProxyHTTP, Status: domain.ProxyEnabled, EntryHost: "app.example.com", TargetHost: "127.0.0.1", TargetPort: 8080},
+		},
+	}
+
+	var buffer bytes.Buffer
+	if err := WriteMessage(&buffer, MessageProxyListResponse, response); err != nil {
+		t.Fatalf("write proxy list response: %v", err)
+	}
+	envelope, err := ReadMessage(&buffer)
+	if err != nil {
+		t.Fatalf("read proxy list response: %v", err)
+	}
+	if envelope.Type != MessageProxyListResponse {
+		t.Fatalf("expected %s, got %s", MessageProxyListResponse, envelope.Type)
+	}
+	decoded, err := DecodePayload[ProxyListResponse](envelope)
+	if err != nil {
+		t.Fatalf("decode proxy list response: %v", err)
+	}
+	if decoded.Version != 3 {
+		t.Fatalf("unexpected version: %d", decoded.Version)
+	}
+	if len(decoded.Proxies) != 2 {
+		t.Fatalf("expected 2 proxies, got %d", len(decoded.Proxies))
+	}
+	if decoded.Proxies[0].ID != "p1" || decoded.Proxies[1].ID != "p2" {
+		t.Fatalf("unexpected proxies: %+v", decoded.Proxies)
+	}
+}
+
+func TestEmptyProxyListResponseRoundTrip(t *testing.T) {
+	var buffer bytes.Buffer
+	if err := WriteMessage(&buffer, MessageProxyListResponse, ProxyListResponse{}); err != nil {
+		t.Fatalf("write empty proxy list response: %v", err)
+	}
+	envelope, err := ReadMessage(&buffer)
+	if err != nil {
+		t.Fatalf("read empty proxy list response: %v", err)
+	}
+	decoded, err := DecodePayload[ProxyListResponse](envelope)
+	if err != nil {
+		t.Fatalf("decode empty proxy list response: %v", err)
+	}
+	if decoded.Version != 0 || len(decoded.Proxies) != 0 {
+		t.Fatalf("unexpected empty response: %+v", decoded)
+	}
+}

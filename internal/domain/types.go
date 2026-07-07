@@ -50,6 +50,30 @@ const (
 	UserDisabled UserStatus = "disabled"
 )
 
+type ClientKind string
+
+const (
+	ClientKindProvider ClientKind = "provider"
+	ClientKindConsumer ClientKind = "consumer"
+)
+
+func (kind ClientKind) Valid() bool {
+	switch kind {
+	case ClientKindProvider, ClientKindConsumer:
+		return true
+	default:
+		return false
+	}
+}
+
+// NormalizeClientKind treats empty kind as provider for backward compatibility.
+func NormalizeClientKind(kind ClientKind) ClientKind {
+	if kind == "" {
+		return ClientKindProvider
+	}
+	return kind
+}
+
 type ClientStatus string
 
 const (
@@ -228,6 +252,7 @@ type Client struct {
 	ID             string
 	UserID         string
 	Name           string
+	Kind           ClientKind
 	Status         ClientStatus
 	CredentialHash string
 	Version        int64
@@ -395,6 +420,10 @@ func (client Client) Validate() error {
 	}
 	if strings.TrimSpace(client.CredentialHash) == "" {
 		return errors.New("client credential hash is required")
+	}
+	kind := NormalizeClientKind(client.Kind)
+	if !kind.Valid() {
+		return errors.New("client kind is invalid")
 	}
 	return nil
 }

@@ -28,6 +28,10 @@ import (
 const ControlALPN = "go-ginx-control/1"
 
 const controlAuthTimeout = 10 * time.Second
+
+// ProviderOpenTimeout is the maximum time the server waits for a provider
+// to open a sub-stream when bridging a consumer SDK stream.
+const ProviderOpenTimeout = 15 * time.Second
 const httpTargetDialTimeout = 10 * time.Second
 const httpUpgradeHandshakeTimeout = 30 * time.Second
 
@@ -67,6 +71,14 @@ type quicStreamOpener struct {
 
 func (opener quicStreamOpener) OpenStream(ctx context.Context) (io.ReadWriteCloser, error) {
 	stream, err := opener.conn.OpenStreamSync(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return wrapProxyStream(stream), nil
+}
+
+func (opener quicStreamOpener) AcceptStream(ctx context.Context) (io.ReadWriteCloser, error) {
+	stream, err := opener.conn.AcceptStream(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -292,6 +304,7 @@ func (server Server) handleControl(ctx context.Context, stream io.ReadWriteClose
 		SessionID:     sessionID,
 		ClientID:      result.Client.ID,
 		UserID:        result.User.ID,
+		ClientKind:    domain.NormalizeClientKind(result.Client.Kind),
 		Protocol:      result.SelectedProtocol,
 		ConfigVersion: result.ConfigVersion,
 		StreamOpener:  opener,
@@ -321,10 +334,19 @@ func (server Server) handleControl(ctx context.Context, stream io.ReadWriteClose
 	if err := WriteMessage(stream, MessageAuthResponse, AuthResponse{Accepted: true, SessionID: registered.ID, SelectedProtocol: result.SelectedProtocol, HeartbeatInterval: result.HeartbeatInterval, ConfigVersion: result.ConfigVersion}); err != nil {
 		return
 	}
-	log.Printf("control client authenticated: client_id=%s user_id=%s protocol=%s session_id=%s config_version=%d", result.Client.ID, result.User.ID, result.SelectedProtocol, registered.ID, result.ConfigVersion)
-	if err := server.sendProxySnapshot(ctx, stream, result.Client.ID, result.ConfigVersion); err != nil {
-		log.Printf("control proxy snapshot failed: client_id=%s session_id=%s error=%v", result.Client.ID, registered.ID, err)
-		return
+	log.Printf("control client authenticated: client_id=%s user_id=%s protocol=%s session_id=%s config_version=%d kind=%s", result.Client.ID, result.User.ID, result.SelectedProtocol, registered.ID, result.ConfigVersion, result.Client.Kind)
+
+	clientKind := domain.NormalizeClientKind(result.Client.Kind)
+	if clientKind == domain.ClientKindConsumer {
+		if err := server.sendProxyList(ctx, stream, result.User.ID, result.ConfigVersion); err != nil {
+			log.Printf("control proxy list failed: client_id=%s session_id=%s error=%v", result.Client.ID, registered.ID, err)
+			return
+		}
+	} else {
+		if err := server.sendProxySnapshot(ctx, stream, result.Client.ID, result.ConfigVersion); err != nil {
+			log.Printf("control proxy snapshot failed: client_id=%s session_id=%s error=%v", result.Client.ID, registered.ID, err)
+			return
+		}
 	}
 	if conn, ok := stream.(interface{ SetDeadline(time.Time) error }); ok {
 		_ = conn.SetDeadline(time.Time{})
@@ -347,7 +369,11 @@ func (server Server) handleControl(ctx context.Context, stream io.ReadWriteClose
 	if server.setClientRuntimeStatus(ctx, result.Client.ID, domain.ClientOnline) {
 		markedOnline = true
 	}
-	server.handleHeartbeats(stream)
+	if clientKind == domain.ClientKindConsumer {
+		server.handleConsumerControl(ctx, stream, opener, registered, result.User.ID)
+	} else {
+		server.handleHeartbeats(stream)
+	}
 }
 
 func (server Server) setClientRuntimeStatus(ctx context.Context, clientID string, status domain.ClientStatus) bool {
@@ -384,6 +410,26 @@ func (server Server) sendProxySnapshot(ctx context.Context, stream io.Writer, cl
 	return WriteMessage(stream, MessageProxySnapshot, ProxySnapshot{Version: version, Proxies: proxies})
 }
 
+// sendProxyList sends a ProxyListResponse to a consumer client, containing
+// all enabled proxies belonging to the consumer's user.
+func (server Server) sendProxyList(ctx context.Context, stream io.Writer, userID string, version int64) error {
+	proxyRepository := server.Authenticator.Store.Proxies()
+	if proxyRepository == nil {
+		return WriteMessage(stream, MessageProxyListResponse, ProxyListResponse{Version: version})
+	}
+	allProxies, err := proxyRepository.ByUserID(ctx, userID)
+	if err != nil {
+		return err
+	}
+	enabled := make([]domain.Proxy, 0, len(allProxies))
+	for _, proxy := range allProxies {
+		if proxy.Status == domain.ProxyEnabled {
+			enabled = append(enabled, proxy)
+		}
+	}
+	return WriteMessage(stream, MessageProxyListResponse, ProxyListResponse{Version: version, Proxies: enabled})
+}
+
 func (server Server) handleHeartbeats(stream io.Reader) {
 	for {
 		envelope, err := ReadMessage(stream)
@@ -408,6 +454,148 @@ func (server Server) handleHeartbeats(stream io.Reader) {
 				ErrorSummary:  heartbeat.ErrorSummary,
 			},
 		})
+	}
+}
+
+// handleConsumerControl runs the consumer session loop: it accepts SDK-initiated
+// streams in the background and processes heartbeat + proxy list request messages
+// on the control stream.
+func (server Server) handleConsumerControl(ctx context.Context, stream io.ReadWriteCloser, opener session.StreamOpener, sess session.Session, userID string) {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	if acceptor, ok := opener.(session.StreamAcceptor); ok {
+		go func() {
+			server.acceptSDKStreams(ctx, acceptor, sess, userID)
+			cancel()
+		}()
+	}
+
+	for {
+		envelope, err := ReadMessage(stream)
+		if err != nil {
+			return
+		}
+		switch envelope.Type {
+		case MessageHeartbeat:
+			heartbeat, err := DecodePayload[Heartbeat](envelope)
+			if err != nil {
+				continue
+			}
+			_, _ = server.Sessions.Heartbeat(session.HeartbeatInput{
+				SessionID:     heartbeat.SessionID,
+				ConfigVersion: heartbeat.ConfigVersion,
+				Stats: session.HeartbeatStats{
+					ActiveProxies: heartbeat.ActiveProxies,
+					ActiveStreams: heartbeat.ActiveStreams,
+					UploadBytes:   heartbeat.UploadBytes,
+					DownloadBytes: heartbeat.DownloadBytes,
+					ErrorSummary:  heartbeat.ErrorSummary,
+				},
+			})
+		case MessageProxyListRequest:
+			_ = server.sendProxyList(ctx, stream, userID, sess.ConfigVersion)
+		default:
+			// Ignore unknown message types for forward compatibility.
+		}
+	}
+}
+
+// acceptSDKStreams accepts streams initiated by the consumer SDK and bridges
+// each one to the appropriate provider session.
+func (server Server) acceptSDKStreams(ctx context.Context, acceptor session.StreamAcceptor, sess session.Session, userID string) {
+	for {
+		stream, err := acceptor.AcceptStream(ctx)
+		if err != nil {
+			return
+		}
+		go server.handleSDKStream(ctx, stream, sess, userID)
+	}
+}
+
+// handleSDKStream processes a single consumer-initiated data stream. It reads
+// the OpenStream request, validates the proxy, finds the provider session, and
+// bridges the consumer stream to the provider sub-stream.
+func (server Server) handleSDKStream(ctx context.Context, stream io.ReadWriteCloser, consumerSession session.Session, userID string) {
+	defer stream.Close()
+
+	envelope, err := ReadMessage(stream)
+	if err != nil || envelope.Type != MessageOpenStream {
+		return
+	}
+	request, err := DecodePayload[OpenStream](envelope)
+	if err != nil {
+		return
+	}
+
+	proxyRepo := server.Authenticator.Store.Proxies()
+	if proxyRepo == nil {
+		return
+	}
+	proxy, err := proxyRepo.ByID(ctx, request.ProxyID)
+	if err != nil {
+		log.Printf("control sdk stream proxy not found: proxy_id=%s error=%v", request.ProxyID, err)
+		return
+	}
+	if proxy.UserID != userID {
+		log.Printf("control sdk stream unauthorized: proxy_id=%s consumer_user=%s proxy_user=%s", request.ProxyID, userID, proxy.UserID)
+		return
+	}
+	if proxy.Status != domain.ProxyEnabled {
+		log.Printf("control sdk stream proxy disabled: proxy_id=%s status=%s", request.ProxyID, proxy.Status)
+		return
+	}
+
+	providerSession, ok := server.Sessions.Latest(proxy.ClientID)
+	if !ok || providerSession.ReplacedAt != nil || providerSession.ClosedAt != nil {
+		log.Printf("control sdk stream provider offline: proxy_id=%s client_id=%s", request.ProxyID, proxy.ClientID)
+		return
+	}
+	if providerSession.ClientKind == domain.ClientKindConsumer {
+		log.Printf("control sdk stream provider is consumer: proxy_id=%s client_id=%s", request.ProxyID, proxy.ClientID)
+		return
+	}
+
+	providerOpener := providerSession.StreamOpener
+	if providerOpener == nil {
+		log.Printf("control sdk stream provider has no stream opener: proxy_id=%s", request.ProxyID)
+		return
+	}
+
+	providerCtx, providerCancel := context.WithTimeout(ctx, ProviderOpenTimeout)
+	defer providerCancel()
+
+	providerStream, err := providerOpener.OpenStream(providerCtx)
+	if err != nil {
+		log.Printf("control sdk stream provider open failed: proxy_id=%s error=%v", request.ProxyID, err)
+		return
+	}
+	defer providerStream.Close()
+
+	kind := proxyTypeToStreamKind(proxy.Type)
+	providerOpen := OpenStream{
+		Kind:         kind,
+		ProxyID:      proxy.ID,
+		ConnectionID: request.ConnectionID,
+		TargetHost:   proxy.TargetHost,
+		TargetPort:   proxy.TargetPort,
+	}
+	if err := WriteMessage(providerStream, MessageOpenStream, providerOpen); err != nil {
+		log.Printf("control sdk stream provider write failed: proxy_id=%s error=%v", request.ProxyID, err)
+		return
+	}
+
+	tunnel.CopyBidirectional(stream, providerStream)
+}
+
+func proxyTypeToStreamKind(proxyType domain.ProxyType) string {
+	switch proxyType {
+	case domain.ProxyHTTP:
+		return "http"
+	case domain.ProxyUDP:
+		return "udp"
+	default:
+		return ""
 	}
 }
 
@@ -668,6 +856,40 @@ func handleUDPStream(stream io.ReadWriteCloser, request OpenStream) {
 			return
 		}
 	}
+}
+
+// RawStream returns the underlying control stream for reading and writing
+// control messages (e.g., proxy list request/response).
+func (client *ClientConn) RawStream() io.ReadWriteCloser {
+	return client.stream
+}
+
+// StartMux starts the TCP+TLS multiplexer if present and switches the control
+// stream to the mux control stream. This must be called after reading the
+// initial server message (proxy snapshot or proxy list response) on TCP+TLS
+// connections, because the server switches to mux framing after that message.
+// For QUIC connections this is a no-op.
+func (client *ClientConn) StartMux() {
+	if client.mux != nil {
+		client.mux.Start()
+		client.stream = client.mux.ControlStream()
+	}
+}
+
+// OpenStream opens a new multiplexed data stream on the control connection.
+// Used by SDK consumer to initiate a data stream to a proxy.
+func (client *ClientConn) OpenStream(ctx context.Context) (io.ReadWriteCloser, error) {
+	if client.mux != nil {
+		return client.mux.OpenStream(ctx)
+	}
+	if client.conn != nil {
+		stream, err := client.conn.OpenStreamSync(ctx)
+		if err != nil {
+			return nil, err
+		}
+		return wrapProxyStream(stream), nil
+	}
+	return nil, errors.New("no multiplexed connection available")
 }
 
 func (client *ClientConn) ReadProxySnapshot() (ProxySnapshot, error) {

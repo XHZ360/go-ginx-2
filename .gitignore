@@ -11,3 +11,4 @@ deploye*.jsonc
 *.log
 *.local*
 *.private*
+*.exe

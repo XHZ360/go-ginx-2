@@ -59,6 +59,7 @@ func TestAuthenticatorRejectsUnsupportedProtocol(t *testing.T) {
 type authStore struct {
 	user            domain.User
 	client          domain.Client
+	clients         []domain.Client
 	proxies         []domain.Proxy
 	clientStatusLog *[]domain.ClientStatus
 }
@@ -70,10 +71,22 @@ func newAuthStore(userStatus domain.UserStatus, clientStatus domain.ClientStatus
 	}
 }
 
+// newConsumerAuthStore creates an auth store that supports both provider and consumer client lookups.
+func newConsumerAuthStore(credentialHash string) authStore {
+	return authStore{
+		user: domain.User{ID: "user-1", Username: "alice", Role: domain.RoleUser, Status: domain.UserEnabled},
+		client: domain.Client{ID: "client-provider", UserID: "user-1", Name: "provider", Kind: domain.ClientKindProvider, Status: domain.ClientOffline, CredentialHash: credentialHash, Version: 7},
+		clients: []domain.Client{
+			{ID: "client-provider", UserID: "user-1", Name: "provider", Kind: domain.ClientKindProvider, Status: domain.ClientOffline, CredentialHash: credentialHash, Version: 7},
+			{ID: "client-consumer", UserID: "user-1", Name: "consumer", Kind: domain.ClientKindConsumer, Status: domain.ClientOffline, CredentialHash: credentialHash, Version: 7},
+		},
+	}
+}
+
 func (s authStore) Users() store.UserRepository { return authUserRepository{s.user} }
 
 func (s authStore) Clients() store.ClientRepository {
-	return authClientRepository{client: s.client, statusLog: s.clientStatusLog}
+	return authClientRepository{client: s.client, clients: s.clients, statusLog: s.clientStatusLog}
 }
 
 func (s authStore) ClientEnrollments() store.ClientEnrollmentRepository {
@@ -121,12 +134,18 @@ func (r authUserRepository) Delete(context.Context, string) error { return nil }
 
 type authClientRepository struct {
 	client    domain.Client
+	clients   []domain.Client
 	statusLog *[]domain.ClientStatus
 }
 
 func (r authClientRepository) Create(context.Context, domain.Client) error { return nil }
 
 func (r authClientRepository) ByID(_ context.Context, id string) (domain.Client, error) {
+	for _, c := range r.clients {
+		if c.ID == id {
+			return c, nil
+		}
+	}
 	if id != r.client.ID {
 		return domain.Client{}, store.ErrNotFound
 	}
@@ -134,6 +153,9 @@ func (r authClientRepository) ByID(_ context.Context, id string) (domain.Client,
 }
 
 func (r authClientRepository) List(context.Context) ([]domain.Client, error) {
+	if len(r.clients) > 0 {
+		return r.clients, nil
+	}
 	return []domain.Client{r.client}, nil
 }
 
@@ -183,6 +205,16 @@ func (r authProxyRepository) ByClientID(_ context.Context, clientID string) ([]d
 	proxies := make([]domain.Proxy, 0)
 	for _, proxy := range r.proxies {
 		if proxy.ClientID == clientID {
+			proxies = append(proxies, proxy)
+		}
+	}
+	return proxies, nil
+}
+
+func (r authProxyRepository) ByUserID(_ context.Context, userID string) ([]domain.Proxy, error) {
+	proxies := make([]domain.Proxy, 0)
+	for _, proxy := range r.proxies {
+		if proxy.UserID == userID {
 			proxies = append(proxies, proxy)
 		}
 	}

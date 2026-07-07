@@ -25,6 +25,7 @@ type Session struct {
 	ID            string
 	ClientID      string
 	UserID        string
+	ClientKind    domain.ClientKind
 	Protocol      domain.Protocol
 	Generation    int64
 	ConfigVersion int64
@@ -40,6 +41,14 @@ type StreamOpener interface {
 	OpenStream(ctx context.Context) (io.ReadWriteCloser, error)
 }
 
+// StreamAcceptor extends StreamOpener with the ability to accept inbound streams
+// opened by the remote peer. Consumer SDK connections use this to receive streams
+// that the consumer initiates on the control channel.
+type StreamAcceptor interface {
+	StreamOpener
+	AcceptStream(ctx context.Context) (io.ReadWriteCloser, error)
+}
+
 type HeartbeatStats struct {
 	ActiveProxies int
 	ActiveStreams int
@@ -52,6 +61,7 @@ type RegisterInput struct {
 	SessionID     string
 	ClientID      string
 	UserID        string
+	ClientKind    domain.ClientKind
 	Protocol      domain.Protocol
 	ConfigVersion int64
 	StreamOpener  StreamOpener
@@ -94,6 +104,7 @@ func (manager *Manager) Register(input RegisterInput) (Session, *Session, error)
 		ID:            input.SessionID,
 		ClientID:      input.ClientID,
 		UserID:        input.UserID,
+		ClientKind:    domain.NormalizeClientKind(input.ClientKind),
 		Protocol:      input.Protocol,
 		Generation:    manager.nextGeneration,
 		ConfigVersion: input.ConfigVersion,

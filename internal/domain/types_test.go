@@ -74,3 +74,44 @@ func TestEffectiveProxyEntryAppliesHTTPDefaults(t *testing.T) {
 		t.Fatalf("unexpected effective entry: %+v", entry)
 	}
 }
+
+func TestClientKindValid(t *testing.T) {
+	if !ClientKindProvider.Valid() {
+		t.Fatal("expected provider kind to be valid")
+	}
+	if !ClientKindConsumer.Valid() {
+		t.Fatal("expected consumer kind to be valid")
+	}
+	if ClientKind("").Valid() {
+		t.Fatal("expected empty kind to be invalid")
+	}
+	if ClientKind("unknown").Valid() {
+		t.Fatal("expected unknown kind to be invalid")
+	}
+}
+
+func TestNormalizeClientKindDefaultsToProvider(t *testing.T) {
+	if NormalizeClientKind("") != ClientKindProvider {
+		t.Fatal("expected empty kind to normalize to provider")
+	}
+	if NormalizeClientKind(ClientKindConsumer) != ClientKindConsumer {
+		t.Fatal("expected consumer kind to pass through")
+	}
+	if NormalizeClientKind(ClientKindProvider) != ClientKindProvider {
+		t.Fatal("expected provider kind to pass through")
+	}
+}
+
+func TestClientValidateAcceptsEmptyKindAsProvider(t *testing.T) {
+	client := Client{ID: "c1", UserID: "u1", Name: "test", CredentialHash: "hash"}
+	if err := client.Validate(); err != nil {
+		t.Fatalf("expected empty kind to default to provider: %v", err)
+	}
+}
+
+func TestClientValidateRejectsInvalidKind(t *testing.T) {
+	client := Client{ID: "c1", UserID: "u1", Name: "test", Kind: "bogus", CredentialHash: "hash"}
+	if err := client.Validate(); err == nil {
+		t.Fatal("expected invalid kind to be rejected")
+	}
+}

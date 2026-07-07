@@ -121,6 +121,7 @@ func run(args []string) error {
 		userID := flags.String("user", "", "owner user ID")
 		name := flags.String("name", "", "client display name")
 		credential := flags.String("credential", "", "client credential")
+		consumer := flags.Bool("consumer", false, "create a consumer client for SDK use")
 		if err := flags.Parse(args[1:]); err != nil {
 			return err
 		}
@@ -130,7 +131,11 @@ func run(args []string) error {
 			return err
 		}
 		defer closeStore()
-		client, err := service.CreateClient(context.Background(), admin.CreateClientInput{ID: *id, UserID: *userID, Name: *name, Credential: *credential, ActorID: *actorID})
+		kind := domain.ClientKindProvider
+		if *consumer {
+			kind = domain.ClientKindConsumer
+		}
+		client, err := service.CreateClient(context.Background(), admin.CreateClientInput{ID: *id, UserID: *userID, Name: *name, Kind: kind, Credential: *credential, ActorID: *actorID})
 		if err != nil {
 			return err
 		}
