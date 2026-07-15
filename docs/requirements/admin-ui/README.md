@@ -13,8 +13,9 @@
 - `proxies-list.md`：代理列表页 UI 设计
 - `proxy-detail.md`：代理详情页 UI 设计
 - `certificates.md`：证书页 UI 设计
-- `certificate-migration.md`：证书绑定迁移与兼容说明
 - `audit.md`：审计页 UI 设计
+
+证书绑定迁移与兼容说明见 [../../references/certificate-binding-migration.md](../../references/certificate-binding-migration.md)。
 
 ## 统一约束
 

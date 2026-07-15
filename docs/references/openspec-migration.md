@@ -6,7 +6,7 @@
 
 ## 当前状态
 
-本迁移已完成。有效内容已合并到 `docs/architecture.md`、`docs/control-channel.md`、`docs/reverse-proxy.md`、`docs/certificate-management.md`、`docs/admin-and-observability.md`、`docs/limits.md` 和已有运行/部署文档；`openspec/` 已删除，后续需求直接修改代码、测试和受影响的普通 Markdown 文档。
+本迁移已完成。有效内容已合并到 `docs/architecture/`、`docs/requirements/`、`docs/operations/` 等主题文档；`openspec/` 已删除，后续需求直接修改代码、测试和受影响的普通 Markdown 文档。入口见 [../README.md](../README.md)。
 
 迁移不是逐文件改名。应删除重复、过期和仅服务于实施过程的内容，只保留使用者或维护者仍需了解的信息。
 
@@ -27,17 +27,17 @@
 
 ```text
 docs/
-  architecture.md                 系统组成、进程关系和数据流
-  control-channel.md              认证、会话、协议和流生命周期
-  reverse-proxy.md                TCP/UDP/HTTP/HTTPS 当前行为
-  certificate-management.md       证书来源、状态、续期和失败语义
-  admin-and-observability.md       Admin API/UI、审计和指标
-  deployment.md                   配置、部署、升级、回滚和排障
-  limits.md                       已执行的限制及明确的已知缺口
-  decisions/                      少量仍影响当前实现的重要决策（按需建立）
+  project/       项目级长期上下文和协作流程
+  requirements/  产品需求、业务能力、验收口径
+  architecture/  技术架构、运行时、数据、集成设计
+  decisions/     重要设计决策，一事一文
+  changes/       变更记录，按 active/completed/archive 管理
+  operations/    部署、打包、验证、运维和验收
+  references/    历史资料、外部格式、兼容说明
+  worklog.md     当前状态和下一步
 ```
 
-这只是初始分类。已有 `daemon-runtime.md`、`docker-development.md` 等文档内容准确时应直接扩充，不要另建重复文档。
+已有主题文档内容准确时应直接扩充，不要另建重复文档。规则见 [../project/documentation-workflow.md](../project/documentation-workflow.md)。
 
 ## 迁移步骤
 

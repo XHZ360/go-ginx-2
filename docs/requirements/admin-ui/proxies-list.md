@@ -71,8 +71,10 @@
 
 - 通用字段：名称、所属用户、所属客户端、描述
 - TCP/UDP：BindHost 选项、EntryPort、TargetHost、TargetPort
-- HTTP/HTTPS：BindHost 选项、EntryPort、HTTP Host 或 HTTPS SNI 域名、TargetHost、TargetPort
+- HTTP/HTTPS：BindHost 选项、EntryPort、HTTP Host 或 HTTPS SNI 域名、TargetHost、TargetPort（默认 `/` 后端）
+- HTTP/HTTPS：可选路径路由列表（创建后也可在详情页维护）
 - HTTPS：证书选择控件（只选择证书或跳转创建证书，见下方“HTTPS 证书选择”）；不再在主流程填写 CertFile / KeyFile 文件路径
+- HTTPS 访问激活在详情页配置，创建表单可不强制开启
 - 当 URL 或路由状态携带 `userId` 和 `clientId` 时，创建表单默认选中对应用户和客户端，并在候选项未加载完成时保留 ID fallback
 - 用户和客户端选择器必须允许管理员修改；修改用户后，如果当前客户端不属于新用户，应清空或要求重新选择客户端
 - BindHost 必须来自管理员 API 返回的监听地址选项，包含默认监听、wildcard、loopback 和可发现的本机地址
