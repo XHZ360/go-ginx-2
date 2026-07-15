@@ -90,18 +90,74 @@ type ProxyType string
 const (
 	ProxyTCP     ProxyType = "tcp"
 	ProxyUDP     ProxyType = "udp"
-	ProxyHTTP    ProxyType = "http"
-	ProxyHTTPS   ProxyType = "https"
+	ProxyHTTP    ProxyType = "http"  // legacy; migrated to ProxyWeb
+	ProxyHTTPS   ProxyType = "https" // legacy; migrated to ProxyWeb
+	ProxyWeb     ProxyType = "web"
 	ProxyForward ProxyType = "forward"
 )
 
 func (proxyType ProxyType) Valid() bool {
 	switch proxyType {
-	case ProxyTCP, ProxyUDP, ProxyHTTP, ProxyHTTPS, ProxyForward:
+	case ProxyTCP, ProxyUDP, ProxyHTTP, ProxyHTTPS, ProxyWeb, ProxyForward:
 		return true
 	default:
 		return false
 	}
+}
+
+func (proxyType ProxyType) IsWeb() bool {
+	return proxyType == ProxyWeb || proxyType == ProxyHTTP || proxyType == ProxyHTTPS
+}
+
+type DomainStatus string
+
+const (
+	DomainEnabled  DomainStatus = "enabled"
+	DomainDisabled DomainStatus = "disabled"
+)
+
+type DomainEntryProtocol string
+
+const (
+	DomainEntryHTTP  DomainEntryProtocol = "http"
+	DomainEntryHTTPS DomainEntryProtocol = "https"
+)
+
+func (protocol DomainEntryProtocol) Valid() bool {
+	switch protocol {
+	case DomainEntryHTTP, DomainEntryHTTPS:
+		return true
+	default:
+		return false
+	}
+}
+
+type DomainEntryStatus string
+
+const (
+	DomainEntryEnabled  DomainEntryStatus = "enabled"
+	DomainEntryDisabled DomainEntryStatus = "disabled"
+)
+
+type Domain struct {
+	ID            string
+	UserID        string
+	Host          string
+	CertificateID string
+	Status        DomainStatus
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
+}
+
+type DomainEntry struct {
+	ID        string
+	DomainID  string
+	Protocol  DomainEntryProtocol
+	BindHost  string
+	Port      int
+	Status    DomainEntryStatus
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }
 
 type ProxyStatus string
@@ -275,28 +331,34 @@ type ClientEnrollment struct {
 }
 
 type Proxy struct {
-	ID            string
-	UserID        string
-	ClientID      string
-	Name          string
-	Type          ProxyType
-	Status        ProxyStatus
-	EntryBindHost string
-	EntryHost     string
-	EntryPort     int
-	TargetHost    string
-	TargetPort    int
-	CertFile      string
-	KeyFile       string
-	// CertificateID 是代理选择的证书资源 ID（权威绑定，证书侧仅保留 ProxyID 作为遗留反向引用）。
-	CertificateID     string
-	AccessAuthEnabled bool
-	AccessAuthVersion int64
-	Description       string
-	CreatedAt         time.Time
-	UpdatedAt         time.Time
+	ID                 string
+	UserID             string
+	ClientID           string
+	Name               string
+	Type               ProxyType
+	Status             ProxyStatus
+	DomainID           string // Web Proxy 必填
+	PathPrefix         string // Web Proxy 必填
+	StripPrefix        bool
+	UpstreamPathPrefix string
+	EntryBindHost      string // TCP/UDP
+	EntryHost          string // legacy only
+	EntryPort          int    // TCP/UDP
+	TargetHost         string
+	TargetPort         int
+	CertFile           string // legacy only
+	KeyFile            string // legacy only
+	CertificateID      string // legacy only; Domain.CertificateID 为权威绑定
+	AccessAuthEnabled  bool
+	AccessAuthVersion  int64
+	// StatsLegacyAggregate 标记迁移后保留在 / Proxy 上的历史累计统计含全部旧路径流量。
+	StatsLegacyAggregate bool
+	Description          string
+	CreatedAt            time.Time
+	UpdatedAt            time.Time
 }
 
+// ProxyRoute 为遗留类型，迁移后不再作为权威数据模型；路径匹配逻辑已迁到 SelectWebProxy。
 type ProxyRouteStatus string
 
 const (
@@ -339,6 +401,42 @@ type ProxyAccessCredential struct {
 }
 
 const ReservedProxyRoutePrefix = "/.well-known/goginx/"
+
+func (domain Domain) Validate() error {
+	if strings.TrimSpace(domain.ID) == "" {
+		return errors.New("domain id is required")
+	}
+	if strings.TrimSpace(domain.UserID) == "" {
+		return errors.New("domain user id is required")
+	}
+	host := NormalizeRouteHost(domain.Host)
+	if host == "" || !validHostname(host) {
+		return errors.New("domain host is invalid")
+	}
+	if domain.Status != DomainEnabled && domain.Status != DomainDisabled {
+		return errors.New("domain status is invalid")
+	}
+	return nil
+}
+
+func (entry DomainEntry) Validate() error {
+	if strings.TrimSpace(entry.ID) == "" || strings.TrimSpace(entry.DomainID) == "" {
+		return errors.New("domain entry identifiers are required")
+	}
+	if !entry.Protocol.Valid() {
+		return errors.New("domain entry protocol is invalid")
+	}
+	if !ValidBindHost(entry.BindHost) {
+		return errors.New("domain entry bind host is invalid")
+	}
+	if entry.Port <= 0 || entry.Port > 65535 {
+		return errors.New("domain entry port is invalid")
+	}
+	if entry.Status != DomainEntryEnabled && entry.Status != DomainEntryDisabled {
+		return errors.New("domain entry status is invalid")
+	}
+	return nil
+}
 
 func (route ProxyRoute) Validate() error {
 	if strings.TrimSpace(route.ID) == "" || strings.TrimSpace(route.ProxyID) == "" || strings.TrimSpace(route.ClientID) == "" {
@@ -410,6 +508,21 @@ func SelectProxyRoute(routes []ProxyRoute, path string) (ProxyRoute, bool) {
 	return selected, found
 }
 
+func SelectWebProxy(proxies []Proxy, path string) (Proxy, bool) {
+	var selected Proxy
+	found := false
+	for _, proxy := range proxies {
+		if proxy.Status != ProxyEnabled || !proxy.Type.IsWeb() || !ProxyRouteMatches(path, proxy.PathPrefix) {
+			continue
+		}
+		if !found || len(proxy.PathPrefix) > len(selected.PathPrefix) {
+			selected = proxy
+			found = true
+		}
+	}
+	return selected, found
+}
+
 func ValidProxyRequestPath(path string, rawPath string) bool {
 	if path == "" || !strings.HasPrefix(path, "/") || strings.ContainsRune(path, '\x00') {
 		return false
@@ -419,17 +532,21 @@ func ValidProxyRequestPath(path string, rawPath string) bool {
 }
 
 func RewriteProxyRoutePath(path string, route ProxyRoute) string {
-	if !route.StripPrefix {
+	return RewriteWebProxyPath(path, route.PathPrefix, route.StripPrefix, route.UpstreamPathPrefix)
+}
+
+func RewriteWebProxyPath(path string, pathPrefix string, stripPrefix bool, upstreamPathPrefix string) string {
+	if !stripPrefix {
 		return path
 	}
-	remainder := strings.TrimPrefix(path, route.PathPrefix)
+	remainder := strings.TrimPrefix(path, pathPrefix)
 	if remainder == "" {
-		return route.UpstreamPathPrefix
+		return upstreamPathPrefix
 	}
-	if route.UpstreamPathPrefix == "/" {
+	if upstreamPathPrefix == "/" {
 		return remainder
 	}
-	return strings.TrimRight(route.UpstreamPathPrefix, "/") + "/" + strings.TrimLeft(remainder, "/")
+	return strings.TrimRight(upstreamPathPrefix, "/") + "/" + strings.TrimLeft(remainder, "/")
 }
 
 type ManagedCertificate struct {
@@ -614,6 +731,21 @@ func (proxy Proxy) Validate() error {
 	}
 	if ip := net.ParseIP(proxy.TargetHost); ip == nil && !validHostname(proxy.TargetHost) {
 		return errors.New("proxy target host is invalid")
+	}
+	if proxy.Type == ProxyWeb {
+		if strings.TrimSpace(proxy.DomainID) == "" {
+			return errors.New("web proxy domain id is required")
+		}
+		pathPrefix, err := NormalizeProxyRoutePrefix(proxy.PathPrefix)
+		if err != nil {
+			return err
+		}
+		if strings.HasPrefix(pathPrefix, ReservedProxyRoutePrefix) || pathPrefix == strings.TrimSuffix(ReservedProxyRoutePrefix, "/") {
+			return errors.New("proxy path prefix is reserved")
+		}
+		if _, err := NormalizeProxyUpstreamPathPrefix(proxy.UpstreamPathPrefix); err != nil {
+			return err
+		}
 	}
 	return nil
 }

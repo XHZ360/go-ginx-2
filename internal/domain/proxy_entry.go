@@ -52,6 +52,7 @@ func EffectiveProxyEntry(proxy Proxy, defaults ProxyEntryDefaults) (ProxyEntry, 
 			entry.BindHost = NormalizeBindHost(defaults.TCPBindHost)
 		}
 	case ProxyHTTP:
+		// legacy path retained for pre-migration fixtures only
 		entry.Protocol = ListenerProtocolHTTP
 		entry.Network = ListenerNetworkTCP
 		entry.RouteHost = NormalizeRouteHost(proxy.EntryHost)
@@ -71,6 +72,9 @@ func EffectiveProxyEntry(proxy Proxy, defaults ProxyEntryDefaults) (ProxyEntry, 
 		if entry.Port == 0 {
 			entry.Port = defaults.HTTPSPort
 		}
+	case ProxyWeb:
+		// Web listeners are driven by DomainEntry, not Proxy entry fields.
+		return ProxyEntry{}, false
 	default:
 		return ProxyEntry{}, false
 	}
@@ -78,6 +82,38 @@ func EffectiveProxyEntry(proxy Proxy, defaults ProxyEntryDefaults) (ProxyEntry, 
 		return ProxyEntry{}, false
 	}
 	return entry, true
+}
+
+func EffectiveDomainEntry(entry DomainEntry, defaults ProxyEntryDefaults) (ProxyEntry, bool) {
+	result := ProxyEntry{
+		BindHost: NormalizeBindHost(entry.BindHost),
+		Port:     entry.Port,
+		Network:  ListenerNetworkTCP,
+	}
+	switch entry.Protocol {
+	case DomainEntryHTTP:
+		result.Protocol = ListenerProtocolHTTP
+		if result.BindHost == "" {
+			result.BindHost = NormalizeBindHost(defaults.HTTPBindHost)
+		}
+		if result.Port == 0 {
+			result.Port = defaults.HTTPPort
+		}
+	case DomainEntryHTTPS:
+		result.Protocol = ListenerProtocolHTTPS
+		if result.BindHost == "" {
+			result.BindHost = NormalizeBindHost(defaults.HTTPSBindHost)
+		}
+		if result.Port == 0 {
+			result.Port = defaults.HTTPSPort
+		}
+	default:
+		return ProxyEntry{}, false
+	}
+	if result.Port <= 0 || result.Port > 65535 {
+		return ProxyEntry{}, false
+	}
+	return result, true
 }
 
 func NormalizeBindHost(host string) string {

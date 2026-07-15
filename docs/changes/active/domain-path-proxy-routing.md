@@ -9,7 +9,7 @@
 | 相关需求 | [../../requirements/proxy-runtime.md](../../requirements/proxy-runtime.md) |
 | 相关架构 | [../../architecture/reverse-proxy.md](../../architecture/reverse-proxy.md)、[../../architecture/certificate-management.md](../../architecture/certificate-management.md) |
 | 相关决策 | [../../decisions/domain-path-proxy-routing.md](../../decisions/domain-path-proxy-routing.md) |
-| 实现提交 | 未完成 |
+| 实现提交 | 进行中（运行时/迁移/Admin 服务已落地；UI 完整 Domain 页待收尾） |
 
 > 本文描述已采纳但尚未完成的目标模型。当前代码仍使用“一个 Domain 对应一个父 Proxy + ProxyRoute 子路由”的旧模型。
 
@@ -158,7 +158,8 @@ Web Proxy 应使用协议无关的类型（例如 `web`）；HTTP/HTTPS 由 Doma
 - 激活 URL 使用 Domain 的 HTTPS entry 和系统保留路径，Token 用于定位 Proxy。
 - Proxy 迁移 Domain、修改 PathPrefix、关闭认证或删除时，递增认证版本并撤销未使用 Token 与历史 Credential。
 - 路径重叠时先完成最长前缀选择，再校验命中 Proxy 的认证策略。
-- HTTP 与 HTTPS 共享 Proxy；如果命中 Proxy 启用了访问认证，HTTP 不能绕过 HTTPS 认证。具体采用 HTTPS 重定向还是直接拒绝，实施前必须关闭下方阻塞问题。
+- HTTP 与 HTTPS 共享 Proxy；如果命中 Proxy 启用了访问认证，HTTP 不能绕过 HTTPS 认证。
+- **已决：** 经 HTTP entry 命中启用认证的 Web Proxy 时：若同一 Domain 存在可用 HTTPS entry，则 `308` 重定向到对应 HTTPS URL（保留 method/path/query）；否则 fail closed 返回 `403`。
 
 ### 证书
 
@@ -233,7 +234,8 @@ Web Proxy 应使用协议无关的类型（例如 `web`）；HTTP/HTTPS 由 Doma
 ### 统计迁移
 
 - 原父 Proxy 的历史累计统计包含所有旧子路由流量，不能伪装为 `/` Proxy 的精确统计。
-- 实施前选择“保留为 legacy aggregate”或“归档后新模型从零计数”，并在 Admin UI 明确展示语义。
+- **已决：** 父 Proxy ID 保留给 `/` Web Proxy，其历史累计统计作为 **legacy aggregate** 继续展示；Admin UI 在该 Proxy 统计区标注“含迁移前全部路径流量，非本路径精确值”。
+- 迁移生成的子路径 Proxy 从零计数。
 - 新模型完成后统计按最终命中的 Proxy 聚合。
 
 ### 回滚
@@ -245,26 +247,26 @@ Web Proxy 应使用协议无关的类型（例如 `web`）；HTTP/HTTPS 由 Doma
 
 ## 阻塞问题
 
-- [ ] 启用访问认证的 Web Proxy 经 HTTP entry 被访问时，是 `308` 重定向到 HTTPS，还是直接 fail closed（`403`/`404`）？建议有可用 HTTPS entry 时 `308`，否则 fail closed。
-- [ ] 旧父 Proxy 聚合统计采用 legacy aggregate 保留，还是归档后新模型从零计数？
+- [x] 启用访问认证的 Web Proxy 经 HTTP entry 被访问时：有可用 HTTPS entry 则 `308` 重定向，否则 `403` fail closed。
+- [x] 旧父 Proxy 聚合统计：保留为 `/` Proxy 上的 legacy aggregate，UI 明确标注语义；子路径 Proxy 从零计数。
 
-阻塞问题关闭前，本 Change 不满足 Ready for Implementation。
+阻塞问题已于 2026-07-15 关闭，本 Change 满足 Ready for Implementation。
 
 ## 实施步骤
 
-- [ ] 关闭阻塞问题并更新决策/需求
-- [ ] 新增 Domain、DomainEntry 领域模型与仓储接口
-- [ ] 新增 SQLite schema、约束、冲突检测和可回滚迁移
-- [ ] 将 Web Proxy 改为 DomainID + PathPrefix 模型
-- [ ] 实现 Domain + Path 最长前缀查询与 HTTP runtime
-- [ ] 调整 HTTPS 为 Domain 选证、TLS 后选 Proxy
-- [ ] 将证书生命周期身份从 Proxy 迁到 Domain
-- [ ] 迁移 Proxy 级访问认证并处理 Cookie/Token 失效
-- [ ] 调整 listener reconcile 由 DomainEntry 驱动
-- [ ] 更新 GraphQL、Admin service/query 和结构化错误
+- [x] 关闭阻塞问题并更新决策/需求
+- [x] 新增 Domain、DomainEntry 领域模型与仓储接口
+- [x] 新增 SQLite schema、约束、冲突检测和可回滚迁移
+- [x] 将 Web Proxy 改为 DomainID + PathPrefix 模型
+- [x] 实现 Domain + Path 最长前缀查询与 HTTP runtime
+- [x] 调整 HTTPS 为 Domain 选证、TLS 后选 Proxy
+- [x] 将证书生命周期身份从 Proxy 迁到 Domain
+- [x] 迁移 Proxy 级访问认证并处理 Cookie/Token 失效
+- [x] 调整 listener reconcile 由 DomainEntry 驱动
+- [x] 更新 GraphQL、Admin service/query 和结构化错误（兼容期仍保留 routes 字段空列表）
 - [ ] 新增 Domain UI，重构 Proxy/Certificate UI
 - [ ] 迁移或移除 ProxyRoute API、生成代码与 UI
-- [ ] 增加单元、SQLite、runtime、Admin、前端与 E2E 测试
+- [x] 增加单元、SQLite、runtime、Admin、E2E 测试（前端测试待 UI 完成后补）
 - [ ] 同步 requirements、architecture、operations 与 worklog
 - [ ] 确认迁移稳定后清理旧字段、旧表和兼容回退
 
@@ -288,7 +290,8 @@ Web Proxy 应使用协议无关的类型（例如 `web`）；HTTP/HTTPS 由 Doma
 | 日期 | 命令/步骤 | 结果 | 说明 |
 | --- | --- | --- | --- |
 | 2026-07-15 | 文档模型评审 | 通过 | 已确认 Domain 独立、证书 1:1、认证归 Proxy、HTTP/HTTPS 共享映射 |
-| 2026-07-15 | 代码测试 | 未执行 | 当前仅建立 Change，尚未修改代码 |
+| 2026-07-15 | `go test` domain/store/proxy/control/admin/adminapi/adminquery/daemon/e2e | 通过 | 核心运行时、迁移、Admin 服务与 e2e 路径路由通过 |
+| 2026-07-15 | admin-ui `pnpm test/build` | 未执行 | Domain 页面与 GraphQL 生成尚未完成 |
 
 计划中的最小验证：
 

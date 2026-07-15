@@ -584,12 +584,30 @@ func TestServerClientJoinDefaultsAndDeleteContract(t *testing.T) {
 func TestServerCertificateResponsesStaySecretSafe(t *testing.T) {
 	server := startAdminTestServer(t, func(entry *Entry) {
 		ctx := context.Background()
-		if err := entry.Commands.Store.Proxies().Create(ctx, domain.Proxy{ID: "proxy-https", UserID: "user-1", ClientID: "client-1", Name: "secure", Type: domain.ProxyHTTPS, Status: domain.ProxyEnabled, EntryHost: "secure.example.com", TargetHost: "127.0.0.1", TargetPort: 8443, CertFile: "secret-cert.pem", KeyFile: "secret-key.pem"}); err != nil {
+		if err := entry.Commands.Store.Proxies().Create(ctx, domain.Proxy{ID: "proxy-https", UserID: "user-1", ClientID: "client-1", Name: "secure", Type: domain.ProxyHTTPS, Status: domain.ProxyEnabled, EntryHost: "secure.example.com", TargetHost: "127.0.0.1", TargetPort: 8443}); err != nil {
 			t.Fatalf("seed https proxy: %v", err)
+		}
+		// remove auto-registered static cert if any, then seed secret-path certificate for leak checks
+		proxy, err := entry.Commands.Store.Proxies().ByID(ctx, "proxy-https")
+		if err != nil {
+			t.Fatalf("reload proxy: %v", err)
+		}
+		webDomain, err := entry.Commands.Store.Domains().ByID(ctx, proxy.DomainID)
+		if err != nil {
+			t.Fatalf("reload domain: %v", err)
+		}
+		if webDomain.CertificateID != "" {
+			_ = entry.Commands.Store.Certificates().Delete(ctx, webDomain.CertificateID)
+			webDomain.CertificateID = ""
+			_ = entry.Commands.Store.Domains().Update(ctx, webDomain)
 		}
 		notAfter := time.Now().UTC().Add(time.Hour)
 		if err := entry.Commands.Store.Certificates().Create(ctx, domain.ManagedCertificate{ID: "cert-1", ProxyID: "proxy-https", Host: "secure.example.com", Status: domain.CertificateValid, CertFile: "secret-cert.pem", KeyFile: "secret-key.pem", PreviousCertFile: "old-cert.pem", PreviousKeyFile: "old-key.pem", NotAfter: &notAfter}); err != nil {
 			t.Fatalf("seed certificate: %v", err)
+		}
+		webDomain.CertificateID = "cert-1"
+		if err := entry.Commands.Store.Domains().Update(ctx, webDomain); err != nil {
+			t.Fatalf("bind domain certificate: %v", err)
 		}
 	})
 	client := newAdminHTTPClient(t)

@@ -31,6 +31,11 @@
 - 未命中任何 Proxy 时返回 `404`，不存在隐式默认 target。
 - Proxy 的 Domain 或 PathPrefix 变化时，必须使该 Proxy 的旧访问 Token/Cookie 失效。
 
+## 补充决定（2026-07-15）
+
+- **HTTP 入口与访问认证：** 命中启用认证的 Web Proxy 时，若 Domain 存在可用 HTTPS entry，则 HTTP 请求 `308` 到对应 HTTPS URL；否则返回 `403`。禁止经 HTTP 明文完成 Cookie 认证或转发上游。
+- **历史统计迁移：** 父 Proxy ID 保留给 `/` Web Proxy，其迁移前累计统计作为 legacy aggregate 保留并在 UI 标注；由旧 `ProxyRoute` 生成的新 Proxy 从零计数。新流量按最终命中的 Proxy 聚合。
+
 ## 后果
 
 - Web Proxy 不再以 `http` / `https` 类型区分公网协议；Domain entry 决定 HTTP/HTTPS 暴露方式，Proxy 表达 Web 路径后端。

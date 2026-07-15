@@ -98,24 +98,24 @@ func (listener *Listener) handleConn(ctx context.Context, conn net.Conn) {
 	if err != nil || serverName == "" {
 		return
 	}
-	proxy, err := listener.entry.Store.Proxies().ByHTTPSRoute(ctx, listener.entry.EntryBindHost, listener.entry.EntryPort, serverName, listener.entry.IncludeDefaultRoutes)
-	if err != nil || proxy.Status != domain.ProxyEnabled {
+	webDomain, _, err := listener.entry.Store.DomainEntries().ByListener(ctx, domain.DomainEntryHTTPS, listener.entry.EntryBindHost, listener.entry.EntryPort, serverName, listener.entry.IncludeDefaultRoutes)
+	if err != nil || webDomain.Status != domain.DomainEnabled {
 		log.Printf("https proxy route failed: bind_host=%s port=%d sni=%s category=route_miss", displayBindHost(listener.entry.EntryBindHost), listener.entry.EntryPort, serverName)
 		return
 	}
-	certificate, err := listener.resolver.Certificate(ctx, serverName, proxy)
+	certificate, err := listener.resolver.CertificateForDomain(ctx, serverName, webDomain)
 	if err != nil {
-		log.Printf("https proxy route failed: bind_host=%s port=%d sni=%s proxy_id=%s category=certificate_unavailable error=%v", displayBindHost(listener.entry.EntryBindHost), listener.entry.EntryPort, serverName, proxy.ID, err)
+		log.Printf("https proxy route failed: bind_host=%s port=%d sni=%s domain_id=%s category=certificate_unavailable error=%v", displayBindHost(listener.entry.EntryBindHost), listener.entry.EntryPort, serverName, webDomain.ID, err)
 		return
 	}
 	if certificate == nil {
-		log.Printf("https proxy route failed: bind_host=%s port=%d sni=%s proxy_id=%s category=certificate_missing", displayBindHost(listener.entry.EntryBindHost), listener.entry.EntryPort, serverName, proxy.ID)
+		log.Printf("https proxy route failed: bind_host=%s port=%d sni=%s domain_id=%s category=certificate_missing", displayBindHost(listener.entry.EntryBindHost), listener.entry.EntryPort, serverName, webDomain.ID)
 		return
 	}
-	listener.handleTerminatedConn(ctx, conn, prefix, proxy, *certificate)
+	listener.handleTerminatedConn(ctx, conn, prefix, webDomain, *certificate)
 }
 
-func (listener *Listener) handleTerminatedConn(ctx context.Context, conn net.Conn, prefix []byte, proxy domain.Proxy, certificate tls.Certificate) {
+func (listener *Listener) handleTerminatedConn(ctx context.Context, conn net.Conn, prefix []byte, webDomain domain.Domain, certificate tls.Certificate) {
 	tlsConn := tls.Server(&prefixedConn{Conn: conn, reader: bytes.NewReader(prefix)}, &tls.Config{Certificates: []tls.Certificate{certificate}, MinVersion: tls.VersionTLS12})
 	_ = tlsConn.SetDeadline(time.Now().Add(httpsReadTimeout))
 	if err := tlsConn.Handshake(); err != nil {
@@ -133,7 +133,16 @@ func (listener *Listener) handleTerminatedConn(ctx context.Context, conn net.Con
 	}
 	request.Body = &maxBytesReadCloser{reader: request.Body, close: request.Body.Close, remaining: maxHTTPBodyBytes}
 	if isAccessActivationPath(request.URL.Path) {
-		listener.handleAccessActivation(ctx, tlsConn, request, proxy)
+		listener.handleAccessActivation(ctx, tlsConn, request, webDomain)
+		return
+	}
+	if !domain.ValidProxyRequestPath(request.URL.Path, request.URL.RawPath) {
+		_ = writeSimpleResponse(tlsConn, http.StatusBadRequest, "invalid request path\n")
+		return
+	}
+	proxy, err := listener.entry.Store.Proxies().ByDomainAndPath(ctx, webDomain.ID, request.URL.Path)
+	if err != nil || proxy.Status != domain.ProxyEnabled {
+		_ = writeSimpleResponse(tlsConn, http.StatusNotFound, "proxy not found\n")
 		return
 	}
 	if proxy.AccessAuthEnabled {
@@ -142,35 +151,18 @@ func (listener *Listener) handleTerminatedConn(ctx context.Context, conn net.Con
 			return
 		}
 	}
-	if !domain.ValidProxyRequestPath(request.URL.Path, request.URL.RawPath) {
-		_ = writeSimpleResponse(tlsConn, http.StatusBadRequest, "invalid request path\n")
-		return
-	}
-	targetHost, targetPort := proxy.TargetHost, proxy.TargetPort
-	clientID := proxy.ClientID
-	if routes, ok := store.Routes(listener.entry.Store); ok {
-		configured, routeErr := routes.ListByProxyID(ctx, proxy.ID)
-		if routeErr != nil {
-			_ = writeSimpleResponse(tlsConn, http.StatusBadGateway, "proxy route unavailable\n")
-			return
-		}
-		if route, matched := domain.SelectProxyRoute(configured, request.URL.Path); matched {
-			clientID = route.ClientID
-			targetHost, targetPort = route.TargetHost, route.TargetPort
-			request.URL.Path = domain.RewriteProxyRoutePath(request.URL.Path, route)
-			request.URL.RawPath = ""
-		}
-	}
+	request.URL.Path = domain.RewriteWebProxyPath(request.URL.Path, proxy.PathPrefix, proxy.StripPrefix, proxy.UpstreamPathPrefix)
+	request.URL.RawPath = ""
 
-	latest, ok := listener.entry.Sessions.Latest(clientID)
+	latest, ok := listener.entry.Sessions.Latest(proxy.ClientID)
 	if !ok || latest.StreamOpener == nil {
-		log.Printf("https proxy route failed: bind_host=%s port=%d sni=%s proxy_id=%s category=client_offline", displayBindHost(listener.entry.EntryBindHost), listener.entry.EntryPort, proxy.EntryHost, proxy.ID)
+		log.Printf("https proxy route failed: bind_host=%s port=%d sni=%s proxy_id=%s category=client_offline", displayBindHost(listener.entry.EntryBindHost), listener.entry.EntryPort, webDomain.Host, proxy.ID)
 		_ = writeSimpleResponse(tlsConn, http.StatusServiceUnavailable, "client offline\n")
 		return
 	}
 	stream, err := latest.StreamOpener.OpenStream(ctx)
 	if err != nil {
-		log.Printf("https proxy route failed: bind_host=%s port=%d sni=%s proxy_id=%s category=open_stream_failed error=%v", displayBindHost(listener.entry.EntryBindHost), listener.entry.EntryPort, proxy.EntryHost, proxy.ID, err)
+		log.Printf("https proxy route failed: bind_host=%s port=%d sni=%s proxy_id=%s category=open_stream_failed error=%v", displayBindHost(listener.entry.EntryBindHost), listener.entry.EntryPort, webDomain.Host, proxy.ID, err)
 		_ = writeSimpleResponse(tlsConn, http.StatusBadGateway, "open proxy stream failed\n")
 		return
 	}
@@ -180,7 +172,7 @@ func (listener *Listener) handleTerminatedConn(ctx context.Context, conn net.Con
 		_ = writeSimpleResponse(tlsConn, http.StatusInternalServerError, "request id failed\n")
 		return
 	}
-	if err := control.WriteMessage(stream, control.MessageOpenStream, control.OpenStream{Kind: "http", ProxyID: proxy.ID, ConnectionID: connectionID, TargetHost: targetHost, TargetPort: targetPort}); err != nil {
+	if err := control.WriteMessage(stream, control.MessageOpenStream, control.OpenStream{Kind: "http", ProxyID: proxy.ID, ConnectionID: connectionID, TargetHost: proxy.TargetHost, TargetPort: proxy.TargetPort}); err != nil {
 		_ = writeSimpleResponse(tlsConn, http.StatusBadGateway, "write proxy stream failed\n")
 		return
 	}
@@ -231,7 +223,7 @@ func (listener *Listener) authenticateAccessRequest(ctx context.Context, request
 	return nil
 }
 
-func (listener *Listener) handleAccessActivation(ctx context.Context, conn net.Conn, request *http.Request, proxy domain.Proxy) {
+func (listener *Listener) handleAccessActivation(ctx context.Context, conn net.Conn, request *http.Request, webDomain domain.Domain) {
 	access, ok := store.Access(listener.entry.Store)
 	if !ok {
 		_ = writeSimpleResponse(conn, http.StatusInternalServerError, "access storage unavailable\n")
@@ -242,8 +234,13 @@ func (listener *Listener) handleAccessActivation(ctx context.Context, conn net.C
 		_ = writeSimpleResponse(conn, http.StatusNotFound, "activation link unavailable\n")
 		return
 	}
-	token, err := access.ActivationToken(ctx, proxy.ID, hashAccessValue(tokenValue), time.Now().UTC())
-	if err != nil || token.AuthVersion != proxy.AccessAuthVersion {
+	token, err := access.ActivationTokenByHash(ctx, hashAccessValue(tokenValue), time.Now().UTC())
+	if err != nil {
+		_ = writeSimpleResponse(conn, http.StatusNotFound, "activation link unavailable\n")
+		return
+	}
+	proxy, err := listener.entry.Store.Proxies().ByID(ctx, token.ProxyID)
+	if err != nil || proxy.DomainID != webDomain.ID || !proxy.AccessAuthEnabled || token.AuthVersion != proxy.AccessAuthVersion {
 		_ = writeSimpleResponse(conn, http.StatusNotFound, "activation link unavailable\n")
 		return
 	}
@@ -265,14 +262,19 @@ func (listener *Listener) handleAccessActivation(ctx context.Context, conn net.C
 		_ = writeSimpleResponse(conn, http.StatusNotFound, "activation link unavailable\n")
 		return
 	}
+	cookiePath := proxy.PathPrefix
+	if cookiePath == "" {
+		cookiePath = "/"
+	}
 	header := http.Header{}
-	header.Set("Set-Cookie", (&http.Cookie{Name: accessCookieName(proxy.ID), Value: secret, Path: "/", Secure: true, HttpOnly: true, SameSite: http.SameSiteLaxMode}).String())
-	header.Set("Location", "/")
+	header.Set("Set-Cookie", (&http.Cookie{Name: accessCookieName(proxy.ID), Value: secret, Path: cookiePath, Secure: true, HttpOnly: true, SameSite: http.SameSiteLaxMode}).String())
+	header.Set("Location", cookiePath)
 	writeAccessResponse(conn, http.StatusSeeOther, "", header)
 }
 
 func accessCookieName(proxyID string) string {
-	return "__Host-goginx-access-" + hashAccessValue(proxyID)[:12]
+	// Path-scoped cookies cannot use the __Host- prefix (requires Path=/).
+	return "goginx-access-" + hashAccessValue(proxyID)[:12]
 }
 
 func hashAccessValue(value string) string {

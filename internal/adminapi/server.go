@@ -833,14 +833,18 @@ func (server *Server) buildSchema() (graphql.Schema, error) {
 		"updatedAt":       &graphql.Field{Type: graphql.String, Resolve: userUpdatedAtResolve()},
 	}})
 	proxyConfigType := graphql.NewObject(graphql.ObjectConfig{Name: "AdminProxyConfig", Fields: graphql.Fields{
-		"entryBindHost": &graphql.Field{Type: graphql.String},
-		"entryHost":     &graphql.Field{Type: graphql.String},
-		"entryPort":     &graphql.Field{Type: graphql.Int},
-		"targetHost":    &graphql.Field{Type: graphql.String},
-		"targetPort":    &graphql.Field{Type: graphql.Int},
-		"certFile":      &graphql.Field{Type: graphql.String},
-		"keyFile":       &graphql.Field{Type: graphql.String},
-		"certificateId": &graphql.Field{Type: graphql.String},
+		"domainId":           &graphql.Field{Type: graphql.String},
+		"pathPrefix":         &graphql.Field{Type: graphql.String},
+		"stripPrefix":        &graphql.Field{Type: graphql.Boolean},
+		"upstreamPathPrefix": &graphql.Field{Type: graphql.String},
+		"entryBindHost":      &graphql.Field{Type: graphql.String},
+		"entryHost":          &graphql.Field{Type: graphql.String},
+		"entryPort":          &graphql.Field{Type: graphql.Int},
+		"targetHost":         &graphql.Field{Type: graphql.String},
+		"targetPort":         &graphql.Field{Type: graphql.Int},
+		"certFile":           &graphql.Field{Type: graphql.String},
+		"keyFile":            &graphql.Field{Type: graphql.String},
+		"certificateId":      &graphql.Field{Type: graphql.String},
 	}})
 	proxyEntryHostOptionType := graphql.NewObject(graphql.ObjectConfig{Name: "AdminProxyEntryHostOption", Fields: graphql.Fields{
 		"value":     &graphql.Field{Type: graphql.String},
@@ -996,14 +1000,18 @@ func (server *Server) buildSchema() (graphql.Schema, error) {
 		"sort":   &graphql.InputObjectFieldConfig{Type: sortInput},
 	}})
 	proxyConfigInput := graphql.NewInputObject(graphql.InputObjectConfig{Name: "AdminProxyConfigInput", Fields: graphql.InputObjectConfigFieldMap{
-		"entryBindHost": &graphql.InputObjectFieldConfig{Type: graphql.String},
-		"entryHost":     &graphql.InputObjectFieldConfig{Type: graphql.String},
-		"entryPort":     &graphql.InputObjectFieldConfig{Type: graphql.Int},
-		"targetHost":    &graphql.InputObjectFieldConfig{Type: graphql.String},
-		"targetPort":    &graphql.InputObjectFieldConfig{Type: graphql.Int},
-		"certFile":      &graphql.InputObjectFieldConfig{Type: graphql.String},
-		"keyFile":       &graphql.InputObjectFieldConfig{Type: graphql.String},
-		"certificateId": &graphql.InputObjectFieldConfig{Type: graphql.String},
+		"domainId":           &graphql.InputObjectFieldConfig{Type: graphql.String},
+		"pathPrefix":         &graphql.InputObjectFieldConfig{Type: graphql.String},
+		"stripPrefix":        &graphql.InputObjectFieldConfig{Type: graphql.Boolean},
+		"upstreamPathPrefix": &graphql.InputObjectFieldConfig{Type: graphql.String},
+		"entryBindHost":      &graphql.InputObjectFieldConfig{Type: graphql.String},
+		"entryHost":          &graphql.InputObjectFieldConfig{Type: graphql.String},
+		"entryPort":          &graphql.InputObjectFieldConfig{Type: graphql.Int},
+		"targetHost":         &graphql.InputObjectFieldConfig{Type: graphql.String},
+		"targetPort":         &graphql.InputObjectFieldConfig{Type: graphql.Int},
+		"certFile":           &graphql.InputObjectFieldConfig{Type: graphql.String},
+		"keyFile":            &graphql.InputObjectFieldConfig{Type: graphql.String},
+		"certificateId":      &graphql.InputObjectFieldConfig{Type: graphql.String},
 	}})
 	createUserInput := graphql.NewInputObject(graphql.InputObjectConfig{Name: "AdminCreateUserInput", Fields: graphql.InputObjectConfigFieldMap{
 		"username": &graphql.InputObjectFieldConfig{Type: graphql.NewNonNull(graphql.String)},

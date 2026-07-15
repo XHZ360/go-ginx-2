@@ -42,6 +42,10 @@ func (s *Store) ClientEnrollments() store.ClientEnrollmentRepository {
 	return clientEnrollmentRepository{s.db}
 }
 
+func (s *Store) Domains() store.DomainRepository { return domainRepository{s.db} }
+
+func (s *Store) DomainEntries() store.DomainEntryRepository { return domainEntryRepository{s.db} }
+
 func (s *Store) Proxies() store.ProxyRepository { return proxyRepository{s.db} }
 
 func (s *Store) ProxyRoutes() store.ProxyRouteRepository { return proxyRouteRepository{s.db} }
@@ -100,7 +104,10 @@ func (s *Store) migrate(ctx context.Context) error {
 	if err := addClientKindColumn(ctx, s.db); err != nil {
 		return err
 	}
-	return addProxyAccessAuthColumns(ctx, s.db)
+	if err := addProxyAccessAuthColumns(ctx, s.db); err != nil {
+		return err
+	}
+	return migrateDomainPathRouting(ctx, s.db)
 }
 
 type proxyRouteRepository struct{ db *sql.DB }
@@ -140,6 +147,16 @@ func (r proxyAccessRepository) ActivationToken(ctx context.Context, proxyID stri
 	var token domain.ProxyActivationToken
 	var usedAt sql.NullTime
 	err := r.db.QueryRowContext(ctx, `select id, proxy_id, auth_version, token_hash, expires_at, used_at, created_at, created_by from proxy_activation_tokens where proxy_id = ? and token_hash = ? and expires_at > ? and used_at is null`, proxyID, tokenHash, now).Scan(&token.ID, &token.ProxyID, &token.AuthVersion, &token.TokenHash, &token.ExpiresAt, &usedAt, &token.CreatedAt, &token.CreatedBy)
+	if usedAt.Valid {
+		token.UsedAt = &usedAt.Time
+	}
+	return token, translateError(err)
+}
+
+func (r proxyAccessRepository) ActivationTokenByHash(ctx context.Context, tokenHash string, now time.Time) (domain.ProxyActivationToken, error) {
+	var token domain.ProxyActivationToken
+	var usedAt sql.NullTime
+	err := r.db.QueryRowContext(ctx, `select id, proxy_id, auth_version, token_hash, expires_at, used_at, created_at, created_by from proxy_activation_tokens where token_hash = ? and expires_at > ? and used_at is null`, tokenHash, now).Scan(&token.ID, &token.ProxyID, &token.AuthVersion, &token.TokenHash, &token.ExpiresAt, &usedAt, &token.CreatedAt, &token.CreatedBy)
 	if usedAt.Valid {
 		token.UsedAt = &usedAt.Time
 	}
@@ -453,9 +470,15 @@ func (r clientEnrollmentRepository) MarkUsed(ctx context.Context, id string, use
 
 type proxyRepository struct{ db *sql.DB }
 
-const proxySelectColumns = `id, user_id, client_id, name, type, status, entry_bind_host, entry_host, entry_port, target_host, target_port, cert_file, key_file, certificate_id, access_auth_enabled, access_auth_version, description, created_at, updated_at`
+const proxySelectColumns = `id, user_id, client_id, name, type, status, domain_id, path_prefix, strip_prefix, upstream_path_prefix, entry_bind_host, entry_host, entry_port, target_host, target_port, cert_file, key_file, certificate_id, access_auth_enabled, access_auth_version, stats_legacy_aggregate, description, created_at, updated_at`
 
 func (r proxyRepository) Create(ctx context.Context, proxy domain.Proxy) error {
+	if err := ensureLegacyWebProxyDomain(ctx, r.db, &proxy); err != nil {
+		return err
+	}
+	if err := normalizeProxyForStore(&proxy); err != nil {
+		return err
+	}
 	if err := proxy.Validate(); err != nil {
 		return err
 	}
@@ -466,8 +489,119 @@ func (r proxyRepository) Create(ctx context.Context, proxy domain.Proxy) error {
 	if proxy.UpdatedAt.IsZero() {
 		proxy.UpdatedAt = now
 	}
-	_, err := r.db.ExecContext(ctx, `insert into proxies (id, user_id, client_id, name, type, status, entry_bind_host, entry_host, entry_port, target_host, target_port, cert_file, key_file, certificate_id, access_auth_enabled, access_auth_version, description, created_at, updated_at) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, proxy.ID, proxy.UserID, proxy.ClientID, proxy.Name, proxy.Type, proxy.Status, domain.NormalizeBindHost(proxy.EntryBindHost), proxy.EntryHost, proxy.EntryPort, proxy.TargetHost, proxy.TargetPort, proxy.CertFile, proxy.KeyFile, proxy.CertificateID, proxy.AccessAuthEnabled, proxy.AccessAuthVersion, proxy.Description, proxy.CreatedAt, proxy.UpdatedAt)
+	_, err := r.db.ExecContext(ctx, `insert into proxies (id, user_id, client_id, name, type, status, domain_id, path_prefix, strip_prefix, upstream_path_prefix, entry_bind_host, entry_host, entry_port, target_host, target_port, cert_file, key_file, certificate_id, access_auth_enabled, access_auth_version, stats_legacy_aggregate, description, created_at, updated_at) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, proxy.ID, proxy.UserID, proxy.ClientID, proxy.Name, proxy.Type, proxy.Status, proxy.DomainID, proxy.PathPrefix, proxy.StripPrefix, proxy.UpstreamPathPrefix, domain.NormalizeBindHost(proxy.EntryBindHost), proxy.EntryHost, proxy.EntryPort, proxy.TargetHost, proxy.TargetPort, proxy.CertFile, proxy.KeyFile, proxy.CertificateID, proxy.AccessAuthEnabled, proxy.AccessAuthVersion, proxy.StatsLegacyAggregate, proxy.Description, proxy.CreatedAt, proxy.UpdatedAt)
 	return translateError(err)
+}
+
+// ensureLegacyWebProxyDomain converts create-time ProxyHTTP/HTTPS fixtures into Domain + Web Proxy.
+func ensureLegacyWebProxyDomain(ctx context.Context, db *sql.DB, proxy *domain.Proxy) error {
+	if proxy.Type != domain.ProxyHTTP && proxy.Type != domain.ProxyHTTPS {
+		return nil
+	}
+	host := domain.NormalizeRouteHost(proxy.EntryHost)
+	if host == "" {
+		return errors.New("web proxy host is required")
+	}
+	now := time.Now().UTC()
+	domainID := ""
+	var existing domain.Domain
+	err := db.QueryRowContext(ctx, `select id, user_id, host, certificate_id, status, created_at, updated_at from domains where lower(host) = lower(?)`, host).Scan(&existing.ID, &existing.UserID, &existing.Host, &existing.CertificateID, &existing.Status, &existing.CreatedAt, &existing.UpdatedAt)
+	if err == nil {
+		if existing.UserID != proxy.UserID {
+			return fmt.Errorf("%w: domain host belongs to another user", store.ErrConflict)
+		}
+		domainID = existing.ID
+		if proxy.CertificateID != "" && existing.CertificateID == "" {
+			if _, err := db.ExecContext(ctx, `update domains set certificate_id = ?, updated_at = ? where id = ?`, proxy.CertificateID, now, domainID); err != nil {
+				return err
+			}
+		}
+	} else if errors.Is(err, sql.ErrNoRows) {
+		domainID = newMigrationID("domain")
+		certID := proxy.CertificateID
+		if _, err := db.ExecContext(ctx, `insert into domains (id, user_id, host, certificate_id, status, created_at, updated_at) values (?, ?, ?, ?, ?, ?, ?)`, domainID, proxy.UserID, host, certID, domain.DomainEnabled, now, now); err != nil {
+			return translateError(err)
+		}
+	} else {
+		return err
+	}
+	protocol := domain.DomainEntryHTTP
+	if proxy.Type == domain.ProxyHTTPS {
+		protocol = domain.DomainEntryHTTPS
+	}
+	bindHost := domain.NormalizeBindHost(proxy.EntryBindHost)
+	port := proxy.EntryPort
+	var entryCount int
+	if err := db.QueryRowContext(ctx, `select count(*) from domain_entries where domain_id = ? and protocol = ? and lower(bind_host) = lower(?) and port = ?`, domainID, protocol, bindHost, port).Scan(&entryCount); err != nil {
+		return err
+	}
+	if entryCount == 0 {
+		if _, err := db.ExecContext(ctx, `insert into domain_entries (id, domain_id, protocol, bind_host, port, status, created_at, updated_at) values (?, ?, ?, ?, ?, ?, ?, ?)`, newMigrationID("dentry"), domainID, protocol, bindHost, port, domain.DomainEntryEnabled, now, now); err != nil {
+			return translateError(err)
+		}
+	}
+	// static cert files: register as managed certificate bound to domain if no certificate id
+	if protocol == domain.DomainEntryHTTPS && proxy.CertificateID == "" && proxy.CertFile != "" && proxy.KeyFile != "" {
+		var domainCert string
+		_ = db.QueryRowContext(ctx, `select certificate_id from domains where id = ?`, domainID).Scan(&domainCert)
+		if domainCert == "" {
+			certID := newMigrationID("cert")
+			if _, err := db.ExecContext(ctx, `insert into managed_certificates (id, proxy_id, host, status, serving_status, operation_status, provider, provider_type, provider_name, credential_id, provider_status, cloudflare_certificate_id, previous_cloudflare_certificate_id, hostnames, request_type, requested_validity, cert_file, key_file, previous_cert_file, previous_key_file, failure_count, fingerprint, last_error, created_at, updated_at) values (?, '', ?, ?, ?, '', 'file', 'file', 'static', '', '', '', '', '[]', '', 0, ?, ?, '', '', 0, '', '', ?, ?)`,
+				certID, host, domain.CertificateValid, domain.CertificateServingUsable, proxy.CertFile, proxy.KeyFile, now, now); err != nil {
+				return translateError(err)
+			}
+			if _, err := db.ExecContext(ctx, `update domains set certificate_id = ?, updated_at = ? where id = ?`, certID, now, domainID); err != nil {
+				return err
+			}
+		}
+	}
+	pathPrefix := proxy.PathPrefix
+	if pathPrefix == "" {
+		pathPrefix = "/"
+	}
+	upstream := proxy.UpstreamPathPrefix
+	if upstream == "" {
+		upstream = "/"
+	}
+	proxy.Type = domain.ProxyWeb
+	proxy.DomainID = domainID
+	proxy.PathPrefix = pathPrefix
+	proxy.UpstreamPathPrefix = upstream
+	proxy.EntryBindHost = ""
+	proxy.EntryHost = ""
+	proxy.EntryPort = 0
+	proxy.CertificateID = ""
+	proxy.CertFile = ""
+	proxy.KeyFile = ""
+	return nil
+}
+
+func normalizeProxyForStore(proxy *domain.Proxy) error {
+	switch proxy.Type {
+	case domain.ProxyWeb:
+		pathPrefix, err := domain.NormalizeProxyRoutePrefix(proxy.PathPrefix)
+		if err != nil {
+			return err
+		}
+		upstream, err := domain.NormalizeProxyUpstreamPathPrefix(proxy.UpstreamPathPrefix)
+		if err != nil {
+			return err
+		}
+		proxy.PathPrefix = pathPrefix
+		proxy.UpstreamPathPrefix = upstream
+		proxy.EntryBindHost = ""
+		proxy.EntryHost = ""
+		proxy.EntryPort = 0
+		proxy.CertificateID = ""
+		// CertFile/KeyFile may remain temporarily for legacy static-file migration.
+	case domain.ProxyTCP, domain.ProxyUDP, domain.ProxyForward:
+		proxy.DomainID = ""
+		proxy.PathPrefix = ""
+		proxy.StripPrefix = false
+		proxy.UpstreamPathPrefix = ""
+	}
+	// legacy ProxyHTTP/ProxyHTTPS keep entry fields for migration fixtures
+	return nil
 }
 
 func (r proxyRepository) ByID(ctx context.Context, id string) (domain.Proxy, error) {
@@ -536,6 +670,52 @@ func (r proxyRepository) ByUserID(ctx context.Context, userID string) ([]domain.
 	return proxies, nil
 }
 
+func (r proxyRepository) ByDomainID(ctx context.Context, domainID string) ([]domain.Proxy, error) {
+	rows, err := r.db.QueryContext(ctx, `select `+proxySelectColumns+` from proxies where domain_id = ? order by length(path_prefix) desc, path_prefix, id`, domainID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	proxies := make([]domain.Proxy, 0)
+	for rows.Next() {
+		proxy, err := scanProxyRows(rows)
+		if err != nil {
+			return nil, err
+		}
+		proxies = append(proxies, proxy)
+	}
+	return proxies, rows.Err()
+}
+
+func (r proxyRepository) EnabledWebByDomainID(ctx context.Context, domainID string) ([]domain.Proxy, error) {
+	rows, err := r.db.QueryContext(ctx, `select `+proxySelectColumns+` from proxies where domain_id = ? and status = ? and type = ? order by length(path_prefix) desc, path_prefix, id`, domainID, domain.ProxyEnabled, domain.ProxyWeb)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	proxies := make([]domain.Proxy, 0)
+	for rows.Next() {
+		proxy, err := scanProxyRows(rows)
+		if err != nil {
+			return nil, err
+		}
+		proxies = append(proxies, proxy)
+	}
+	return proxies, rows.Err()
+}
+
+func (r proxyRepository) ByDomainAndPath(ctx context.Context, domainID string, path string) (domain.Proxy, error) {
+	proxies, err := r.EnabledWebByDomainID(ctx, domainID)
+	if err != nil {
+		return domain.Proxy{}, err
+	}
+	selected, ok := domain.SelectWebProxy(proxies, path)
+	if !ok {
+		return domain.Proxy{}, store.ErrNotFound
+	}
+	return selected, nil
+}
+
 func (r proxyRepository) EnabledByType(ctx context.Context, proxyType domain.ProxyType) ([]domain.Proxy, error) {
 	rows, err := r.db.QueryContext(ctx, `select `+proxySelectColumns+` from proxies where type = ? and status = ? order by created_at, id`, proxyType, domain.ProxyEnabled)
 	if err != nil {
@@ -582,10 +762,27 @@ func (r proxyRepository) ByHTTPSRoute(ctx context.Context, bindHost string, port
 }
 
 func (r proxyRepository) ByHTTPHost(ctx context.Context, host string) (domain.Proxy, error) {
+	// Prefer Domain-based web root proxy; fall back to legacy http row.
+	var domainID string
+	err := r.db.QueryRowContext(ctx, `select id from domains where lower(host) = lower(?)`, domain.NormalizeRouteHost(host)).Scan(&domainID)
+	if err == nil {
+		proxy, pathErr := r.ByDomainAndPath(ctx, domainID, "/")
+		if pathErr == nil {
+			return proxy, nil
+		}
+	}
 	return scanProxy(r.db.QueryRowContext(ctx, `select `+proxySelectColumns+` from proxies where type = ? and lower(entry_host) = lower(?) order by entry_bind_host <> '', entry_port <> 0 limit 1`, domain.ProxyHTTP, host))
 }
 
 func (r proxyRepository) ByHTTPSHost(ctx context.Context, host string) (domain.Proxy, error) {
+	var domainID string
+	err := r.db.QueryRowContext(ctx, `select id from domains where lower(host) = lower(?)`, domain.NormalizeRouteHost(host)).Scan(&domainID)
+	if err == nil {
+		proxy, pathErr := r.ByDomainAndPath(ctx, domainID, "/")
+		if pathErr == nil {
+			return proxy, nil
+		}
+	}
 	return scanProxy(r.db.QueryRowContext(ctx, `select `+proxySelectColumns+` from proxies where type = ? and lower(entry_host) = lower(?) order by entry_bind_host <> '', entry_port <> 0 limit 1`, domain.ProxyHTTPS, host))
 }
 
@@ -626,10 +823,13 @@ func (r proxyRepository) SetStatus(ctx context.Context, id string, status domain
 }
 
 func (r proxyRepository) Update(ctx context.Context, proxy domain.Proxy) error {
+	if err := normalizeProxyForStore(&proxy); err != nil {
+		return err
+	}
 	if err := proxy.Validate(); err != nil {
 		return err
 	}
-	result, err := r.db.ExecContext(ctx, `update proxies set name = ?, status = ?, entry_bind_host = ?, entry_host = ?, entry_port = ?, target_host = ?, target_port = ?, cert_file = ?, key_file = ?, certificate_id = ?, access_auth_enabled = ?, access_auth_version = ?, description = ?, updated_at = ? where id = ?`, proxy.Name, proxy.Status, domain.NormalizeBindHost(proxy.EntryBindHost), proxy.EntryHost, proxy.EntryPort, proxy.TargetHost, proxy.TargetPort, proxy.CertFile, proxy.KeyFile, proxy.CertificateID, proxy.AccessAuthEnabled, proxy.AccessAuthVersion, proxy.Description, time.Now().UTC(), proxy.ID)
+	result, err := r.db.ExecContext(ctx, `update proxies set name = ?, status = ?, domain_id = ?, path_prefix = ?, strip_prefix = ?, upstream_path_prefix = ?, entry_bind_host = ?, entry_host = ?, entry_port = ?, target_host = ?, target_port = ?, cert_file = ?, key_file = ?, certificate_id = ?, access_auth_enabled = ?, access_auth_version = ?, stats_legacy_aggregate = ?, description = ?, updated_at = ? where id = ?`, proxy.Name, proxy.Status, proxy.DomainID, proxy.PathPrefix, proxy.StripPrefix, proxy.UpstreamPathPrefix, domain.NormalizeBindHost(proxy.EntryBindHost), proxy.EntryHost, proxy.EntryPort, proxy.TargetHost, proxy.TargetPort, proxy.CertFile, proxy.KeyFile, proxy.CertificateID, proxy.AccessAuthEnabled, proxy.AccessAuthVersion, proxy.StatsLegacyAggregate, proxy.Description, time.Now().UTC(), proxy.ID)
 	return resultError(result, err)
 }
 
@@ -1182,13 +1382,13 @@ func scanClientEnrollment(row *sql.Row) (domain.ClientEnrollment, error) {
 
 func scanProxy(row *sql.Row) (domain.Proxy, error) {
 	var proxy domain.Proxy
-	err := row.Scan(&proxy.ID, &proxy.UserID, &proxy.ClientID, &proxy.Name, &proxy.Type, &proxy.Status, &proxy.EntryBindHost, &proxy.EntryHost, &proxy.EntryPort, &proxy.TargetHost, &proxy.TargetPort, &proxy.CertFile, &proxy.KeyFile, &proxy.CertificateID, &proxy.AccessAuthEnabled, &proxy.AccessAuthVersion, &proxy.Description, &proxy.CreatedAt, &proxy.UpdatedAt)
+	err := row.Scan(&proxy.ID, &proxy.UserID, &proxy.ClientID, &proxy.Name, &proxy.Type, &proxy.Status, &proxy.DomainID, &proxy.PathPrefix, &proxy.StripPrefix, &proxy.UpstreamPathPrefix, &proxy.EntryBindHost, &proxy.EntryHost, &proxy.EntryPort, &proxy.TargetHost, &proxy.TargetPort, &proxy.CertFile, &proxy.KeyFile, &proxy.CertificateID, &proxy.AccessAuthEnabled, &proxy.AccessAuthVersion, &proxy.StatsLegacyAggregate, &proxy.Description, &proxy.CreatedAt, &proxy.UpdatedAt)
 	return proxy, translateError(err)
 }
 
 func scanProxyRows(rows *sql.Rows) (domain.Proxy, error) {
 	var proxy domain.Proxy
-	err := rows.Scan(&proxy.ID, &proxy.UserID, &proxy.ClientID, &proxy.Name, &proxy.Type, &proxy.Status, &proxy.EntryBindHost, &proxy.EntryHost, &proxy.EntryPort, &proxy.TargetHost, &proxy.TargetPort, &proxy.CertFile, &proxy.KeyFile, &proxy.CertificateID, &proxy.AccessAuthEnabled, &proxy.AccessAuthVersion, &proxy.Description, &proxy.CreatedAt, &proxy.UpdatedAt)
+	err := rows.Scan(&proxy.ID, &proxy.UserID, &proxy.ClientID, &proxy.Name, &proxy.Type, &proxy.Status, &proxy.DomainID, &proxy.PathPrefix, &proxy.StripPrefix, &proxy.UpstreamPathPrefix, &proxy.EntryBindHost, &proxy.EntryHost, &proxy.EntryPort, &proxy.TargetHost, &proxy.TargetPort, &proxy.CertFile, &proxy.KeyFile, &proxy.CertificateID, &proxy.AccessAuthEnabled, &proxy.AccessAuthVersion, &proxy.StatsLegacyAggregate, &proxy.Description, &proxy.CreatedAt, &proxy.UpdatedAt)
 	return proxy, err
 }
 
@@ -1794,6 +1994,33 @@ create table if not exists client_enrollments (
 
 create unique index if not exists client_enrollments_token_hash_unique on client_enrollments(token_hash);
 
+create table if not exists domains (
+    id text primary key,
+    user_id text not null references users(id) on delete cascade,
+    host text not null,
+    certificate_id text not null default '',
+    status text not null,
+    created_at timestamp not null,
+    updated_at timestamp not null
+);
+
+create unique index if not exists domains_host_unique on domains(lower(host));
+create unique index if not exists domains_certificate_id_unique on domains(certificate_id) where certificate_id <> '';
+
+create table if not exists domain_entries (
+    id text primary key,
+    domain_id text not null references domains(id) on delete cascade,
+    protocol text not null,
+    bind_host text not null default '',
+    port integer not null,
+    status text not null,
+    created_at timestamp not null,
+    updated_at timestamp not null
+);
+
+create unique index if not exists domain_entries_listener_unique on domain_entries(domain_id, protocol, lower(bind_host), port);
+create index if not exists domain_entries_listener_lookup_idx on domain_entries(protocol, lower(bind_host), port, status);
+
 create table if not exists proxies (
     id text primary key,
     user_id text not null references users(id) on delete cascade,
@@ -1801,6 +2028,10 @@ create table if not exists proxies (
     name text not null,
     type text not null,
     status text not null,
+    domain_id text not null default '',
+    path_prefix text not null default '',
+    strip_prefix integer not null default 0,
+    upstream_path_prefix text not null default '/',
     entry_bind_host text not null default '',
     entry_host text not null default '',
     entry_port integer not null default 0,
@@ -1811,6 +2042,7 @@ create table if not exists proxies (
     certificate_id text not null default '',
     access_auth_enabled integer not null default 0,
     access_auth_version integer not null default 0,
+    stats_legacy_aggregate integer not null default 0,
     description text not null default '',
     created_at timestamp not null,
     updated_at timestamp not null
@@ -1832,6 +2064,12 @@ create table if not exists proxy_routes (
 );
 
 create index if not exists proxy_routes_proxy_status_idx on proxy_routes(proxy_id, status);
+
+create table if not exists schema_flags (
+    name text primary key,
+    value text not null,
+    updated_at timestamp not null
+);
 
 create table if not exists proxy_activation_tokens (
     id text primary key,

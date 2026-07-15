@@ -53,11 +53,25 @@ func TestProxyRouteValidateRejectsReservedPrefix(t *testing.T) {
 	}
 }
 
-func TestProxyValidateAcceptsHTTPHostRouteWithoutPort(t *testing.T) {
-	proxy := Proxy{ID: "p1", UserID: "u1", ClientID: "c1", Name: "web", Type: ProxyHTTP, Status: ProxyEnabled, EntryHost: "app.example.com", TargetHost: "127.0.0.1", TargetPort: 8080}
+func TestProxyValidateAcceptsWebProxyWithDomainAndPath(t *testing.T) {
+	proxy := Proxy{ID: "p1", UserID: "u1", ClientID: "c1", Name: "web", Type: ProxyWeb, Status: ProxyEnabled, DomainID: "d1", PathPrefix: "/", UpstreamPathPrefix: "/", TargetHost: "127.0.0.1", TargetPort: 8080}
 
 	if err := proxy.Validate(); err != nil {
 		t.Fatalf("expected valid proxy: %v", err)
+	}
+}
+
+func TestSelectWebProxyLongestPrefix(t *testing.T) {
+	proxies := []Proxy{
+		{PathPrefix: "/api", Status: ProxyEnabled, Type: ProxyWeb},
+		{PathPrefix: "/api/v2", Status: ProxyEnabled, Type: ProxyWeb},
+	}
+	selected, ok := SelectWebProxy(proxies, "/api/v2/users")
+	if !ok || selected.PathPrefix != "/api/v2" {
+		t.Fatalf("expected longest proxy, got %+v, %v", selected, ok)
+	}
+	if _, ok := SelectWebProxy(proxies, "/apix"); ok {
+		t.Fatal("expected path segment boundary to reject /apix")
 	}
 }
 
@@ -95,13 +109,13 @@ func TestListenerClaimAllowsSharedHTTPListener(t *testing.T) {
 	}
 }
 
-func TestEffectiveProxyEntryAppliesHTTPDefaults(t *testing.T) {
-	proxy := Proxy{ID: "p1", Type: ProxyHTTP, EntryHost: "App.Example.com", TargetHost: "127.0.0.1", TargetPort: 8080}
-	entry, ok := EffectiveProxyEntry(proxy, ProxyEntryDefaults{HTTPBindHost: "127.0.0.1", HTTPPort: 18080})
+func TestEffectiveDomainEntryAppliesHTTPDefaults(t *testing.T) {
+	domainEntry := DomainEntry{ID: "e1", DomainID: "d1", Protocol: DomainEntryHTTP, Status: DomainEntryEnabled}
+	entry, ok := EffectiveDomainEntry(domainEntry, ProxyEntryDefaults{HTTPBindHost: "127.0.0.1", HTTPPort: 18080})
 	if !ok {
 		t.Fatal("expected effective entry")
 	}
-	if entry.BindHost != "127.0.0.1" || entry.Port != 18080 || entry.RouteHost != "app.example.com" {
+	if entry.BindHost != "127.0.0.1" || entry.Port != 18080 || entry.Protocol != ListenerProtocolHTTP {
 		t.Fatalf("unexpected effective entry: %+v", entry)
 	}
 }

@@ -10,6 +10,7 @@ import (
 	"log"
 	"net"
 	nethttp "net/http"
+	"strconv"
 	"strings"
 
 	"github.com/simp-frp/go-ginx-2/internal/control"
@@ -81,9 +82,10 @@ func (server *Server) Close() error {
 }
 
 func (server *Server) ServeHTTP(w nethttp.ResponseWriter, r *nethttp.Request) {
-	proxy, err := server.entry.Store.Proxies().ByHTTPRoute(r.Context(), server.entry.EntryBindHost, server.entry.EntryPort, hostWithoutPort(r.Host), server.entry.IncludeDefaultRoutes)
-	if err != nil || proxy.Status != domain.ProxyEnabled {
-		log.Printf("http proxy route failed: bind_host=%s port=%d host=%s category=route_miss", displayBindHost(server.entry.EntryBindHost), server.entry.EntryPort, hostWithoutPort(r.Host))
+	host := hostWithoutPort(r.Host)
+	webDomain, _, err := server.entry.Store.DomainEntries().ByListener(r.Context(), domain.DomainEntryHTTP, server.entry.EntryBindHost, server.entry.EntryPort, host, server.entry.IncludeDefaultRoutes)
+	if err != nil || webDomain.Status != domain.DomainEnabled {
+		log.Printf("http proxy route failed: bind_host=%s port=%d host=%s category=route_miss", displayBindHost(server.entry.EntryBindHost), server.entry.EntryPort, host)
 		nethttp.Error(w, "proxy not found", nethttp.StatusNotFound)
 		return
 	}
@@ -91,21 +93,22 @@ func (server *Server) ServeHTTP(w nethttp.ResponseWriter, r *nethttp.Request) {
 		nethttp.Error(w, "invalid request path", nethttp.StatusBadRequest)
 		return
 	}
-	targetHost, targetPort := proxy.TargetHost, proxy.TargetPort
-	clientID := proxy.ClientID
-	if routes, ok := store.Routes(server.entry.Store); ok {
-		configured, routeErr := routes.ListByProxyID(r.Context(), proxy.ID)
-		if routeErr != nil {
-			nethttp.Error(w, "proxy route unavailable", nethttp.StatusBadGateway)
+	proxy, err := server.entry.Store.Proxies().ByDomainAndPath(r.Context(), webDomain.ID, r.URL.Path)
+	if err != nil || proxy.Status != domain.ProxyEnabled {
+		log.Printf("http proxy route failed: bind_host=%s port=%d host=%s domain_id=%s category=path_miss", displayBindHost(server.entry.EntryBindHost), server.entry.EntryPort, host, webDomain.ID)
+		nethttp.Error(w, "proxy not found", nethttp.StatusNotFound)
+		return
+	}
+	if proxy.AccessAuthEnabled {
+		if httpsURL, ok := server.httpsRedirectURL(r.Context(), webDomain, r); ok {
+			nethttp.Redirect(w, r, httpsURL, nethttp.StatusPermanentRedirect)
 			return
 		}
-		if route, matched := domain.SelectProxyRoute(configured, r.URL.Path); matched {
-			clientID = route.ClientID
-			targetHost, targetPort = route.TargetHost, route.TargetPort
-			r.URL.Path = domain.RewriteProxyRoutePath(r.URL.Path, route)
-			r.URL.RawPath = ""
-		}
+		nethttp.Error(w, "https required", nethttp.StatusForbidden)
+		return
 	}
+	r.URL.Path = domain.RewriteWebProxyPath(r.URL.Path, proxy.PathPrefix, proxy.StripPrefix, proxy.UpstreamPathPrefix)
+	r.URL.RawPath = ""
 	statusCode := nethttp.StatusBadGateway
 	failed := true
 	var uploadBytes int64
@@ -115,16 +118,16 @@ func (server *Server) ServeHTTP(w nethttp.ResponseWriter, r *nethttp.Request) {
 			server.entry.Stats.RecordHTTP(proxy.ID, statusCode, uploadBytes, downloadBytes, failed)
 		}()
 	}
-	latest, ok := server.entry.Sessions.Latest(clientID)
+	latest, ok := server.entry.Sessions.Latest(proxy.ClientID)
 	if !ok || latest.StreamOpener == nil {
-		log.Printf("http proxy route failed: bind_host=%s port=%d host=%s proxy_id=%s category=client_offline", displayBindHost(server.entry.EntryBindHost), server.entry.EntryPort, hostWithoutPort(r.Host), proxy.ID)
+		log.Printf("http proxy route failed: bind_host=%s port=%d host=%s proxy_id=%s category=client_offline", displayBindHost(server.entry.EntryBindHost), server.entry.EntryPort, host, proxy.ID)
 		statusCode = nethttp.StatusServiceUnavailable
 		nethttp.Error(w, "client offline", nethttp.StatusServiceUnavailable)
 		return
 	}
 	stream, err := latest.StreamOpener.OpenStream(r.Context())
 	if err != nil {
-		log.Printf("http proxy route failed: bind_host=%s port=%d host=%s proxy_id=%s category=open_stream_failed error=%v", displayBindHost(server.entry.EntryBindHost), server.entry.EntryPort, hostWithoutPort(r.Host), proxy.ID, err)
+		log.Printf("http proxy route failed: bind_host=%s port=%d host=%s proxy_id=%s category=open_stream_failed error=%v", displayBindHost(server.entry.EntryBindHost), server.entry.EntryPort, host, proxy.ID, err)
 		nethttp.Error(w, "open proxy stream failed", nethttp.StatusBadGateway)
 		return
 	}
@@ -134,7 +137,7 @@ func (server *Server) ServeHTTP(w nethttp.ResponseWriter, r *nethttp.Request) {
 		nethttp.Error(w, "request id failed", nethttp.StatusInternalServerError)
 		return
 	}
-	if err := control.WriteMessage(stream, control.MessageOpenStream, control.OpenStream{Kind: "http", ProxyID: proxy.ID, ConnectionID: requestID, TargetHost: targetHost, TargetPort: targetPort}); err != nil {
+	if err := control.WriteMessage(stream, control.MessageOpenStream, control.OpenStream{Kind: "http", ProxyID: proxy.ID, ConnectionID: requestID, TargetHost: proxy.TargetHost, TargetPort: proxy.TargetPort}); err != nil {
 		nethttp.Error(w, "write proxy stream failed", nethttp.StatusBadGateway)
 		return
 	}
@@ -179,6 +182,30 @@ func (server *Server) ServeHTTP(w nethttp.ResponseWriter, r *nethttp.Request) {
 	bytes, err := io.Copy(w, response.Body)
 	downloadBytes = bytes
 	failed = err != nil || response.StatusCode >= 500
+}
+
+func (server *Server) httpsRedirectURL(ctx context.Context, webDomain domain.Domain, r *nethttp.Request) (string, bool) {
+	entries, err := server.entry.Store.DomainEntries().ListByDomainID(ctx, webDomain.ID)
+	if err != nil {
+		return "", false
+	}
+	var httpsEntry *domain.DomainEntry
+	for i := range entries {
+		entry := entries[i]
+		if entry.Protocol == domain.DomainEntryHTTPS && entry.Status == domain.DomainEntryEnabled {
+			httpsEntry = &entry
+			break
+		}
+	}
+	if httpsEntry == nil {
+		return "", false
+	}
+	host := webDomain.Host
+	if httpsEntry.Port > 0 && httpsEntry.Port != 443 {
+		host = net.JoinHostPort(webDomain.Host, strconv.Itoa(httpsEntry.Port))
+	}
+	target := "https://" + host + r.URL.RequestURI()
+	return target, true
 }
 
 func displayBindHost(host string) string {

@@ -417,12 +417,9 @@ func (service Service) issueACMEForCertificate(ctx context.Context, certificate 
 }
 
 func (service Service) issueACMEForProxy(ctx context.Context, proxy domain.Proxy, existing *domain.ManagedCertificate, failureStatus domain.CertificateStatus) (domain.ManagedCertificate, error) {
-	if proxy.Type != domain.ProxyHTTPS {
-		return domain.ManagedCertificate{}, errors.New("managed certificates require an https proxy")
-	}
-	host := strings.ToLower(strings.TrimSpace(proxy.EntryHost))
-	if host == "" {
-		return domain.ManagedCertificate{}, errors.New("https proxy host is required")
+	host, err := service.proxyCertificateHost(ctx, proxy)
+	if err != nil {
+		return domain.ManagedCertificate{}, err
 	}
 	certificateID := ""
 	if existing != nil {
@@ -499,18 +496,42 @@ func (service Service) issueOriginCA(ctx context.Context, request ManagedCertifi
 }
 
 func (service Service) issueOriginCAForProxy(ctx context.Context, proxy domain.Proxy, request ManagedCertificateRequest, existing *domain.ManagedCertificate, failureStatus domain.CertificateStatus) (domain.ManagedCertificate, error) {
-	if proxy.Type != domain.ProxyHTTPS {
-		return domain.ManagedCertificate{}, errors.New("managed certificates require an https proxy")
-	}
-	host := strings.ToLower(strings.TrimSpace(proxy.EntryHost))
-	if host == "" {
-		return domain.ManagedCertificate{}, errors.New("https proxy host is required")
+	host, err := service.proxyCertificateHost(ctx, proxy)
+	if err != nil {
+		return domain.ManagedCertificate{}, err
 	}
 	certificateID := ""
 	if existing != nil {
 		certificateID = existing.ID
 	}
 	return service.issueOriginCAForIdentity(ctx, certificateID, proxy.ID, host, request, existing, failureStatus)
+}
+
+func (service Service) proxyCertificateHost(ctx context.Context, proxy domain.Proxy) (string, error) {
+	if proxy.Type.IsWeb() {
+		if strings.TrimSpace(proxy.DomainID) != "" && service.Store != nil {
+			webDomain, err := service.Store.Domains().ByID(ctx, proxy.DomainID)
+			if err == nil {
+				host := strings.ToLower(strings.TrimSpace(webDomain.Host))
+				if host != "" {
+					return host, nil
+				}
+			}
+		}
+		host := strings.ToLower(strings.TrimSpace(proxy.EntryHost))
+		if host != "" {
+			return host, nil
+		}
+		return "", errors.New("web proxy domain host is required")
+	}
+	if proxy.Type != domain.ProxyHTTPS {
+		return "", errors.New("managed certificates require a web or https proxy")
+	}
+	host := strings.ToLower(strings.TrimSpace(proxy.EntryHost))
+	if host == "" {
+		return "", errors.New("https proxy host is required")
+	}
+	return host, nil
 }
 
 // issueOriginCAForIdentity 以证书身份执行 Cloudflare Origin CA 签发/轮换。proxyID 可为空（未绑定证书）。
@@ -833,9 +854,21 @@ func (service Service) MigrateLegacyFileCertificates(ctx context.Context) (int, 
 			continue
 		}
 		if strings.TrimSpace(proxy.CertFile) == "" && strings.TrimSpace(proxy.KeyFile) == "" {
+			// also migrate domain-bound static leftovers via domain host if domain has no cert
+			if proxy.Type.IsWeb() && strings.TrimSpace(proxy.DomainID) != "" {
+				webDomain, err := service.Store.Domains().ByID(ctx, proxy.DomainID)
+				if err != nil || strings.TrimSpace(webDomain.CertificateID) != "" {
+					continue
+				}
+			}
 			continue
 		}
 		host := strings.ToLower(strings.TrimSpace(proxy.EntryHost))
+		if host == "" && proxy.Type.IsWeb() && strings.TrimSpace(proxy.DomainID) != "" {
+			if webDomain, err := service.Store.Domains().ByID(ctx, proxy.DomainID); err == nil {
+				host = strings.ToLower(strings.TrimSpace(webDomain.Host))
+			}
+		}
 		if host == "" {
 			continue
 		}
@@ -843,11 +876,34 @@ func (service Service) MigrateLegacyFileCertificates(ctx context.Context) (int, 
 		if err != nil {
 			return migrated, err
 		}
+		if proxy.Type.IsWeb() && strings.TrimSpace(proxy.DomainID) != "" {
+			webDomain, err := service.Store.Domains().ByID(ctx, proxy.DomainID)
+			if err != nil {
+				return migrated, err
+			}
+			if strings.TrimSpace(webDomain.CertificateID) == "" {
+				webDomain.CertificateID = certificate.ID
+				if err := service.Store.Domains().Update(ctx, webDomain); err != nil {
+					return migrated, err
+				}
+			}
+		} else {
+			bound, err := service.Store.Proxies().ByID(ctx, proxy.ID)
+			if err != nil {
+				return migrated, err
+			}
+			bound.CertificateID = certificate.ID
+			if err := service.Store.Proxies().Update(ctx, bound); err != nil {
+				return migrated, err
+			}
+		}
+		// clear static paths so re-run is idempotent
 		bound, err := service.Store.Proxies().ByID(ctx, proxy.ID)
 		if err != nil {
 			return migrated, err
 		}
-		bound.CertificateID = certificate.ID
+		bound.CertFile = ""
+		bound.KeyFile = ""
 		if err := service.Store.Proxies().Update(ctx, bound); err != nil {
 			return migrated, err
 		}

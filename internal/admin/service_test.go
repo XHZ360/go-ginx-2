@@ -820,8 +820,15 @@ func TestServiceEnforcesProxyLifecycleRules(t *testing.T) {
 	if err != nil {
 		t.Fatalf("update proxy: %v", err)
 	}
-	if updated.Name != "web-updated" || updated.EntryHost != "api.example.com" || updated.TargetPort != 8081 {
+	if updated.Name != "web-updated" || updated.TargetPort != 8081 {
 		t.Fatalf("unexpected updated proxy: %+v", updated)
+	}
+	webDomain, err := db.Domains().ByID(ctx, updated.DomainID)
+	if err != nil {
+		t.Fatalf("lookup domain: %v", err)
+	}
+	if webDomain.Host != "api.example.com" {
+		t.Fatalf("expected domain host renamed, got %+v", webDomain)
 	}
 	if err := service.DeleteProxy(ctx, proxy.ID, "admin-1"); err == nil {
 		t.Fatal("expected delete-before-disable rejection")

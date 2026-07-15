@@ -93,6 +93,10 @@ func (s authStore) ClientEnrollments() store.ClientEnrollmentRepository {
 	return authClientEnrollmentRepository{}
 }
 
+func (s authStore) Domains() store.DomainRepository { return authDomainRepository{} }
+
+func (s authStore) DomainEntries() store.DomainEntryRepository { return authDomainEntryRepository{} }
+
 func (s authStore) Proxies() store.ProxyRepository { return authProxyRepository{s.proxies} }
 
 func (s authStore) Certificates() store.CertificateRepository { return authCertificateRepository{} }
@@ -221,6 +225,42 @@ func (r authProxyRepository) ByUserID(_ context.Context, userID string) ([]domai
 	return proxies, nil
 }
 
+func (r authProxyRepository) ByDomainID(_ context.Context, domainID string) ([]domain.Proxy, error) {
+	proxies := make([]domain.Proxy, 0)
+	for _, proxy := range r.proxies {
+		if proxy.DomainID == domainID {
+			proxies = append(proxies, proxy)
+		}
+	}
+	return proxies, nil
+}
+
+func (r authProxyRepository) EnabledWebByDomainID(ctx context.Context, domainID string) ([]domain.Proxy, error) {
+	proxies, err := r.ByDomainID(ctx, domainID)
+	if err != nil {
+		return nil, err
+	}
+	enabled := make([]domain.Proxy, 0)
+	for _, proxy := range proxies {
+		if proxy.Status == domain.ProxyEnabled && proxy.Type.IsWeb() {
+			enabled = append(enabled, proxy)
+		}
+	}
+	return enabled, nil
+}
+
+func (r authProxyRepository) ByDomainAndPath(ctx context.Context, domainID string, path string) (domain.Proxy, error) {
+	proxies, err := r.EnabledWebByDomainID(ctx, domainID)
+	if err != nil {
+		return domain.Proxy{}, err
+	}
+	selected, ok := domain.SelectWebProxy(proxies, path)
+	if !ok {
+		return domain.Proxy{}, store.ErrNotFound
+	}
+	return selected, nil
+}
+
 func (r authProxyRepository) EnabledByType(_ context.Context, proxyType domain.ProxyType) ([]domain.Proxy, error) {
 	proxies := make([]domain.Proxy, 0)
 	for _, proxy := range r.proxies {
@@ -272,6 +312,47 @@ func (r authProxyRepository) SetStatus(context.Context, string, domain.ProxyStat
 func (r authProxyRepository) Update(context.Context, domain.Proxy) error { return nil }
 
 func (r authProxyRepository) Delete(context.Context, string) error { return nil }
+
+type authDomainRepository struct{}
+
+func (authDomainRepository) Create(context.Context, domain.Domain) error { return nil }
+func (authDomainRepository) ByID(context.Context, string) (domain.Domain, error) {
+	return domain.Domain{}, store.ErrNotFound
+}
+func (authDomainRepository) ByHost(context.Context, string) (domain.Domain, error) {
+	return domain.Domain{}, store.ErrNotFound
+}
+func (authDomainRepository) ByCertificateID(context.Context, string) (domain.Domain, error) {
+	return domain.Domain{}, store.ErrNotFound
+}
+func (authDomainRepository) List(context.Context) ([]domain.Domain, error) { return nil, nil }
+func (authDomainRepository) ByUserID(context.Context, string) ([]domain.Domain, error) {
+	return nil, nil
+}
+func (authDomainRepository) Update(context.Context, domain.Domain) error { return nil }
+func (authDomainRepository) SetStatus(context.Context, string, domain.DomainStatus) error {
+	return nil
+}
+func (authDomainRepository) Delete(context.Context, string) error { return nil }
+
+type authDomainEntryRepository struct{}
+
+func (authDomainEntryRepository) Create(context.Context, domain.DomainEntry) error { return nil }
+func (authDomainEntryRepository) ByID(context.Context, string) (domain.DomainEntry, error) {
+	return domain.DomainEntry{}, store.ErrNotFound
+}
+func (authDomainEntryRepository) ListByDomainID(context.Context, string) ([]domain.DomainEntry, error) {
+	return nil, nil
+}
+func (authDomainEntryRepository) ListEnabled(context.Context) ([]domain.DomainEntry, error) {
+	return nil, nil
+}
+func (authDomainEntryRepository) ByListener(context.Context, domain.DomainEntryProtocol, string, int, string, bool) (domain.Domain, domain.DomainEntry, error) {
+	return domain.Domain{}, domain.DomainEntry{}, store.ErrNotFound
+}
+func (authDomainEntryRepository) Update(context.Context, domain.DomainEntry) error { return nil }
+func (authDomainEntryRepository) Delete(context.Context, string) error             { return nil }
+func (authDomainEntryRepository) DeleteByDomainID(context.Context, string) error   { return nil }
 
 type authStatsRepository struct{}
 

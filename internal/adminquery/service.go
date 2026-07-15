@@ -207,9 +207,11 @@ const (
 type ManagedCertificateSummary struct {
 	ProxyID       string
 	CertificateID string
-	// BoundProxyID 是当前以 certificate_id 权威绑定该证书的代理 ID（未绑定为空）。
+	// BoundProxyID 兼容字段：Domain 下任一 Proxy ID（未绑定为空）。
 	BoundProxyID string
-	// Referenced 表示该证书当前是否被某个代理绑定（在用）。
+	// BoundDomainID 是当前以 certificate_id 权威绑定该证书的 Domain ID。
+	BoundDomainID string
+	// Referenced 表示该证书当前是否被某个 Domain 绑定（在用）。
 	Referenced bool
 	// Servable 表示该证书当前是否可服务（serving 可用且未被 provider 状态阻断）。
 	Servable bool
@@ -270,14 +272,18 @@ type ManagedCertificatePage struct {
 }
 
 type ProxyTypeConfig struct {
-	EntryBindHost string
-	EntryHost     string
-	EntryPort     int
-	TargetHost    string
-	TargetPort    int
-	CertFile      string
-	KeyFile       string
-	// CertificateID 是 HTTPS 代理选择的证书资源 ID（权威绑定）。
+	DomainID           string
+	PathPrefix         string
+	StripPrefix        bool
+	UpstreamPathPrefix string
+	EntryBindHost      string
+	EntryHost          string
+	EntryPort          int
+	TargetHost         string
+	TargetPort         int
+	CertFile           string
+	KeyFile            string
+	// CertificateID 来自所属 Domain 的权威绑定。
 	CertificateID string
 }
 
@@ -552,17 +558,16 @@ func (service Service) ProxyDetail(ctx context.Context, proxyID string) (ProxyDe
 		return ProxyDetail{}, err
 	}
 	item := proxyListItemFromDomain(proxy, latestByClient[proxy.ClientID], statsByProxy[proxy.ID], certificate)
-	routes := make([]ProxyRouteItem, 0)
-	if repository, ok := store.Routes(service.Store); ok {
-		configured, routeErr := repository.ListByProxyID(ctx, proxyID)
-		if routeErr != nil {
-			return ProxyDetail{}, routeErr
-		}
-		routes = make([]ProxyRouteItem, 0, len(configured))
-		for _, route := range configured {
-			routes = append(routes, proxyRouteItemFromDomain(route))
+	if item.Config.DomainID != "" {
+		if webDomain, domainErr := service.Store.Domains().ByID(ctx, item.Config.DomainID); domainErr == nil {
+			item.Config.EntryHost = webDomain.Host
+			if item.Config.CertificateID == "" {
+				item.Config.CertificateID = webDomain.CertificateID
+			}
 		}
 	}
+	// routes field retained empty for GraphQL compatibility during ProxyRoute removal
+	routes := make([]ProxyRouteItem, 0)
 	return ProxyDetail{ID: item.ID, UserID: item.UserID, ClientID: item.ClientID, Name: item.Name, Type: item.Type, Status: item.Status, Description: item.Description, RuntimeStatus: item.RuntimeStatus, ActiveTCPConnections: item.ActiveTCPConnections, UploadBytes: item.UploadBytes, DownloadBytes: item.DownloadBytes, TCPErrorCount: item.TCPErrorCount, UDPErrorCount: item.UDPErrorCount, HTTPErrorCount: item.HTTPErrorCount, AccessAuthEnabled: item.AccessAuthEnabled, Routes: routes, Config: item.Config, Certificate: item.Certificate, CreatedAt: proxy.CreatedAt, UpdatedAt: proxy.UpdatedAt}, nil
 }
 
@@ -570,15 +575,14 @@ func (service Service) ListManagedCertificates(ctx context.Context, input Certif
 	if service.Store == nil {
 		return ManagedCertificatePage{}, nil
 	}
-	proxies, err := service.Store.Proxies().List(ctx)
+	domains, err := service.Store.Domains().List(ctx)
 	if err != nil {
 		return ManagedCertificatePage{}, err
 	}
-	// 构建 certificate_id -> 绑定代理 的映射（权威绑定）。
-	proxyByCertificateID := make(map[string]domain.Proxy)
-	for _, proxy := range proxies {
-		if strings.TrimSpace(proxy.CertificateID) != "" {
-			proxyByCertificateID[proxy.CertificateID] = proxy
+	domainByCertificateID := make(map[string]domain.Domain)
+	for _, webDomain := range domains {
+		if strings.TrimSpace(webDomain.CertificateID) != "" {
+			domainByCertificateID[webDomain.CertificateID] = webDomain
 		}
 	}
 	// 枚举所有证书资源（含未绑定）。
@@ -589,8 +593,8 @@ func (service Service) ListManagedCertificates(ctx context.Context, input Certif
 	items := make([]ManagedCertificateSummary, 0, len(certificates))
 	for _, certificate := range certificates {
 		summary := service.managedCertificateSummary(certificate)
-		boundProxy, referenced := proxyByCertificateID[certificate.ID]
-		service.applyCertificateReferenceFields(&summary, certificate, boundProxy, referenced)
+		boundDomain, referenced := domainByCertificateID[certificate.ID]
+		service.applyCertificateReferenceFields(&summary, certificate, boundDomain, referenced)
 		if !matchesCertificateFilter(summary, input.Filter) {
 			continue
 		}
@@ -602,12 +606,17 @@ func (service Service) ListManagedCertificates(ctx context.Context, input Certif
 }
 
 // applyCertificateReferenceFields 填充证书的绑定/在用/可服务/删除风险维度。
-func (service Service) applyCertificateReferenceFields(summary *ManagedCertificateSummary, certificate domain.ManagedCertificate, boundProxy domain.Proxy, referenced bool) {
+func (service Service) applyCertificateReferenceFields(summary *ManagedCertificateSummary, certificate domain.ManagedCertificate, boundDomain domain.Domain, referenced bool) {
 	summary.Referenced = referenced
 	if referenced {
-		summary.BoundProxyID = boundProxy.ID
-		if strings.TrimSpace(summary.ProxyID) == "" {
-			summary.ProxyID = boundProxy.ID
+		summary.BoundDomainID = boundDomain.ID
+		if service.Store != nil {
+			if proxies, err := service.Store.Proxies().ByDomainID(context.Background(), boundDomain.ID); err == nil && len(proxies) > 0 {
+				summary.BoundProxyID = proxies[0].ID
+				if strings.TrimSpace(summary.ProxyID) == "" {
+					summary.ProxyID = proxies[0].ID
+				}
+			}
 		}
 	}
 	summary.Servable = !certificateInvalid(summary)
@@ -701,22 +710,29 @@ func (service Service) certificatesByProxy(ctx context.Context) (map[string]*Man
 			byProxy[certificate.ProxyID] = &summary
 		}
 	}
-	// 主路径：按代理权威绑定 certificate_id 覆盖。
-	proxies, err := service.Store.Proxies().List(ctx)
+	// 主路径：按 Domain 权威绑定 certificate_id，再挂到 Domain 下各 Proxy。
+	domains, err := service.Store.Domains().List(ctx)
 	if err != nil {
 		return nil, err
 	}
-	for _, proxy := range proxies {
-		if strings.TrimSpace(proxy.CertificateID) == "" {
+	for _, webDomain := range domains {
+		if strings.TrimSpace(webDomain.CertificateID) == "" {
 			continue
 		}
-		certificate, ok := certificateByID[proxy.CertificateID]
+		certificate, ok := certificateByID[webDomain.CertificateID]
 		if !ok {
 			continue
 		}
 		summary := service.managedCertificateSummary(certificate)
-		service.applyCertificateReferenceFields(&summary, certificate, proxy, true)
-		byProxy[proxy.ID] = &summary
+		service.applyCertificateReferenceFields(&summary, certificate, webDomain, true)
+		proxies, err := service.Store.Proxies().ByDomainID(ctx, webDomain.ID)
+		if err != nil {
+			return nil, err
+		}
+		for _, proxy := range proxies {
+			item := summary
+			byProxy[proxy.ID] = &item
+		}
 	}
 	return byProxy, nil
 }
@@ -726,52 +742,34 @@ func (service Service) certificatesByProxyIDs(ctx context.Context, proxies []dom
 	if service.Store == nil || len(proxies) == 0 {
 		return byProxy, nil
 	}
-	ids := make([]string, 0, len(proxies))
 	for _, proxy := range proxies {
-		ids = append(ids, proxy.ID)
-	}
-	// 遗留回退键：按证书反向引用 proxy_id。
-	certificates, err := service.Store.Certificates().ListByProxyIDs(ctx, ids)
-	if err != nil {
-		return nil, err
-	}
-	for _, certificate := range certificates {
-		summary := service.managedCertificateSummary(certificate)
-		byProxy[certificate.ProxyID] = &summary
-	}
-	// 主路径：按代理权威绑定 certificate_id 覆盖。
-	for _, proxy := range proxies {
-		if strings.TrimSpace(proxy.CertificateID) == "" {
-			continue
-		}
-		certificate, err := service.Store.Certificates().ByID(ctx, proxy.CertificateID)
+		summary, err := service.certificateByProxyID(ctx, proxy)
 		if err != nil {
-			if errors.Is(err, store.ErrNotFound) {
-				continue
-			}
 			return nil, err
 		}
-		summary := service.managedCertificateSummary(certificate)
-		service.applyCertificateReferenceFields(&summary, certificate, proxy, true)
-		byProxy[proxy.ID] = &summary
+		if summary != nil {
+			byProxy[proxy.ID] = summary
+		}
 	}
 	return byProxy, nil
 }
 
 func (service Service) certificateByProxyID(ctx context.Context, proxy domain.Proxy) (*ManagedCertificateSummary, error) {
-	if service.Store == nil || proxy.Type != domain.ProxyHTTPS {
+	if service.Store == nil || !proxy.Type.IsWeb() {
 		return service.certificateSummaryForProxy(ctx, proxy, nil), nil
 	}
-	// 主路径：通过代理的权威绑定 certificate_id 解析证书。
-	if strings.TrimSpace(proxy.CertificateID) != "" {
-		certificate, err := service.Store.Certificates().ByID(ctx, proxy.CertificateID)
-		if err == nil {
-			summary := service.managedCertificateSummary(certificate)
-			service.applyCertificateReferenceFields(&summary, certificate, proxy, true)
-			return &summary, nil
-		}
-		if !errors.Is(err, store.ErrNotFound) {
-			return nil, err
+	if strings.TrimSpace(proxy.DomainID) != "" {
+		webDomain, err := service.Store.Domains().ByID(ctx, proxy.DomainID)
+		if err == nil && strings.TrimSpace(webDomain.CertificateID) != "" {
+			certificate, certErr := service.Store.Certificates().ByID(ctx, webDomain.CertificateID)
+			if certErr == nil {
+				summary := service.managedCertificateSummary(certificate)
+				service.applyCertificateReferenceFields(&summary, certificate, webDomain, true)
+				return &summary, nil
+			}
+			if !errors.Is(certErr, store.ErrNotFound) {
+				return nil, certErr
+			}
 		}
 	}
 	// 遗留回退：按证书反向引用 proxy_id 解析。
@@ -828,7 +826,8 @@ func clientListItemFromDomain(client domain.Client, runtimeSession session.Sessi
 func proxyListItemFromDomain(proxy domain.Proxy, runtimeSession session.Session, proxyStats stats.ProxyStats, certificate *ManagedCertificateSummary) ProxyListItem {
 	runtimeStatus := proxy.Status
 	if proxy.Status == domain.ProxyEnabled {
-		if proxy.Type == domain.ProxyHTTPS && certificateInvalid(certificate) {
+		if proxy.Type.IsWeb() && certificateInvalid(certificate) && certificate != nil {
+			// only mark needs_config when certificate is required (HTTPS entry present) and invalid
 			runtimeStatus = domain.ProxyNeedsConf
 		} else if runtimeSession.ID == "" {
 			runtimeStatus = domain.ProxyOffline
@@ -836,7 +835,11 @@ func proxyListItemFromDomain(proxy domain.Proxy, runtimeSession session.Session,
 			runtimeStatus = domain.ProxyOnline
 		}
 	}
-	return ProxyListItem{ID: proxy.ID, UserID: proxy.UserID, ClientID: proxy.ClientID, Name: proxy.Name, Type: proxy.Type, Status: proxy.Status, Description: proxy.Description, RuntimeStatus: runtimeStatus, ActiveTCPConnections: proxyStats.TCPCurrentConnections, UploadBytes: proxyStats.TCPUploadBytes + proxyStats.UDPUploadBytes + proxyStats.HTTPUploadBytes, DownloadBytes: proxyStats.TCPDownloadBytes + proxyStats.UDPDownloadBytes + proxyStats.HTTPDownloadBytes, TCPErrorCount: proxyStats.TCPErrors, UDPErrorCount: proxyStats.UDPErrors, HTTPErrorCount: proxyStats.HTTPErrors, AccessAuthEnabled: proxy.AccessAuthEnabled, Config: ProxyTypeConfig{EntryBindHost: proxy.EntryBindHost, EntryHost: proxy.EntryHost, EntryPort: proxy.EntryPort, TargetHost: proxy.TargetHost, TargetPort: proxy.TargetPort, CertFile: proxy.CertFile, KeyFile: proxy.KeyFile, CertificateID: proxy.CertificateID}, Certificate: certificate, CreatedAt: proxy.CreatedAt, UpdatedAt: proxy.UpdatedAt}
+	certificateID := proxy.CertificateID
+	if certificate != nil {
+		certificateID = certificate.CertificateID
+	}
+	return ProxyListItem{ID: proxy.ID, UserID: proxy.UserID, ClientID: proxy.ClientID, Name: proxy.Name, Type: proxy.Type, Status: proxy.Status, Description: proxy.Description, RuntimeStatus: runtimeStatus, ActiveTCPConnections: proxyStats.TCPCurrentConnections, UploadBytes: proxyStats.TCPUploadBytes + proxyStats.UDPUploadBytes + proxyStats.HTTPUploadBytes, DownloadBytes: proxyStats.TCPDownloadBytes + proxyStats.UDPDownloadBytes + proxyStats.HTTPDownloadBytes, TCPErrorCount: proxyStats.TCPErrors, UDPErrorCount: proxyStats.UDPErrors, HTTPErrorCount: proxyStats.HTTPErrors, AccessAuthEnabled: proxy.AccessAuthEnabled, Config: ProxyTypeConfig{DomainID: proxy.DomainID, PathPrefix: proxy.PathPrefix, StripPrefix: proxy.StripPrefix, UpstreamPathPrefix: proxy.UpstreamPathPrefix, EntryBindHost: proxy.EntryBindHost, EntryHost: proxy.EntryHost, EntryPort: proxy.EntryPort, TargetHost: proxy.TargetHost, TargetPort: proxy.TargetPort, CertFile: proxy.CertFile, KeyFile: proxy.KeyFile, CertificateID: certificateID}, Certificate: certificate, CreatedAt: proxy.CreatedAt, UpdatedAt: proxy.UpdatedAt}
 }
 
 func proxyRouteItemFromDomain(route domain.ProxyRoute) ProxyRouteItem {

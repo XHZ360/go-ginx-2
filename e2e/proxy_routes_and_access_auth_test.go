@@ -340,9 +340,31 @@ func seedSQLiteWithRoutes(t *testing.T, dbPath string, proxy domain.Proxy, route
 	if err := db.Proxies().Create(ctx, proxy); err != nil {
 		t.Fatalf("create proxy: %v", err)
 	}
+	parent, err := db.Proxies().ByID(ctx, proxy.ID)
+	if err != nil {
+		t.Fatalf("reload parent proxy: %v", err)
+	}
 	for _, route := range routes {
-		if err := db.ProxyRoutes().Create(ctx, route); err != nil {
-			t.Fatalf("create route %s: %v", route.ID, err)
+		status := domain.ProxyEnabled
+		if route.Status == domain.ProxyRouteDisabled {
+			status = domain.ProxyDisabled
+		}
+		webProxy := domain.Proxy{
+			ID:                 route.ID,
+			UserID:             parent.UserID,
+			ClientID:           route.ClientID,
+			Name:               parent.Name + " " + route.PathPrefix,
+			Type:               domain.ProxyWeb,
+			Status:             status,
+			DomainID:           parent.DomainID,
+			PathPrefix:         route.PathPrefix,
+			StripPrefix:        route.StripPrefix,
+			UpstreamPathPrefix: route.UpstreamPathPrefix,
+			TargetHost:         route.TargetHost,
+			TargetPort:         route.TargetPort,
+		}
+		if err := db.Proxies().Create(ctx, webProxy); err != nil {
+			t.Fatalf("create path proxy %s: %v", route.ID, err)
 		}
 	}
 }

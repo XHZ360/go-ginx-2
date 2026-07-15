@@ -273,8 +273,14 @@ func (resolver *CertificateResolver) Reload(host string) {
 }
 
 func (resolver *CertificateResolver) Certificate(ctx context.Context, host string, proxy domain.Proxy) (*tls.Certificate, error) {
+	// legacy: prefer Domain binding when proxy carries DomainID, else proxy CertificateID.
+	if strings.TrimSpace(proxy.DomainID) != "" && resolver.store != nil {
+		if webDomain, err := resolver.store.Domains().ByID(ctx, proxy.DomainID); err == nil {
+			return resolver.CertificateForDomain(ctx, host, webDomain)
+		}
+	}
 	host = strings.ToLower(strings.TrimSpace(host))
-	certFile, keyFile, _, err := resolver.activeFiles(ctx, host, proxy)
+	certFile, keyFile, _, err := resolver.activeFiles(ctx, host, proxy.CertificateID, proxy.CertFile, proxy.KeyFile, proxy.ID)
 	if err != nil {
 		return nil, err
 	}
@@ -288,10 +294,26 @@ func (resolver *CertificateResolver) Certificate(ctx context.Context, host strin
 	return &certificate, nil
 }
 
-func (resolver *CertificateResolver) activeFiles(ctx context.Context, host string, proxy domain.Proxy) (string, string, *domain.ManagedCertificate, error) {
-	// 主路径：代理通过 CertificateID 显式绑定证书资源（权威绑定）。
-	if strings.TrimSpace(proxy.CertificateID) != "" && resolver.store != nil {
-		managed, err := resolver.store.Certificates().ByID(ctx, proxy.CertificateID)
+func (resolver *CertificateResolver) CertificateForDomain(ctx context.Context, host string, webDomain domain.Domain) (*tls.Certificate, error) {
+	host = strings.ToLower(strings.TrimSpace(host))
+	certFile, keyFile, _, err := resolver.activeFiles(ctx, host, webDomain.CertificateID, "", "", "")
+	if err != nil {
+		return nil, err
+	}
+	if certFile == "" || keyFile == "" {
+		return nil, errors.New("certificate active material is missing")
+	}
+	certificate, _, err := resolver.fileCertificate(host, certFile, keyFile)
+	if err != nil {
+		return nil, err
+	}
+	return &certificate, nil
+}
+
+func (resolver *CertificateResolver) activeFiles(ctx context.Context, host string, certificateID string, certFile string, keyFile string, legacyProxyID string) (string, string, *domain.ManagedCertificate, error) {
+	// 主路径：Domain/Proxy 通过 CertificateID 显式绑定证书资源。
+	if strings.TrimSpace(certificateID) != "" && resolver.store != nil {
+		managed, err := resolver.store.Certificates().ByID(ctx, certificateID)
 		if err == nil {
 			if managed.ProviderStatus.BlocksServing() {
 				return "", "", &managed, errors.New("certificate provider marked active material unavailable")
@@ -301,14 +323,12 @@ func (resolver *CertificateResolver) activeFiles(ctx context.Context, host strin
 		if !errors.Is(err, store.ErrNotFound) {
 			return "", "", nil, err
 		}
-		// 绑定的证书已不存在：落入遗留回退路径（迁移期容错）。
 	}
-	// 遗留回退（仅迁移期）：未绑定 CertificateID 或绑定查找失败时，沿用旧解析顺序。
-	if proxy.CertFile != "" || proxy.KeyFile != "" {
-		if proxy.CertFile == "" || proxy.KeyFile == "" {
+	if certFile != "" || keyFile != "" {
+		if certFile == "" || keyFile == "" {
 			return "", "", nil, errors.New("static certificate and key files must both be configured")
 		}
-		return proxy.CertFile, proxy.KeyFile, nil, nil
+		return certFile, keyFile, nil, nil
 	}
 	if resolver.store == nil {
 		return "", "", nil, nil
@@ -320,7 +340,7 @@ func (resolver *CertificateResolver) activeFiles(ctx context.Context, host strin
 	if err != nil {
 		return "", "", nil, err
 	}
-	if proxy.ID != "" && managed.ProxyID != proxy.ID {
+	if legacyProxyID != "" && managed.ProxyID != "" && managed.ProxyID != legacyProxyID {
 		return "", "", nil, nil
 	}
 	if managed.ProviderType == domain.CertificateProviderCloudflareOriginCA && managed.ProviderStatus.BlocksServing() {

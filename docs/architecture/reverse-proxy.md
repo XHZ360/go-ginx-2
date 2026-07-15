@@ -11,37 +11,38 @@ HTTP/HTTPS 支持 HTTP/1.1 WebSocket Upgrade，并在升级后进入双向隧道
 
 ## 路径路由
 
-> **当前实现说明：** 以下父 Proxy + `ProxyRoute` 是现有代码行为，但目标模型已调整为 `(Domain, PathPrefix) => Proxy`。新模型决策见 [../decisions/domain-path-proxy-routing.md](../decisions/domain-path-proxy-routing.md)，实施计划见 [../changes/active/domain-path-proxy-routing.md](../changes/active/domain-path-proxy-routing.md)。在 Change 完成前，本节继续记录实际运行行为。
+> 实现正在收敛到 Domain + Path 模型（见 [../decisions/domain-path-proxy-routing.md](../decisions/domain-path-proxy-routing.md) 与 [../changes/active/domain-path-proxy-routing.md](../changes/active/domain-path-proxy-routing.md)）。运行时与 SQLite 迁移已切到新模型；Admin UI 完整 Domain 页仍在收尾。
 
-HTTP 与终止 TLS 的 HTTPS 支持路径前缀路由（类似 nginx `location` + 显式 `proxy_pass` 语义）：
+HTTP 与终止 TLS 的 HTTPS 使用共享路径映射：
 
-- 父 Proxy 仍是虚拟主机（Host/SNI、证书、默认 `/` 后端）。
-- 子路由 `ProxyRoute` 覆盖特定 `PathPrefix` 的 Client 与 target。
-- 最长前缀优先，且要求路径段边界：`/api` 匹配 `/api`、`/api/users`，不匹配 `/apix`。
+- Domain 独立资源：Host 全局唯一，持有 HTTP/HTTPS entry 与可选证书绑定。
+- Web Proxy 使用 `(domain_id, path_prefix)`；最长路径段前缀命中（`/api` 匹配 `/api/users`，不匹配 `/apix`）。
+- HTTP 与 HTTPS 对相同 Domain+Path 命中同一 Proxy。
 - `PathPrefix` 必须以 `/` 开头；Query/Fragment 不参与匹配。
 - 系统保留 `/.well-known/goginx/`，用户路由不得占用。
 - `StripPrefix` + `UpstreamPathPrefix` 显式改写路径；Query 原样保留。
-- 子路由 Client 必须与父 Proxy 同用户；Client 离线时该路由返回 `503`，不影响其他路由。
-- 路由更新落库后立即生效，不要求 listener reconcile。
-- 流量统计按父 Proxy 聚合，不按子路由拆分。
+- Domain、Proxy、Client 必须同用户；Client 离线时仅该 Proxy 返回 `503`。
+- listener 由 DomainEntry 驱动；Proxy 启停不直接创建 listener。
+- 流量统计按最终命中的 Proxy 聚合；迁移后 `/` Proxy 可携带 legacy aggregate 标记。
 
-未匹配子路由时使用父 Proxy 默认后端；无可用默认后端时返回 `404`。
+未命中任何 Proxy 返回 `404`。
 
 ## HTTPS 访问激活
 
-HTTPS Proxy 可启用整站访问激活（不按单条路径配置）：
+访问激活归最终命中的 Web Proxy：
 
-1. 管理员原子开启认证并生成一次性激活链接（同 Domain）。
-2. 访问者 `GET` 确认页后 `POST` 兑换；成功后设置 HttpOnly Cookie。
-3. 后续请求在路径路由前校验 Cookie；失败返回 `401`，且不得转发。
+1. 管理员原子开启认证并生成一次性激活链接（HTTPS Domain entry）。
+2. 访问者 `GET` 确认页后 `POST` 兑换；成功后设置 HttpOnly Cookie（Path 为该 Proxy 的 PathPrefix）。
+3. 路径选择后再校验 Cookie；失败返回 `401`，且不得转发。
 4. 转发前移除 go-ginx 认证 Cookie；WebSocket 同样先认证。
 5. 统一撤销递增 `AccessAuthVersion`，使全部 Token 与 Cookie 立即失效。
+6. 经 HTTP entry 命中启用认证的 Proxy：有可用 HTTPS entry 则 `308` 重定向，否则 `403`。
 
 激活路径：`https://<domain>/.well-known/goginx/activate/<token>`。Token/secret 仅存 hash；完整 URL 只在创建响应返回一次。关闭认证或删除 Proxy 时统一撤销。
 
 ## HTTPS 证书边界
 
-HTTPS proxy 没有可服务的静态证书或托管 active material 时标记为 `needs_config`，新 TLS 连接关闭；不会把加密 TLS 字节隐式透传到 target。显式配置但证书缺失、不可读、过期、域名不匹配或 key 不匹配时同样失败关闭。
+证书绑定到 Domain（一对一）。HTTPS entry 没有可服务证书时 fail closed；不会把加密 TLS 字节隐式透传到 target。证书缺失、不可读、过期、域名不匹配或 key 不匹配时同样失败关闭。
 
 证书健康检查使用 TLS hostname 语义：`*.example.com` 只覆盖单层子域，不覆盖 apex 或多层子域。托管证书的签发、续期、热加载和失败保留规则见 [../operations/daemon-runtime.md](../operations/daemon-runtime.md)、[../operations/certificate-operations.md](../operations/certificate-operations.md) 与 [engineering-quality-guardrails.md](engineering-quality-guardrails.md)。
 

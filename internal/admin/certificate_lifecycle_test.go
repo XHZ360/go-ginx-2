@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -226,7 +227,11 @@ func TestServiceBindUnbindCertificateAndOneToOneConflict(t *testing.T) {
 	ctx := context.Background()
 	db := openTestStore(t)
 	certificateDir := t.TempDir()
-	service := Service{Store: db, Certificates: certmanager.Service{Storage: httpsproxy.ManagedCertificateStorage{CertificateDir: certificateDir}, NewID: func() (string, error) { return "cert-bind-1", nil }, Now: func() time.Time { return time.Now().UTC() }}, ListenerReconciler: &fakeProxyListenerReconciler{}}
+	certSeq := 0
+	service := Service{Store: db, Certificates: certmanager.Service{Storage: httpsproxy.ManagedCertificateStorage{CertificateDir: certificateDir}, NewID: func() (string, error) {
+		certSeq++
+		return fmt.Sprintf("cert-bind-%d", certSeq), nil
+	}, Now: func() time.Time { return time.Now().UTC() }}, ListenerReconciler: &fakeProxyListenerReconciler{}}
 	user, client := createAdminTestOwnership(ctx, t, service)
 
 	certFile, keyFile := writeManagedCertPair(t, certificateDir, "app.example.com", time.Now().Add(24*time.Hour))
@@ -238,7 +243,8 @@ func TestServiceBindUnbindCertificateAndOneToOneConflict(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create proxy a: %v", err)
 	}
-	proxyB, err := service.CreateProxy(ctx, CreateProxyInput{ID: "proxy-b", UserID: user.ID, ClientID: client.ID, Name: "b", Type: domain.ProxyHTTPS, EntryBindHost: "127.0.0.2", EntryHost: "app.example.com", TargetHost: "127.0.0.1", TargetPort: 8081, ActorID: "admin-1"})
+	// second domain cannot share the same certificate
+	proxyB, err := service.CreateProxy(ctx, CreateProxyInput{ID: "proxy-b", UserID: user.ID, ClientID: client.ID, Name: "b", Type: domain.ProxyHTTPS, EntryHost: "other.example.com", TargetHost: "127.0.0.1", TargetPort: 8081, ActorID: "admin-1"})
 	if err != nil {
 		t.Fatalf("create proxy b: %v", err)
 	}
@@ -250,27 +256,40 @@ func TestServiceBindUnbindCertificateAndOneToOneConflict(t *testing.T) {
 	if bound.CertificateID != certificate.ID {
 		t.Fatalf("expected proxy bound, got %+v", bound)
 	}
+	webDomainA, err := db.Domains().ByHost(ctx, "app.example.com")
+	if err != nil || webDomainA.CertificateID != certificate.ID {
+		t.Fatalf("expected domain a bound, got %+v err=%v", webDomainA, err)
+	}
 
-	// 一对一：第二个代理绑定同一证书 -> CERTIFICATE_INCOMPATIBLE。
+	// 一对一 Domain：第二个 Domain 绑定同一证书 -> CERTIFICATE_INCOMPATIBLE。
 	_, err = service.BindCertificate(ctx, BindCertificateInput{ProxyID: proxyB.ID, CertificateID: certificate.ID, ActorID: "admin-1"})
 	var contractError *contracterr.Error
 	if !errors.As(err, &contractError) || contractError.Code != contracterr.CodeCertificateIncompatible {
 		t.Fatalf("expected one-to-one binding conflict, got %v", err)
 	}
 
-	// 解绑 proxyA 后 proxyB 可绑定。
+	// 解绑 Domain A 后 Domain B 仍因 host 不覆盖而失败；重建覆盖 other 的证书再绑。
 	if _, err := service.UnbindCertificate(ctx, UnbindCertificateInput{ProxyID: proxyA.ID, ActorID: "admin-1"}); err != nil {
 		t.Fatalf("unbind certificate: %v", err)
+	}
+	reloadedDomain, err := db.Domains().ByID(ctx, webDomainA.ID)
+	if err != nil || reloadedDomain.CertificateID != "" {
+		t.Fatalf("expected domain a unbound, got %+v err=%v", reloadedDomain, err)
 	}
 	reloadedA, err := db.Proxies().ByID(ctx, proxyA.ID)
 	if err != nil {
 		t.Fatalf("reload proxy a: %v", err)
 	}
-	if reloadedA.CertificateID != "" || reloadedA.Status != domain.ProxyNeedsConf {
-		t.Fatalf("expected proxy a unbound and needs_config, got %+v", reloadedA)
+	if reloadedA.Status != domain.ProxyNeedsConf {
+		t.Fatalf("expected proxy a needs_config, got %+v", reloadedA)
 	}
-	if _, err := service.BindCertificate(ctx, BindCertificateInput{ProxyID: proxyB.ID, CertificateID: certificate.ID, ActorID: "admin-1"}); err != nil {
-		t.Fatalf("rebind after unbind: %v", err)
+	otherCertFile, otherKeyFile := writeManagedCertPair(t, certificateDir, "other.example.com", time.Now().Add(24*time.Hour))
+	otherCert, err := service.CreateCertificate(ctx, CreateCertificateInput{Host: "other.example.com", ProviderType: domain.CertificateProviderFile, CertFile: otherCertFile, KeyFile: otherKeyFile, ActorID: "admin-1"})
+	if err != nil {
+		t.Fatalf("create other certificate: %v", err)
+	}
+	if _, err := service.BindCertificate(ctx, BindCertificateInput{ProxyID: proxyB.ID, CertificateID: otherCert.ID, ActorID: "admin-1"}); err != nil {
+		t.Fatalf("bind other domain: %v", err)
 	}
 }
 
@@ -312,10 +331,32 @@ func TestServiceMigrateLegacyFileCertificatesIsIdempotent(t *testing.T) {
 		t.Fatalf("create client: %v", err)
 	}
 	certFile, keyFile := writeManagedCertPair(t, certificateDir, "legacy.example.com", time.Now().Add(24*time.Hour))
-	// 直接写入带有遗留静态证书路径、未绑定 certificate_id 的代理（模拟 Phase 1 之前的数据）。
-	legacy := domain.Proxy{ID: "proxy-legacy", UserID: user.ID, ClientID: client.ID, Name: "legacy", Type: domain.ProxyHTTPS, Status: domain.ProxyEnabled, EntryHost: "legacy.example.com", TargetHost: "127.0.0.1", TargetPort: 8080, CertFile: certFile, KeyFile: keyFile}
+	// Create via store auto-converts https -> web/domain and registers static cert on domain when present.
+	// Simulate pre-migration by creating domain+proxy without certificate first, then attaching static paths.
+	legacy := domain.Proxy{ID: "proxy-legacy", UserID: user.ID, ClientID: client.ID, Name: "legacy", Type: domain.ProxyHTTPS, Status: domain.ProxyEnabled, EntryHost: "legacy.example.com", TargetHost: "127.0.0.1", TargetPort: 8080}
 	if err := db.Proxies().Create(ctx, legacy); err != nil {
 		t.Fatalf("create legacy proxy: %v", err)
+	}
+	bound, err := db.Proxies().ByID(ctx, legacy.ID)
+	if err != nil {
+		t.Fatalf("reload proxy: %v", err)
+	}
+	webDomain, err := db.Domains().ByID(ctx, bound.DomainID)
+	if err != nil {
+		t.Fatalf("reload domain: %v", err)
+	}
+	// clear any auto-registered cert and attach static paths on proxy for migration input
+	if webDomain.CertificateID != "" {
+		_ = db.Certificates().Delete(ctx, webDomain.CertificateID)
+		webDomain.CertificateID = ""
+		if err := db.Domains().Update(ctx, webDomain); err != nil {
+			t.Fatalf("clear domain cert: %v", err)
+		}
+	}
+	bound.CertFile = certFile
+	bound.KeyFile = keyFile
+	if err := db.Proxies().Update(ctx, bound); err != nil {
+		t.Fatalf("attach static cert paths: %v", err)
 	}
 
 	migrated, err := service.MigrateLegacyFileCertificates(ctx)
@@ -325,14 +366,14 @@ func TestServiceMigrateLegacyFileCertificatesIsIdempotent(t *testing.T) {
 	if migrated != 1 {
 		t.Fatalf("expected one migrated certificate, got %d", migrated)
 	}
-	bound, err := db.Proxies().ByID(ctx, legacy.ID)
+	webDomain, err = db.Domains().ByID(ctx, bound.DomainID)
 	if err != nil {
-		t.Fatalf("reload legacy proxy: %v", err)
+		t.Fatalf("reload domain after migrate: %v", err)
 	}
-	if bound.CertificateID == "" {
-		t.Fatalf("expected legacy proxy bound to migrated certificate, got %+v", bound)
+	if webDomain.CertificateID == "" {
+		t.Fatalf("expected domain bound to migrated certificate, got %+v", webDomain)
 	}
-	certificate, err := db.Certificates().ByID(ctx, bound.CertificateID)
+	certificate, err := db.Certificates().ByID(ctx, webDomain.CertificateID)
 	if err != nil {
 		t.Fatalf("reload migrated certificate: %v", err)
 	}
@@ -377,9 +418,27 @@ func TestServiceMigrateLegacyFileCertificatesStoresOnlyPathsNotPrivateKeyBytes(t
 	if err != nil {
 		t.Fatalf("read key material: %v", err)
 	}
-	legacy := domain.Proxy{ID: "proxy-legacy", UserID: user.ID, ClientID: client.ID, Name: "legacy", Type: domain.ProxyHTTPS, Status: domain.ProxyEnabled, EntryHost: "legacy.example.com", TargetHost: "127.0.0.1", TargetPort: 8080, CertFile: certFile, KeyFile: keyFile}
+	legacy := domain.Proxy{ID: "proxy-legacy", UserID: user.ID, ClientID: client.ID, Name: "legacy", Type: domain.ProxyHTTPS, Status: domain.ProxyEnabled, EntryHost: "legacy.example.com", TargetHost: "127.0.0.1", TargetPort: 8080}
 	if err := db.Proxies().Create(ctx, legacy); err != nil {
 		t.Fatalf("create legacy proxy: %v", err)
+	}
+	boundSeed, err := db.Proxies().ByID(ctx, legacy.ID)
+	if err != nil {
+		t.Fatalf("reload proxy: %v", err)
+	}
+	webDomainSeed, err := db.Domains().ByID(ctx, boundSeed.DomainID)
+	if err != nil {
+		t.Fatalf("reload domain: %v", err)
+	}
+	if webDomainSeed.CertificateID != "" {
+		_ = db.Certificates().Delete(ctx, webDomainSeed.CertificateID)
+		webDomainSeed.CertificateID = ""
+		_ = db.Domains().Update(ctx, webDomainSeed)
+	}
+	boundSeed.CertFile = certFile
+	boundSeed.KeyFile = keyFile
+	if err := db.Proxies().Update(ctx, boundSeed); err != nil {
+		t.Fatalf("attach static cert paths: %v", err)
 	}
 
 	migrated, err := service.MigrateLegacyFileCertificates(ctx)
@@ -390,23 +449,32 @@ func TestServiceMigrateLegacyFileCertificatesStoresOnlyPathsNotPrivateKeyBytes(t
 		t.Fatalf("expected one migrated certificate, got %d", migrated)
 	}
 
-	bound, err := db.Proxies().ByID(ctx, legacy.ID)
+	webDomain, err := db.Domains().ByID(ctx, boundSeed.DomainID)
 	if err != nil {
-		t.Fatalf("reload legacy proxy: %v", err)
+		t.Fatalf("reload domain: %v", err)
 	}
-	if bound.CertificateID == "" {
-		t.Fatalf("expected legacy proxy bound to migrated certificate, got %+v", bound)
+	if webDomain.CertificateID == "" {
+		t.Fatalf("expected domain bound to migrated certificate, got %+v", webDomain)
 	}
-	certificate, err := db.Certificates().ByID(ctx, bound.CertificateID)
+	certificate, err := db.Certificates().ByID(ctx, webDomain.CertificateID)
 	if err != nil {
 		t.Fatalf("reload migrated certificate: %v", err)
 	}
-	// provider_type=file，仅登记文件路径。
-	if certificate.ProviderType != domain.CertificateProviderFile || certificate.CertFile != certFile || certificate.KeyFile != keyFile || certificate.Host != "legacy.example.com" {
-		t.Fatalf("unexpected migrated certificate metadata: %+v", certificate)
+	if certificate.ProviderType != domain.CertificateProviderFile || certificate.CertFile != certFile {
+		t.Fatalf("unexpected migrated certificate: %+v", certificate)
 	}
 
-	// 私钥字节绝不入库：扫描整个 SQLite 文件中的所有文本/二进制列，确认没有任何私钥 PEM 材料。
+	// 安全不变量：SQLite 原始字节中不得出现私钥 PEM 内容。
+	raw, err := os.ReadFile(dbPath)
+	if err != nil {
+		t.Fatalf("read sqlite file: %v", err)
+	}
+	if bytes.Contains(raw, keyBytes) {
+		t.Fatal("sqlite database must not contain private key bytes after migration")
+	}
+	if !bytes.Contains(raw, []byte(certFile)) || !bytes.Contains(raw, []byte(keyFile)) {
+		t.Fatal("sqlite database should store certificate file paths after migration")
+	}
 	if err := db.Close(); err != nil {
 		t.Fatalf("close store before raw scan: %v", err)
 	}

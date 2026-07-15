@@ -171,6 +171,10 @@ func (runtime *ServerRuntime) desiredProxyListeners(ctx context.Context) (desire
 		if proxy.Status != domain.ProxyEnabled {
 			continue
 		}
+		if proxy.Type.IsWeb() {
+			// Web listeners are driven by DomainEntry, not Proxy entry fields.
+			continue
+		}
 		entry, ok := domain.EffectiveProxyEntry(proxy, runtime.proxyEntryDefaults)
 		if !ok {
 			if runtime.proxyUsesUnavailableDefault(proxy) {
@@ -184,6 +188,30 @@ func (runtime *ServerRuntime) desiredProxyListeners(ctx context.Context) (desire
 			desired.tcp[key]++
 		case domain.ListenerProtocolUDP:
 			desired.udp[key]++
+		case domain.ListenerProtocolHTTP:
+			desired.http[key]++
+		case domain.ListenerProtocolHTTPS:
+			desired.https[key]++
+		}
+	}
+	entries, err := runtime.Store.DomainEntries().ListEnabled(ctx)
+	if err != nil {
+		return desiredProxyListeners{}, err
+	}
+	for _, domainEntry := range entries {
+		webDomain, err := runtime.Store.Domains().ByID(ctx, domainEntry.DomainID)
+		if err != nil || webDomain.Status != domain.DomainEnabled {
+			continue
+		}
+		entry, ok := domain.EffectiveDomainEntry(domainEntry, runtime.proxyEntryDefaults)
+		if !ok {
+			if domainEntry.Port == 0 {
+				continue
+			}
+			return desiredProxyListeners{}, fmt.Errorf("domain entry %s listener is invalid", domainEntry.ID)
+		}
+		key := listenerKey{Protocol: entry.Protocol, BindHost: entry.BindHost, Port: entry.Port}
+		switch key.Protocol {
 		case domain.ListenerProtocolHTTP:
 			desired.http[key]++
 		case domain.ListenerProtocolHTTPS:

@@ -16,7 +16,7 @@
 - 文档按信息类型收敛到 `docs/`（project / requirements / architecture / operations / changes / references）。
 - OpenSpec 已移除；有效内容已并入普通 Markdown。
 - 文档整改已落地：收敛单一事实来源、补齐 requirements 层、收缩根 README 长文。
-- 已确认当前父 Proxy + ProxyRoute 路由模型不符合目标；active Change [domain-path-proxy-routing.md](changes/active/domain-path-proxy-routing.md) 已建立，代码尚未迁移。
+- active Change [domain-path-proxy-routing.md](changes/active/domain-path-proxy-routing.md)：阻塞问题已关闭；Domain/DomainEntry、SQLite 迁移、HTTP/HTTPS 运行时、证书/访问认证/Admin 服务与 e2e 已落地；Admin UI Domain 页与旧 ProxyRoute UI 清理仍待收尾。
 
 ## 已实现能力（摘要）
 
@@ -36,10 +36,14 @@
 
 ## 下一步
 
-1. 关闭 Domain + Path 路由 Change 中的 HTTP 认证行为与历史统计迁移两个阻塞问题。
-2. 分阶段实施 Domain、证书绑定、Web Proxy、API/UI 与数据迁移。
-3. 生产运维：备份恢复、容量校验。
-4. 有代码变更时同步更新 requirements/architecture，并回写本日志验证结果。
+1. 完成 Domain Admin UI、移除 ProxyRoute 前端/GraphQL 兼容层，并同步 architecture/operations 文档。
+2. 生产运维：备份恢复、容量校验。
+3. 有代码变更时同步更新 requirements/architecture，并回写本日志验证结果。
+
+## 阻塞问题关闭记录（2026-07-15）
+
+- HTTP 认证：有可用 HTTPS entry 时 `308`，否则 `403`。
+- 历史统计：`/` Proxy 保留 legacy aggregate 并 UI 标注；子路径 Proxy 从零计数。
 
 ## 最近验证
 

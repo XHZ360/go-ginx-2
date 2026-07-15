@@ -169,8 +169,16 @@ func TestDuplicateHTTPHostIsRejectedCaseInsensitive(t *testing.T) {
 	if err := db.Proxies().Create(ctx, first); err != nil {
 		t.Fatalf("create first proxy: %v", err)
 	}
+	// same host + default path / is unique under Domain model
 	if err := db.Proxies().Create(ctx, second); !errors.Is(err, store.ErrAlreadyExists) {
-		t.Fatalf("expected already exists, got %v", err)
+		t.Fatalf("expected already exists for duplicate domain path, got %v", err)
+	}
+	webDomain, err := db.Domains().ByHost(ctx, "app.example.com")
+	if err != nil {
+		t.Fatalf("lookup domain: %v", err)
+	}
+	if webDomain.Host != "app.example.com" {
+		t.Fatalf("unexpected domain host: %+v", webDomain)
 	}
 }
 
@@ -188,12 +196,16 @@ func TestDuplicateHTTPSHostIsRejectedCaseInsensitive(t *testing.T) {
 	if err := db.Proxies().Create(ctx, second); !errors.Is(err, store.ErrAlreadyExists) {
 		t.Fatalf("expected already exists, got %v", err)
 	}
-	found, err := db.Proxies().ByHTTPSHost(ctx, "app.example.com")
+	webDomain, err := db.Domains().ByHost(ctx, "app.example.com")
 	if err != nil {
-		t.Fatalf("lookup https proxy: %v", err)
+		t.Fatalf("lookup domain: %v", err)
+	}
+	found, err := db.Proxies().ByDomainAndPath(ctx, webDomain.ID, "/")
+	if err != nil {
+		t.Fatalf("lookup web proxy: %v", err)
 	}
 	if found.ID != first.ID {
-		t.Fatalf("unexpected https proxy: %+v", found)
+		t.Fatalf("unexpected web proxy: %+v", found)
 	}
 }
 
@@ -203,35 +215,53 @@ func TestProxyEntryBindHostAndRouteQueries(t *testing.T) {
 	seedUserAndClient(t, ctx, db)
 
 	first := domain.Proxy{ID: "p1", UserID: "u1", ClientID: "c1", Name: "web", Type: domain.ProxyHTTP, Status: domain.ProxyEnabled, EntryBindHost: "127.0.0.1", EntryHost: "app.example.com", EntryPort: 18080, TargetHost: "127.0.0.1", TargetPort: 8080}
-	second := domain.Proxy{ID: "p2", UserID: "u1", ClientID: "c1", Name: "web-alt", Type: domain.ProxyHTTP, Status: domain.ProxyEnabled, EntryBindHost: "127.0.0.1", EntryHost: "app.example.com", EntryPort: 18081, TargetHost: "127.0.0.1", TargetPort: 8081}
-	duplicate := domain.Proxy{ID: "p3", UserID: "u1", ClientID: "c1", Name: "web-dup", Type: domain.ProxyHTTP, Status: domain.ProxyEnabled, EntryBindHost: "127.0.0.1", EntryHost: "APP.EXAMPLE.COM", EntryPort: 18080, TargetHost: "127.0.0.1", TargetPort: 8082}
+	// second path on same domain is allowed
+	second := domain.Proxy{ID: "p2", UserID: "u1", ClientID: "c1", Name: "web-api", Type: domain.ProxyWeb, Status: domain.ProxyEnabled, DomainID: "", PathPrefix: "/api", UpstreamPathPrefix: "/", TargetHost: "127.0.0.1", TargetPort: 8081}
 	legacy := domain.Proxy{ID: "p4", UserID: "u1", ClientID: "c1", Name: "legacy", Type: domain.ProxyHTTP, Status: domain.ProxyEnabled, EntryHost: "legacy.example.com", TargetHost: "127.0.0.1", TargetPort: 8083}
 
 	if err := db.Proxies().Create(ctx, first); err != nil {
 		t.Fatalf("create first proxy: %v", err)
 	}
-	if err := db.Proxies().Create(ctx, second); err != nil {
-		t.Fatalf("create second proxy on different port: %v", err)
+	webDomain, err := db.Domains().ByHost(ctx, "app.example.com")
+	if err != nil {
+		t.Fatalf("lookup domain: %v", err)
 	}
-	if err := db.Proxies().Create(ctx, duplicate); !errors.Is(err, store.ErrAlreadyExists) {
-		t.Fatalf("expected duplicate route to fail, got %v", err)
+	second.DomainID = webDomain.ID
+	if err := db.Proxies().Create(ctx, second); err != nil {
+		t.Fatalf("create second path proxy: %v", err)
 	}
 	if err := db.Proxies().Create(ctx, legacy); err != nil {
 		t.Fatalf("create legacy proxy: %v", err)
 	}
-	found, err := db.Proxies().ByHTTPRoute(ctx, "127.0.0.1", 18081, "app.example.com", false)
-	if err != nil {
-		t.Fatalf("lookup exact route: %v", err)
+	// same domain + path rejected
+	duplicate := domain.Proxy{ID: "p3", UserID: "u1", ClientID: "c1", Name: "web-dup", Type: domain.ProxyWeb, Status: domain.ProxyEnabled, DomainID: webDomain.ID, PathPrefix: "/", UpstreamPathPrefix: "/", TargetHost: "127.0.0.1", TargetPort: 8082}
+	if err := db.Proxies().Create(ctx, duplicate); !errors.Is(err, store.ErrAlreadyExists) {
+		t.Fatalf("expected duplicate domain path to fail, got %v", err)
 	}
-	if found.ID != second.ID || found.EntryBindHost != "127.0.0.1" {
-		t.Fatalf("unexpected exact route: %+v", found)
-	}
-	found, err = db.Proxies().ByHTTPRoute(ctx, "127.0.0.1", 18080, "legacy.example.com", true)
+	foundDomain, foundEntry, err := db.DomainEntries().ByListener(ctx, domain.DomainEntryHTTP, "127.0.0.1", 18080, "app.example.com", false)
 	if err != nil {
-		t.Fatalf("lookup fallback route: %v", err)
+		t.Fatalf("lookup domain entry: %v", err)
+	}
+	if foundDomain.ID != webDomain.ID || foundEntry.Port != 18080 {
+		t.Fatalf("unexpected domain entry: domain=%+v entry=%+v", foundDomain, foundEntry)
+	}
+	found, err := db.Proxies().ByDomainAndPath(ctx, webDomain.ID, "/api/users")
+	if err != nil {
+		t.Fatalf("lookup path proxy: %v", err)
+	}
+	if found.ID != second.ID {
+		t.Fatalf("unexpected path proxy: %+v", found)
+	}
+	legacyDomain, err := db.Domains().ByHost(ctx, "legacy.example.com")
+	if err != nil {
+		t.Fatalf("lookup legacy domain: %v", err)
+	}
+	found, err = db.Proxies().ByDomainAndPath(ctx, legacyDomain.ID, "/")
+	if err != nil {
+		t.Fatalf("lookup legacy path: %v", err)
 	}
 	if found.ID != legacy.ID {
-		t.Fatalf("unexpected fallback route: %+v", found)
+		t.Fatalf("unexpected legacy proxy: %+v", found)
 	}
 }
 
@@ -801,24 +831,31 @@ func TestProxyCertificateBindingRoundTrips(t *testing.T) {
 	if err != nil {
 		t.Fatalf("lookup proxy: %v", err)
 	}
-	if loaded.CertificateID != cert.ID {
-		t.Fatalf("expected proxy bound to %s, got %+v", cert.ID, loaded)
+	if loaded.CertificateID != "" || loaded.DomainID == "" {
+		t.Fatalf("expected certificate moved to domain, got %+v", loaded)
 	}
-	byCert, err := db.Proxies().ByCertificateID(ctx, cert.ID)
+	webDomain, err := db.Domains().ByID(ctx, loaded.DomainID)
 	if err != nil {
-		t.Fatalf("lookup proxy by certificate id: %v", err)
+		t.Fatalf("lookup domain: %v", err)
 	}
-	if byCert.ID != proxy.ID {
-		t.Fatalf("unexpected proxy by certificate id: %+v", byCert)
+	if webDomain.CertificateID != cert.ID {
+		t.Fatalf("expected domain bound to %s, got %+v", cert.ID, webDomain)
 	}
-	if _, err := db.Proxies().ByCertificateID(ctx, "missing"); !errors.Is(err, store.ErrNotFound) {
-		t.Fatalf("expected no proxy for unknown certificate, got %v", err)
+	byCert, err := db.Domains().ByCertificateID(ctx, cert.ID)
+	if err != nil {
+		t.Fatalf("lookup domain by certificate id: %v", err)
+	}
+	if byCert.ID != webDomain.ID {
+		t.Fatalf("unexpected domain by certificate id: %+v", byCert)
+	}
+	if _, err := db.Domains().ByCertificateID(ctx, "missing"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("expected no domain for unknown certificate, got %v", err)
 	}
 
-	// 一证一代理：第二个代理绑定同一证书应被部分唯一索引拒绝。
-	other := domain.Proxy{ID: "p2", UserID: "u1", ClientID: "c1", Name: "secure-2", Type: domain.ProxyHTTPS, Status: domain.ProxyEnabled, EntryHost: "alt.example.com", TargetHost: "127.0.0.1", TargetPort: 8081, CertificateID: cert.ID}
-	if err := db.Proxies().Create(ctx, other); !errors.Is(err, store.ErrAlreadyExists) {
-		t.Fatalf("expected one cert -> one proxy to be enforced, got %v", err)
+	// 一证一 Domain：第二个 Domain 绑定同一证书应被部分唯一索引拒绝。
+	otherDomain := domain.Domain{ID: "d2", UserID: "u1", Host: "alt.example.com", CertificateID: cert.ID, Status: domain.DomainEnabled}
+	if err := db.Domains().Create(ctx, otherDomain); !errors.Is(err, store.ErrAlreadyExists) {
+		t.Fatalf("expected one cert -> one domain to be enforced, got %v", err)
 	}
 }
 
@@ -905,20 +942,30 @@ insert into managed_certificates (id, proxy_id, host, status, provider, cert_fil
 		t.Fatalf("open migrated store: %v", err)
 	}
 
-	// 回填：旧 managed cert 的 proxy_id 反向引用迁移为代理侧 certificate_id 权威绑定。
+	// 回填：旧 managed cert 的 proxy_id 反向引用先写入 proxy.certificate_id，再迁移到 Domain。
 	proxy, err := db.Proxies().ByID(ctx, "p1")
 	if err != nil {
 		t.Fatalf("lookup migrated proxy: %v", err)
 	}
-	if proxy.CertificateID != "cert-1" {
-		t.Fatalf("expected proxy backfilled with certificate_id=cert-1, got %+v", proxy)
+	if proxy.Type != domain.ProxyWeb || proxy.DomainID == "" || proxy.PathPrefix != "/" {
+		t.Fatalf("expected https proxy migrated to web root path, got %+v", proxy)
 	}
-	bound, err := db.Proxies().ByCertificateID(ctx, "cert-1")
+	if proxy.CertificateID != "" {
+		t.Fatalf("web proxy should not retain certificate_id after domain migration, got %+v", proxy)
+	}
+	webDomain, err := db.Domains().ByID(ctx, proxy.DomainID)
 	if err != nil {
-		t.Fatalf("lookup proxy by certificate id: %v", err)
+		t.Fatalf("lookup migrated domain: %v", err)
 	}
-	if bound.ID != "p1" {
-		t.Fatalf("unexpected proxy bound to cert-1: %+v", bound)
+	if webDomain.CertificateID != "cert-1" || webDomain.Host != "app.example.com" {
+		t.Fatalf("expected domain bound to cert-1 for app.example.com, got %+v", webDomain)
+	}
+	boundDomain, err := db.Domains().ByCertificateID(ctx, "cert-1")
+	if err != nil {
+		t.Fatalf("lookup domain by certificate id: %v", err)
+	}
+	if boundDomain.ID != webDomain.ID {
+		t.Fatalf("unexpected domain bound to cert-1: %+v", boundDomain)
 	}
 
 	// 重建后的旧级联外键已移除：删除代理不再删除证书，证书作为独立资源存活。

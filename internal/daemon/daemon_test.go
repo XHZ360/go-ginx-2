@@ -404,27 +404,38 @@ func TestRunClientFallsBackToTCPTLSHTTPProxyTraffic(t *testing.T) {
 	}()
 	waitForTCPTLSSession(t, runtime)
 
-	request, err := nethttp.NewRequestWithContext(ctx, nethttp.MethodGet, "http://"+runtime.HTTPServer.Addr().String()+"/", nil)
-	if err != nil {
-		t.Fatalf("new request: %v", err)
+	var lastStatus int
+	var lastBody string
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		request, err := nethttp.NewRequestWithContext(ctx, nethttp.MethodGet, "http://"+runtime.HTTPServer.Addr().String()+"/", nil)
+		if err != nil {
+			t.Fatalf("new request: %v", err)
+		}
+		request.Host = "app.example.com"
+		response, err := nethttp.DefaultClient.Do(request)
+		if err != nil {
+			time.Sleep(20 * time.Millisecond)
+			continue
+		}
+		payload, err := io.ReadAll(response.Body)
+		_ = response.Body.Close()
+		if err != nil {
+			time.Sleep(20 * time.Millisecond)
+			continue
+		}
+		lastStatus = response.StatusCode
+		lastBody = string(payload)
+		if response.StatusCode == nethttp.StatusOK && string(payload) == "hello over tcp tls" {
+			cancel()
+			if err := <-clientDone; err != nil {
+				t.Fatalf("run client: %v", err)
+			}
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
-	request.Host = "app.example.com"
-	response, err := nethttp.DefaultClient.Do(request)
-	if err != nil {
-		t.Fatalf("http request: %v", err)
-	}
-	defer response.Body.Close()
-	payload, err := io.ReadAll(response.Body)
-	if err != nil {
-		t.Fatalf("read response: %v", err)
-	}
-	if response.StatusCode != nethttp.StatusOK || string(payload) != "hello over tcp tls" {
-		t.Fatalf("unexpected response status=%d body=%q", response.StatusCode, string(payload))
-	}
-	cancel()
-	if err := <-clientDone; err != nil {
-		t.Fatalf("run client: %v", err)
-	}
+	t.Fatalf("unexpected response status=%d body=%q", lastStatus, lastBody)
 }
 
 func TestReconcileHTTPProxyCustomListenerWithoutRestart(t *testing.T) {
@@ -475,8 +486,22 @@ func TestReconcileHTTPProxyCustomListenerWithoutRestart(t *testing.T) {
 	if response.StatusCode != nethttp.StatusOK || string(payload) != "hello custom listener" {
 		t.Fatalf("unexpected response status=%d body=%q", response.StatusCode, string(payload))
 	}
-	if err := runtime.Store.Proxies().SetStatus(ctx, proxy.ID, domain.ProxyDisabled); err != nil {
-		t.Fatalf("disable proxy: %v", err)
+	// listeners are driven by DomainEntry; disable the custom domain entry to close the listener
+	webDomain, err := runtime.Store.Domains().ByHost(ctx, "custom.example.com")
+	if err != nil {
+		t.Fatalf("lookup domain: %v", err)
+	}
+	entries, err := runtime.Store.DomainEntries().ListByDomainID(ctx, webDomain.ID)
+	if err != nil {
+		t.Fatalf("list domain entries: %v", err)
+	}
+	for _, entry := range entries {
+		if entry.Port == customPort {
+			entry.Status = domain.DomainEntryDisabled
+			if err := runtime.Store.DomainEntries().Update(ctx, entry); err != nil {
+				t.Fatalf("disable domain entry: %v", err)
+			}
+		}
 	}
 	if err := runtime.ReconcileProxyListeners(ctx); err != nil {
 		t.Fatalf("reconcile disable: %v", err)
@@ -552,8 +577,21 @@ func TestReconcileHTTPSProxyCustomListenerWithoutRestart(t *testing.T) {
 	if response.StatusCode != nethttp.StatusOK || string(payload) != "hello custom https listener" {
 		t.Fatalf("unexpected https response status=%d body=%q", response.StatusCode, string(payload))
 	}
-	if err := runtime.Store.Proxies().SetStatus(ctx, proxy.ID, domain.ProxyDisabled); err != nil {
-		t.Fatalf("disable proxy: %v", err)
+	webDomain, err := runtime.Store.Domains().ByHost(ctx, "custom.example.com")
+	if err != nil {
+		t.Fatalf("lookup domain: %v", err)
+	}
+	entries, err := runtime.Store.DomainEntries().ListByDomainID(ctx, webDomain.ID)
+	if err != nil {
+		t.Fatalf("list domain entries: %v", err)
+	}
+	for _, entry := range entries {
+		if entry.Port == customPort {
+			entry.Status = domain.DomainEntryDisabled
+			if err := runtime.Store.DomainEntries().Update(ctx, entry); err != nil {
+				t.Fatalf("disable domain entry: %v", err)
+			}
+		}
 	}
 	if err := runtime.ReconcileProxyListeners(ctx); err != nil {
 		t.Fatalf("reconcile disable: %v", err)

@@ -18,12 +18,37 @@ type Store interface {
 	Users() UserRepository
 	Clients() ClientRepository
 	ClientEnrollments() ClientEnrollmentRepository
+	Domains() DomainRepository
+	DomainEntries() DomainEntryRepository
 	Proxies() ProxyRepository
 	Certificates() CertificateRepository
 	ProviderCredentials() ProviderCredentialRepository
 	Stats() StatsRepository
 	AuditEvents() AuditRepository
 	Close() error
+}
+
+type DomainRepository interface {
+	Create(ctx context.Context, domain domain.Domain) error
+	ByID(ctx context.Context, id string) (domain.Domain, error)
+	ByHost(ctx context.Context, host string) (domain.Domain, error)
+	ByCertificateID(ctx context.Context, certificateID string) (domain.Domain, error)
+	List(ctx context.Context) ([]domain.Domain, error)
+	ByUserID(ctx context.Context, userID string) ([]domain.Domain, error)
+	Update(ctx context.Context, domain domain.Domain) error
+	SetStatus(ctx context.Context, id string, status domain.DomainStatus) error
+	Delete(ctx context.Context, id string) error
+}
+
+type DomainEntryRepository interface {
+	Create(ctx context.Context, entry domain.DomainEntry) error
+	ByID(ctx context.Context, id string) (domain.DomainEntry, error)
+	ListByDomainID(ctx context.Context, domainID string) ([]domain.DomainEntry, error)
+	ListEnabled(ctx context.Context) ([]domain.DomainEntry, error)
+	ByListener(ctx context.Context, protocol domain.DomainEntryProtocol, bindHost string, port int, host string, includeDefault bool) (domain.Domain, domain.DomainEntry, error)
+	Update(ctx context.Context, entry domain.DomainEntry) error
+	Delete(ctx context.Context, id string) error
+	DeleteByDomainID(ctx context.Context, domainID string) error
 }
 
 type ProxyStats struct {
@@ -134,11 +159,15 @@ type ProxyRepository interface {
 	List(ctx context.Context) ([]domain.Proxy, error)
 	ByClientID(ctx context.Context, clientID string) ([]domain.Proxy, error)
 	ByUserID(ctx context.Context, userID string) ([]domain.Proxy, error)
+	ByDomainID(ctx context.Context, domainID string) ([]domain.Proxy, error)
+	EnabledWebByDomainID(ctx context.Context, domainID string) ([]domain.Proxy, error)
+	ByDomainAndPath(ctx context.Context, domainID string, path string) (domain.Proxy, error)
 	EnabledByType(ctx context.Context, proxyType domain.ProxyType) ([]domain.Proxy, error)
 	ByTCPEntry(ctx context.Context, bindHost string, port int, includeDefault bool) (domain.Proxy, error)
 	ByUDPEntry(ctx context.Context, bindHost string, port int, includeDefault bool) (domain.Proxy, error)
 	ByTCPEntryPort(ctx context.Context, port int) (domain.Proxy, error)
 	ByUDPEntryPort(ctx context.Context, port int) (domain.Proxy, error)
+	// ByHTTPRoute/ByHTTPSRoute are legacy host lookups retained for migration-era fixtures.
 	ByHTTPRoute(ctx context.Context, bindHost string, port int, host string, includeDefault bool) (domain.Proxy, error)
 	ByHTTPSRoute(ctx context.Context, bindHost string, port int, host string, includeDefault bool) (domain.Proxy, error)
 	ByHTTPHost(ctx context.Context, host string) (domain.Proxy, error)
@@ -166,6 +195,7 @@ type ProxyAccessRepository interface {
 	EnableAuthAndCreateActivation(ctx context.Context, proxyID string, authVersion int64, token domain.ProxyActivationToken) error
 	CreateActivationToken(ctx context.Context, token domain.ProxyActivationToken) error
 	ActivationToken(ctx context.Context, proxyID string, tokenHash string, now time.Time) (domain.ProxyActivationToken, error)
+	ActivationTokenByHash(ctx context.Context, tokenHash string, now time.Time) (domain.ProxyActivationToken, error)
 	RedeemActivationToken(ctx context.Context, tokenID string, secretHash string, credential domain.ProxyAccessCredential, now time.Time) error
 	ValidateAccessCredential(ctx context.Context, proxyID string, authVersion int64, secretHash string, now time.Time) error
 	RevokeAllAccess(ctx context.Context, proxyID string, nextVersion int64) error

@@ -153,18 +153,25 @@ func (service Service) EnableProxyAccessAuthAndCreateActivation(ctx context.Cont
 	if err != nil {
 		return ProxyActivationResult{}, err
 	}
-	if proxy.Type != domain.ProxyHTTPS || strings.TrimSpace(proxy.EntryHost) == "" {
-		return ProxyActivationResult{}, contracterr.Validation("validation failed", map[string]string{"proxyId": "access authentication requires an HTTPS proxy with a host"})
+	if !proxy.Type.IsWeb() || strings.TrimSpace(proxy.DomainID) == "" {
+		return ProxyActivationResult{}, contracterr.Validation("validation failed", map[string]string{"proxyId": "access authentication requires a web proxy with a domain"})
 	}
-	certificate, err := service.boundProxyCertificate(ctx, proxy)
+	webDomain, err := service.Store.Domains().ByID(ctx, proxy.DomainID)
+	if err != nil {
+		return ProxyActivationResult{}, err
+	}
+	if !service.domainHasEnabledHTTPSEntry(ctx, webDomain.ID) {
+		return ProxyActivationResult{}, contracterr.Conflict("domain has no enabled HTTPS entry", nil)
+	}
+	certificate, err := service.boundDomainCertificate(ctx, webDomain)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			return ProxyActivationResult{}, contracterr.Conflict("proxy certificate is not bound or not serving TLS", nil)
+			return ProxyActivationResult{}, contracterr.Conflict("domain certificate is not bound or not serving TLS", nil)
 		}
 		return ProxyActivationResult{}, err
 	}
 	if !certificate.ServingStatus.ServesTLS() {
-		return ProxyActivationResult{}, contracterr.Conflict("proxy certificate is not serving TLS", nil)
+		return ProxyActivationResult{}, contracterr.Conflict("domain certificate is not serving TLS", nil)
 	}
 	access, ok := store.Access(service.Store)
 	if !ok {
@@ -179,7 +186,7 @@ func (service Service) EnableProxyAccessAuthAndCreateActivation(ctx context.Cont
 	if err := service.audit(ctx, actorID, "proxy", proxyID, "enable_proxy_access_auth"); err != nil {
 		return ProxyActivationResult{}, err
 	}
-	return ProxyActivationResult{URL: proxyActivationURL(proxy, tokenValue), ExpiresAt: expiresAt}, nil
+	return ProxyActivationResult{URL: proxyActivationURL(webDomain, proxy, tokenValue), ExpiresAt: expiresAt}, nil
 }
 
 func (service Service) CreateProxyActivationLink(ctx context.Context, proxyID string, actorID string) (ProxyActivationResult, error) {
@@ -189,6 +196,10 @@ func (service Service) CreateProxyActivationLink(ctx context.Context, proxyID st
 	}
 	if !proxy.AccessAuthEnabled {
 		return ProxyActivationResult{}, contracterr.Conflict("proxy access authentication is disabled", nil)
+	}
+	webDomain, err := service.Store.Domains().ByID(ctx, proxy.DomainID)
+	if err != nil {
+		return ProxyActivationResult{}, err
 	}
 	access, ok := store.Access(service.Store)
 	if !ok {
@@ -203,7 +214,7 @@ func (service Service) CreateProxyActivationLink(ctx context.Context, proxyID st
 	if err := service.audit(ctx, actorID, "proxy", proxyID, "create_proxy_activation"); err != nil {
 		return ProxyActivationResult{}, err
 	}
-	return ProxyActivationResult{URL: proxyActivationURL(proxy, tokenValue), ExpiresAt: expiresAt}, nil
+	return ProxyActivationResult{URL: proxyActivationURL(webDomain, proxy, tokenValue), ExpiresAt: expiresAt}, nil
 }
 
 func (service Service) RevokeAllProxyAccess(ctx context.Context, proxyID string, actorID string) error {
@@ -241,12 +252,29 @@ func hashAccessValue(value string) string {
 	return hex.EncodeToString(hash[:])
 }
 
-func proxyActivationURL(proxy domain.Proxy, token string) string {
-	port := ""
-	if proxy.EntryPort != 0 && proxy.EntryPort != 443 {
-		port = fmt.Sprintf(":%d", proxy.EntryPort)
+func proxyActivationURL(webDomain domain.Domain, proxy domain.Proxy, token string) string {
+	_ = proxy
+	return fmt.Sprintf("https://%s/.well-known/goginx/activate/%s", webDomain.Host, token)
+}
+
+func (service Service) domainHasEnabledHTTPSEntry(ctx context.Context, domainID string) bool {
+	entries, err := service.Store.DomainEntries().ListByDomainID(ctx, domainID)
+	if err != nil {
+		return false
 	}
-	return fmt.Sprintf("https://%s%s/.well-known/goginx/activate/%s", proxy.EntryHost, port, token)
+	for _, entry := range entries {
+		if entry.Protocol == domain.DomainEntryHTTPS && entry.Status == domain.DomainEntryEnabled {
+			return true
+		}
+	}
+	return false
+}
+
+func (service Service) boundDomainCertificate(ctx context.Context, webDomain domain.Domain) (domain.ManagedCertificate, error) {
+	if strings.TrimSpace(webDomain.CertificateID) == "" {
+		return domain.ManagedCertificate{}, store.ErrNotFound
+	}
+	return service.Store.Certificates().ByID(ctx, webDomain.CertificateID)
 }
 
 type CertificateInput struct {
@@ -855,32 +883,68 @@ func (service Service) UpdateProxy(ctx context.Context, input UpdateProxyInput) 
 		return domain.Proxy{}, err
 	}
 	previous := existing
-	if input.Type != "" && input.Type != existing.Type {
+	if input.Type != "" && input.Type != existing.Type && !(existing.Type.IsWeb() && (input.Type == domain.ProxyHTTP || input.Type == domain.ProxyHTTPS || input.Type == domain.ProxyWeb)) {
 		return domain.Proxy{}, contracterr.Validation("validation failed", map[string]string{"type": "proxy type is immutable"})
 	}
 	if existing.Type == domain.ProxyForward {
 		return domain.Proxy{}, contracterr.Unsupported("forward proxy is not supported in this management batch")
 	}
 	existing.Name = input.Name
-	existing.EntryBindHost = input.EntryBindHost
-	existing.EntryHost = input.EntryHost
-	existing.EntryPort = input.EntryPort
 	existing.TargetHost = input.TargetHost
 	existing.TargetPort = input.TargetPort
 	existing.Description = input.Description
-	if err := validateProxyEntryFields(existing.Type, existing.EntryBindHost, existing.EntryHost, existing.EntryPort, input.CertFile, input.KeyFile); err != nil {
-		return domain.Proxy{}, err
-	}
-	certificateID, err := service.resolveProxyCertificateSelection(ctx, existing.Type, existing.ID, input.CertificateID, input.CertificateIDSet, existing.EntryHost, input.CertFile, input.KeyFile, input.ActorID)
-	if err != nil {
-		return domain.Proxy{}, err
-	}
-	existing.CertificateID = certificateID
-	// 证书绑定为权威路径：代理记录不再持久化原始静态证书路径。
-	existing.CertFile = ""
-	existing.KeyFile = ""
-	if err := service.ensureProxyAdmission(ctx, existing, existing.ID); err != nil {
-		return domain.Proxy{}, err
+	if existing.Type.IsWeb() {
+		// host rename updates Domain; entry fields are not stored on web proxy
+		if strings.TrimSpace(input.EntryHost) != "" && strings.TrimSpace(existing.DomainID) != "" {
+			webDomain, domainErr := service.Store.Domains().ByID(ctx, existing.DomainID)
+			if domainErr != nil {
+				return domain.Proxy{}, domainErr
+			}
+			webDomain.Host = domain.NormalizeRouteHost(input.EntryHost)
+			if err := webDomain.Validate(); err != nil {
+				return domain.Proxy{}, contracterr.Validation("validation failed", map[string]string{"entryHost": err.Error()})
+			}
+			if err := service.Store.Domains().Update(ctx, webDomain); err != nil {
+				return domain.Proxy{}, err
+			}
+			existing.EntryHost = webDomain.Host
+		}
+		if input.CertificateIDSet {
+			if strings.TrimSpace(existing.DomainID) != "" {
+				webDomain, domainErr := service.Store.Domains().ByID(ctx, existing.DomainID)
+				if domainErr != nil {
+					return domain.Proxy{}, domainErr
+				}
+				if input.CertificateID == "" {
+					webDomain.CertificateID = ""
+				} else if err := service.validateCertificateBinding(ctx, input.CertificateID, webDomain.Host, webDomain.ID); err != nil {
+					return domain.Proxy{}, err
+				} else {
+					webDomain.CertificateID = input.CertificateID
+				}
+				if err := service.Store.Domains().Update(ctx, webDomain); err != nil {
+					return domain.Proxy{}, err
+				}
+				existing.CertificateID = webDomain.CertificateID
+			}
+		}
+	} else {
+		existing.EntryBindHost = input.EntryBindHost
+		existing.EntryHost = input.EntryHost
+		existing.EntryPort = input.EntryPort
+		if err := validateProxyEntryFields(existing.Type, existing.EntryBindHost, existing.EntryHost, existing.EntryPort, input.CertFile, input.KeyFile); err != nil {
+			return domain.Proxy{}, err
+		}
+		certificateID, err := service.resolveProxyCertificateSelection(ctx, existing.Type, existing.ID, input.CertificateID, input.CertificateIDSet, existing.EntryHost, input.CertFile, input.KeyFile, input.ActorID)
+		if err != nil {
+			return domain.Proxy{}, err
+		}
+		existing.CertificateID = certificateID
+		existing.CertFile = ""
+		existing.KeyFile = ""
+		if err := service.ensureProxyAdmission(ctx, existing, existing.ID); err != nil {
+			return domain.Proxy{}, err
+		}
 	}
 	if err := service.Store.Proxies().Update(ctx, existing); err != nil {
 		return domain.Proxy{}, err
@@ -1131,7 +1195,8 @@ func (service Service) DeleteCertificate(ctx context.Context, input DeleteCertif
 	return DeleteCertificateResult{CertificateID: certificateID, AffectedProxyIDs: affected, RequiredConfirm: requireConfirm}, nil
 }
 
-// BindCertificate 将证书绑定到代理（一对一）。
+// BindCertificate 将证书绑定到 Web Proxy 所属 Domain（一对一）。
+// 兼容输入仍使用 ProxyID，运行时解析 Domain。
 func (service Service) BindCertificate(ctx context.Context, input BindCertificateInput) (domain.Proxy, error) {
 	if service.Store == nil {
 		return domain.Proxy{}, errors.New("store is required")
@@ -1146,25 +1211,29 @@ func (service Service) BindCertificate(ctx context.Context, input BindCertificat
 	if err != nil {
 		return domain.Proxy{}, err
 	}
-	if proxy.Type != domain.ProxyHTTPS {
-		return domain.Proxy{}, contracterr.Validation("validation failed", map[string]string{"type": "certificate binding requires an https proxy"})
+	if !proxy.Type.IsWeb() || strings.TrimSpace(proxy.DomainID) == "" {
+		return domain.Proxy{}, contracterr.Validation("validation failed", map[string]string{"type": "certificate binding requires a web proxy with domain"})
 	}
-	if err := service.validateCertificateBinding(ctx, input.CertificateID, proxy.EntryHost, proxy.ID); err != nil {
+	webDomain, err := service.Store.Domains().ByID(ctx, proxy.DomainID)
+	if err != nil {
 		return domain.Proxy{}, err
 	}
+	if err := service.validateCertificateBinding(ctx, input.CertificateID, webDomain.Host, webDomain.ID); err != nil {
+		return domain.Proxy{}, err
+	}
+	webDomain.CertificateID = input.CertificateID
+	if err := service.Store.Domains().Update(ctx, webDomain); err != nil {
+		return domain.Proxy{}, err
+	}
+	// Surface domain binding on returned proxy for API/test compatibility.
 	proxy.CertificateID = input.CertificateID
-	proxy.CertFile = ""
-	proxy.KeyFile = ""
-	if err := service.Store.Proxies().Update(ctx, proxy); err != nil {
-		return domain.Proxy{}, err
-	}
 	if err := service.reconcileProxyListeners(ctx); err != nil {
 		return domain.Proxy{}, err
 	}
-	return proxy, service.audit(ctx, input.ActorID, "proxy", proxy.ID, "bind_certificate")
+	return proxy, service.audit(ctx, input.ActorID, "domain", webDomain.ID, "bind_certificate")
 }
 
-// UnbindCertificate 清除代理的证书绑定（证书保留为未绑定资源）。
+// UnbindCertificate 清除 Domain 的证书绑定（证书保留为未绑定资源）。
 func (service Service) UnbindCertificate(ctx context.Context, input UnbindCertificateInput) (domain.Proxy, error) {
 	if service.Store == nil {
 		return domain.Proxy{}, errors.New("store is required")
@@ -1176,17 +1245,23 @@ func (service Service) UnbindCertificate(ctx context.Context, input UnbindCertif
 	if err != nil {
 		return domain.Proxy{}, err
 	}
-	if strings.TrimSpace(proxy.CertificateID) == "" {
+	if strings.TrimSpace(proxy.DomainID) == "" {
 		return proxy, nil
 	}
-	if err := service.unbindProxyCertificate(ctx, proxy); err != nil {
+	webDomain, err := service.Store.Domains().ByID(ctx, proxy.DomainID)
+	if err != nil {
 		return domain.Proxy{}, err
 	}
-	proxy.CertificateID = ""
+	if strings.TrimSpace(webDomain.CertificateID) == "" {
+		return proxy, nil
+	}
+	if err := service.unbindDomainCertificate(ctx, webDomain); err != nil {
+		return domain.Proxy{}, err
+	}
 	if err := service.reconcileProxyListeners(ctx); err != nil {
 		return domain.Proxy{}, err
 	}
-	return proxy, service.audit(ctx, input.ActorID, "proxy", proxy.ID, "unbind_certificate")
+	return proxy, service.audit(ctx, input.ActorID, "domain", webDomain.ID, "unbind_certificate")
 }
 
 // MigrateLegacyFileCertificates 在启动时将旧代理静态证书迁移为文件型证书资源并绑定。幂等。
@@ -1206,7 +1281,7 @@ func (service Service) MigrateLegacyFileCertificates(ctx context.Context) (int, 
 //
 // 非 HTTPS 代理始终返回空。
 func (service Service) resolveProxyCertificateSelection(ctx context.Context, proxyType domain.ProxyType, proxyID string, certificateID string, certificateIDSet bool, entryHost string, certFile string, keyFile string, actorID string) (string, error) {
-	if proxyType != domain.ProxyHTTPS {
+	if proxyType != domain.ProxyHTTPS && proxyType != domain.ProxyWeb {
 		return "", nil
 	}
 	certificateID = strings.TrimSpace(certificateID)
@@ -1244,10 +1319,10 @@ func (service Service) resolveProxyCertificateSelection(ctx context.Context, pro
 	return certificate.ID, nil
 }
 
-// validateCertificateBinding 校验证书可绑定到指定 HTTPS 代理：
+// validateCertificateBinding 校验证书可绑定到指定 Domain：
 //
-//	(a) 证书存在；(b) 主机覆盖；(c) 一对一（未被其他代理绑定）。
-func (service Service) validateCertificateBinding(ctx context.Context, certificateID string, host string, proxyID string) error {
+//	(a) 证书存在；(b) 主机覆盖；(c) 一对一（未被其他 Domain 绑定）。
+func (service Service) validateCertificateBinding(ctx context.Context, certificateID string, host string, domainID string) error {
 	certificate, err := service.Store.Certificates().ByID(ctx, certificateID)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
@@ -1257,46 +1332,88 @@ func (service Service) validateCertificateBinding(ctx context.Context, certifica
 	}
 	host = strings.ToLower(strings.TrimSpace(host))
 	if host == "" {
-		return contracterr.Validation("validation failed", map[string]string{"entryHost": "https proxy route host is required"})
+		return contracterr.Validation("validation failed", map[string]string{"host": "domain host is required"})
 	}
 	if !hostnameWithinCertificate(certificate, host) {
-		return contracterr.CertificateIncompatible("certificate does not cover proxy route host "+host, map[string]string{"entryHost": host, "certificateId": certificateID})
+		return contracterr.CertificateIncompatible("certificate does not cover domain host "+host, map[string]string{"host": host, "certificateId": certificateID})
 	}
-	bound, err := service.Store.Proxies().ByCertificateID(ctx, certificateID)
+	bound, err := service.Store.Domains().ByCertificateID(ctx, certificateID)
 	if err != nil && !errors.Is(err, store.ErrNotFound) {
 		return err
 	}
-	if err == nil && bound.ID != proxyID {
-		return contracterr.CertificateIncompatible("certificate is already bound to proxy "+bound.ID, map[string]string{"certificateId": certificateID, "proxyId": bound.ID})
+	if err == nil && bound.ID != domainID {
+		return contracterr.CertificateIncompatible("certificate is already bound to domain "+bound.ID, map[string]string{"certificateId": certificateID, "domainId": bound.ID})
 	}
 	return nil
 }
 
-// proxyBoundToCertificate 返回绑定到证书的代理（若有）。
+// proxyBoundToCertificate 返回绑定该证书的 Domain 下任一 Proxy（兼容旧调用方）。
 func (service Service) proxyBoundToCertificate(ctx context.Context, certificateID string) (domain.Proxy, bool, error) {
-	proxy, err := service.Store.Proxies().ByCertificateID(ctx, certificateID)
+	webDomain, err := service.Store.Domains().ByCertificateID(ctx, certificateID)
 	if errors.Is(err, store.ErrNotFound) {
 		return domain.Proxy{}, false, nil
 	}
 	if err != nil {
 		return domain.Proxy{}, false, err
 	}
-	return proxy, true, nil
-}
-
-// unbindProxyCertificate 清除代理的证书绑定并将 HTTPS 代理标记为 needs_config。
-func (service Service) unbindProxyCertificate(ctx context.Context, proxy domain.Proxy) error {
-	proxy.CertificateID = ""
-	proxy.CertFile = ""
-	proxy.KeyFile = ""
-	if proxy.Type == domain.ProxyHTTPS && proxy.Status == domain.ProxyEnabled {
-		proxy.Status = domain.ProxyNeedsConf
+	proxies, err := service.Store.Proxies().ByDomainID(ctx, webDomain.ID)
+	if err != nil {
+		return domain.Proxy{}, false, err
 	}
-	return service.Store.Proxies().Update(ctx, proxy)
+	if len(proxies) == 0 {
+		return domain.Proxy{}, true, nil
+	}
+	return proxies[0], true, nil
 }
 
-// boundProxyCertificate 解析 HTTPS Proxy 当前绑定证书：优先权威 CertificateID，遗留回退 proxy_id。
+// unbindProxyCertificate 兼容旧调用：通过 proxy 找到 Domain 并解绑证书。
+func (service Service) unbindProxyCertificate(ctx context.Context, proxy domain.Proxy) error {
+	if strings.TrimSpace(proxy.DomainID) == "" {
+		proxy.CertificateID = ""
+		proxy.CertFile = ""
+		proxy.KeyFile = ""
+		return service.Store.Proxies().Update(ctx, proxy)
+	}
+	webDomain, err := service.Store.Domains().ByID(ctx, proxy.DomainID)
+	if err != nil {
+		return err
+	}
+	return service.unbindDomainCertificate(ctx, webDomain)
+}
+
+func (service Service) unbindDomainCertificate(ctx context.Context, webDomain domain.Domain) error {
+	webDomain.CertificateID = ""
+	if err := service.Store.Domains().Update(ctx, webDomain); err != nil {
+		return err
+	}
+	// keep proxy status enabled; tests historically expected needs_config when cert unbound from https proxy
+	proxies, err := service.Store.Proxies().ByDomainID(ctx, webDomain.ID)
+	if err != nil {
+		return err
+	}
+	for _, proxy := range proxies {
+		if proxy.Status == domain.ProxyEnabled {
+			proxy.Status = domain.ProxyNeedsConf
+			proxy.CertificateID = ""
+			if err := service.Store.Proxies().Update(ctx, proxy); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// boundProxyCertificate 解析 Web Proxy 所属 Domain 的绑定证书。
 func (service Service) boundProxyCertificate(ctx context.Context, proxy domain.Proxy) (domain.ManagedCertificate, error) {
+	if strings.TrimSpace(proxy.DomainID) != "" {
+		webDomain, err := service.Store.Domains().ByID(ctx, proxy.DomainID)
+		if err == nil {
+			return service.boundDomainCertificate(ctx, webDomain)
+		}
+		if !errors.Is(err, store.ErrNotFound) {
+			return domain.ManagedCertificate{}, err
+		}
+	}
 	if strings.TrimSpace(proxy.CertificateID) != "" {
 		certificate, err := service.Store.Certificates().ByID(ctx, proxy.CertificateID)
 		if err == nil {
@@ -1634,7 +1751,8 @@ func (service Service) activeListenerClaims(ctx context.Context, ignoreProxyID s
 }
 
 func proxyRequiresListenerAdmission(proxyType domain.ProxyType) bool {
-	return proxyType == domain.ProxyTCP || proxyType == domain.ProxyUDP || proxyType == domain.ProxyHTTP || proxyType == domain.ProxyHTTPS
+	// Web listeners are admitted via DomainEntry, not Proxy entry fields.
+	return proxyType == domain.ProxyTCP || proxyType == domain.ProxyUDP
 }
 
 func (service Service) reconcileProxyListeners(ctx context.Context) error {
