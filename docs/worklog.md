@@ -16,6 +16,7 @@
 - 文档按信息类型收敛到 `docs/`（project / requirements / architecture / operations / changes / references）。
 - OpenSpec 已移除；有效内容已并入普通 Markdown。
 - 文档整改已落地：收敛单一事实来源、补齐 requirements 层、收缩根 README 长文。
+- 已确认当前父 Proxy + ProxyRoute 路由模型不符合目标；active Change [domain-path-proxy-routing.md](changes/active/domain-path-proxy-routing.md) 已建立，代码尚未迁移。
 
 ## 已实现能力（摘要）
 
@@ -35,9 +36,10 @@
 
 ## 下一步
 
-1. 生产运维：备份恢复、容量校验。
-2. 按需补充 `decisions/` 中仍影响实现的长期决策。
-3. 有代码变更时同步更新 requirements/architecture，并回写本日志验证结果。
+1. 关闭 Domain + Path 路由 Change 中的 HTTP 认证行为与历史统计迁移两个阻塞问题。
+2. 分阶段实施 Domain、证书绑定、Web Proxy、API/UI 与数据迁移。
+3. 生产运维：备份恢复、容量校验。
+4. 有代码变更时同步更新 requirements/architecture，并回写本日志验证结果。
 
 ## 最近验证
 
