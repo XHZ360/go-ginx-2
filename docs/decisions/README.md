@@ -30,4 +30,10 @@
 ## 相关文档
 ```
 
-当前尚无独立决策文件；历史上下文见 [../changes/archive/milestone-one-continuation.md](../changes/archive/milestone-one-continuation.md) 与 [../references/](../references/)。
+## 当前决策
+
+| 文档 | 状态 | 说明 |
+| --- | --- | --- |
+| [domain-path-proxy-routing.md](domain-path-proxy-routing.md) | 已采纳，待实现 | Domain 独立管理，HTTP/HTTPS 共享 Domain + Path 到 Proxy 路由 |
+
+历史上下文见 [../changes/archive/milestone-one-continuation.md](../changes/archive/milestone-one-continuation.md) 与 [../references/](../references/)。

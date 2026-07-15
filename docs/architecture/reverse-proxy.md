@@ -11,6 +11,8 @@ HTTP/HTTPS 支持 HTTP/1.1 WebSocket Upgrade，并在升级后进入双向隧道
 
 ## 路径路由
 
+> **当前实现说明：** 以下父 Proxy + `ProxyRoute` 是现有代码行为，但目标模型已调整为 `(Domain, PathPrefix) => Proxy`。新模型决策见 [../decisions/domain-path-proxy-routing.md](../decisions/domain-path-proxy-routing.md)，实施计划见 [../changes/active/domain-path-proxy-routing.md](../changes/active/domain-path-proxy-routing.md)。在 Change 完成前，本节继续记录实际运行行为。
+
 HTTP 与终止 TLS 的 HTTPS 支持路径前缀路由（类似 nginx `location` + 显式 `proxy_pass` 语义）：
 
 - 父 Proxy 仍是虚拟主机（Host/SNI、证书、默认 `/` 后端）。

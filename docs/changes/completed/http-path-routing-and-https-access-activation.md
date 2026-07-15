@@ -2,10 +2,11 @@
 
 ## 文档状态
 
-> **已完成变更的实施记录，不是当前唯一事实来源。**  
+> **已完成旧模型的实施记录，但其中“父 Proxy + ProxyRoute”模型已被否决，不代表目标架构。**
 > 产品需求见 [../../requirements/proxy-runtime.md](../../requirements/proxy-runtime.md)；运行时事实见 [../../architecture/reverse-proxy.md](../../architecture/reverse-proxy.md)；UI 见 [../../requirements/admin-ui/proxy-detail.md](../../requirements/admin-ui/proxy-detail.md)。
+> 替代决策见 [../../decisions/domain-path-proxy-routing.md](../../decisions/domain-path-proxy-routing.md)，改造计划见 [../active/domain-path-proxy-routing.md](../active/domain-path-proxy-routing.md)。
 
-本文保留模型、API、安全与验证细节，供实现对照与排障。
+本文保留当前已实现旧模型的模型、API、安全与验证细节，供迁移对照与排障。不要将下文的父 Proxy/子路由设计用于新功能扩展。
 
 ## 目标
 

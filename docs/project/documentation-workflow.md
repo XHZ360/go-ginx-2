@@ -31,9 +31,10 @@
 
 ## 变更记录
 
-- 进行中的变更：`changes/active/<change-name>.md`（按需建立）。
-- 完成后：移到 `changes/completed/` 或摘要后归档到 `changes/archive/`。
-- 单文件记录背景、范围、结果和验证；不再拆 proposal/design/tasks/specs。
+- Change 的建立、评审、实施、完成与归档统一遵循 [change-workflow.md](change-workflow.md)。
+- 进行中的变更：`changes/active/<change-name>.md`；新建时使用 [../changes/change-template.md](../changes/change-template.md)。
+- 完成后：同步长期事实文档并移到 `changes/completed/`；被替代或仅保留历史上下文时移到 `changes/archive/`。
+- 单文件记录当前实现、目标、设计、迁移、实施、验证和结果；不再拆 proposal/design/tasks/specs。
 
 ## 迁移与兼容资料
 
