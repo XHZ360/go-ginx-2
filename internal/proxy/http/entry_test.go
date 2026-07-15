@@ -451,6 +451,66 @@ func TestHTTPEntryConcurrentWebSocketsOverTCPTLSMux(t *testing.T) {
 	}
 }
 
+func TestHTTPEntryFlushesEventStreamChunks(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	origin := httptest.NewServer(nethttp.HandlerFunc(func(w nethttp.ResponseWriter, r *nethttp.Request) {
+		flusher, ok := w.(nethttp.Flusher)
+		if !ok {
+			t.Fatal("origin response writer does not support flush")
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Header().Set("Cache-Control", "no-cache")
+		w.WriteHeader(nethttp.StatusOK)
+		for _, event := range []string{"data: one\n\n", "data: two\n\n", "data: three\n\n"} {
+			if _, err := w.Write([]byte(event)); err != nil {
+				return
+			}
+			flusher.Flush()
+			time.Sleep(20 * time.Millisecond)
+		}
+	}))
+	t.Cleanup(origin.Close)
+	originURL, err := url.Parse(origin.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	originHost, originPortText, err := net.SplitHostPort(originURL.Host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	originPort, err := strconv.Atoi(originPortText)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry, _ := startHTTPProxyRuntime(t, ctx, domain.ProtocolQUIC, originHost, originPort)
+	request, err := nethttp.NewRequestWithContext(ctx, nethttp.MethodGet, "http://"+entry.Addr().String()+"/events", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Host = "app.example.com"
+	request.Header.Set("Accept", "text/event-stream")
+	response, err := nethttp.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatalf("proxy request: %v", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != nethttp.StatusOK {
+		t.Fatalf("unexpected status %d", response.StatusCode)
+	}
+	if !strings.Contains(strings.ToLower(response.Header.Get("Content-Type")), "text/event-stream") {
+		t.Fatalf("expected event-stream content type, got %q", response.Header.Get("Content-Type"))
+	}
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(body) != "data: one\n\ndata: two\n\ndata: three\n\n" {
+		t.Fatalf("unexpected body %q", string(body))
+	}
+}
+
 func TestHTTPEntryUpgradeLikeNonWebSocketUsesHTTPPath(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)

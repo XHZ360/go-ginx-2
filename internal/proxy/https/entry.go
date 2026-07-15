@@ -311,8 +311,18 @@ func removeCookie(request *http.Request, name string) {
 	}
 }
 
-func writeAccessResponse(conn net.Conn, status int, body string, headers http.Header) error {
-	response := &http.Response{StatusCode: status, Status: http.StatusText(status), Header: headers, Body: io.NopCloser(strings.NewReader(body)), ContentLength: int64(len(body))}
+func writeAccessResponse(writer io.Writer, status int, body string, headers http.Header) error {
+	response := &http.Response{
+		StatusCode:    status,
+		Status:        http.StatusText(status),
+		Proto:         "HTTP/1.1",
+		ProtoMajor:    1,
+		ProtoMinor:    1,
+		Header:        headers,
+		Body:          io.NopCloser(strings.NewReader(body)),
+		ContentLength: int64(len(body)),
+		Close:         true,
+	}
 	if response.Header == nil {
 		response.Header = make(http.Header)
 	}
@@ -323,7 +333,7 @@ func writeAccessResponse(conn net.Conn, status int, body string, headers http.He
 	if body != "" {
 		response.Header.Set("Content-Type", "text/html; charset=utf-8")
 	}
-	return response.Write(conn)
+	return response.Write(writer)
 }
 
 type responseResult struct {
@@ -351,6 +361,9 @@ func readResponseWithTimeout(stream io.ReadWriteCloser, request *http.Request, t
 }
 
 func writeResponseWithTimeout(conn net.Conn, stream io.Closer, response *http.Response, timeout time.Duration) error {
+	if isStreamingHTTPResponse(response) {
+		return writeStreamingResponse(conn, stream, response, timeout)
+	}
 	result := make(chan error, 1)
 	_ = conn.SetDeadline(time.Now().Add(timeout))
 	go func() {
@@ -368,14 +381,107 @@ func writeResponseWithTimeout(conn net.Conn, stream io.Closer, response *http.Re
 	}
 }
 
+func writeStreamingResponse(conn net.Conn, stream io.Closer, response *http.Response, idleTimeout time.Duration) error {
+	// SSE/chunked progress streams can outlive the absolute HTTP write budget.
+	// Keep only idle timeouts so slow-but-alive streams stay open.
+	_ = conn.SetDeadline(time.Time{})
+	body := response.Body
+	if body == nil {
+		body = http.NoBody
+	}
+	response.Body = &idleTimeoutReadCloser{
+		ReadCloser:  body,
+		idleTimeout: idleTimeout,
+		onTimeout: func() {
+			_ = stream.Close()
+			_ = conn.Close()
+		},
+	}
+	return response.Write(&deadlineResetWriter{Conn: conn, idleTimeout: idleTimeout})
+}
+
+func isStreamingHTTPResponse(response *http.Response) bool {
+	if response == nil {
+		return false
+	}
+	contentType := strings.ToLower(response.Header.Get("Content-Type"))
+	if strings.Contains(contentType, "text/event-stream") {
+		return true
+	}
+	if response.ContentLength < 0 && isChunkedResponse(response) {
+		return true
+	}
+	return false
+}
+
+func isChunkedResponse(response *http.Response) bool {
+	if response == nil {
+		return false
+	}
+	for _, value := range response.TransferEncoding {
+		if strings.EqualFold(value, "chunked") {
+			return true
+		}
+	}
+	return strings.EqualFold(response.Header.Get("Transfer-Encoding"), "chunked")
+}
+
+type idleTimeoutReadCloser struct {
+	io.ReadCloser
+	idleTimeout time.Duration
+	onTimeout   func()
+}
+
+func (reader *idleTimeoutReadCloser) Read(p []byte) (int, error) {
+	type readResult struct {
+		n   int
+		err error
+	}
+	done := make(chan readResult, 1)
+	go func() {
+		n, err := reader.ReadCloser.Read(p)
+		done <- readResult{n: n, err: err}
+	}()
+	timer := time.NewTimer(reader.idleTimeout)
+	defer timer.Stop()
+	select {
+	case result := <-done:
+		return result.n, result.err
+	case <-timer.C:
+		if reader.onTimeout != nil {
+			reader.onTimeout()
+		}
+		return 0, context.DeadlineExceeded
+	}
+}
+
+type deadlineResetWriter struct {
+	net.Conn
+	idleTimeout time.Duration
+}
+
+func (writer *deadlineResetWriter) Write(p []byte) (int, error) {
+	_ = writer.Conn.SetWriteDeadline(time.Now().Add(writer.idleTimeout))
+	return writer.Conn.Write(p)
+}
+
 func (listener *Listener) certificateFile(path string) (string, error) {
 	return resolveCertificateFile(path, listener.entry.CertificateDir)
 }
 
 func writeSimpleResponse(writer io.Writer, statusCode int, body string) error {
-	response := &http.Response{StatusCode: statusCode, Status: http.StatusText(statusCode), Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}
+	response := &http.Response{
+		StatusCode:    statusCode,
+		Status:        http.StatusText(statusCode),
+		Proto:         "HTTP/1.1",
+		ProtoMajor:    1,
+		ProtoMinor:    1,
+		Header:        make(http.Header),
+		Body:          io.NopCloser(strings.NewReader(body)),
+		ContentLength: int64(len(body)),
+		Close:         true,
+	}
 	response.Header.Set("Content-Type", "text/plain; charset=utf-8")
-	response.ContentLength = int64(len(body))
 	return response.Write(writer)
 }
 
