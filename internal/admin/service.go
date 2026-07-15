@@ -156,8 +156,11 @@ func (service Service) EnableProxyAccessAuthAndCreateActivation(ctx context.Cont
 	if proxy.Type != domain.ProxyHTTPS || strings.TrimSpace(proxy.EntryHost) == "" {
 		return ProxyActivationResult{}, contracterr.Validation("validation failed", map[string]string{"proxyId": "access authentication requires an HTTPS proxy with a host"})
 	}
-	certificate, err := service.Store.Certificates().ByProxyID(ctx, proxyID)
+	certificate, err := service.boundProxyCertificate(ctx, proxy)
 	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return ProxyActivationResult{}, contracterr.Conflict("proxy certificate is not bound or not serving TLS", nil)
+		}
 		return ProxyActivationResult{}, err
 	}
 	if !certificate.ServingStatus.ServesTLS() {
@@ -1290,6 +1293,20 @@ func (service Service) unbindProxyCertificate(ctx context.Context, proxy domain.
 		proxy.Status = domain.ProxyNeedsConf
 	}
 	return service.Store.Proxies().Update(ctx, proxy)
+}
+
+// boundProxyCertificate 解析 HTTPS Proxy 当前绑定证书：优先权威 CertificateID，遗留回退 proxy_id。
+func (service Service) boundProxyCertificate(ctx context.Context, proxy domain.Proxy) (domain.ManagedCertificate, error) {
+	if strings.TrimSpace(proxy.CertificateID) != "" {
+		certificate, err := service.Store.Certificates().ByID(ctx, proxy.CertificateID)
+		if err == nil {
+			return certificate, nil
+		}
+		if !errors.Is(err, store.ErrNotFound) {
+			return domain.ManagedCertificate{}, err
+		}
+	}
+	return service.Store.Certificates().ByProxyID(ctx, proxy.ID)
 }
 
 // certificateServable 判断证书当前是否可服务（serving 可用且未被 provider 状态阻断且材料存在）。

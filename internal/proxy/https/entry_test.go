@@ -451,6 +451,30 @@ func TestMaxBytesReadCloserRejectsOverflow(t *testing.T) {
 	}
 }
 
+func TestWriteSimpleAndAccessResponsesUseHTTP11(t *testing.T) {
+	var simple bytes.Buffer
+	if err := writeSimpleResponse(&simple, http.StatusUnauthorized, "access activation required\n"); err != nil {
+		t.Fatalf("write simple response: %v", err)
+	}
+	if !strings.HasPrefix(simple.String(), "HTTP/1.1 401 Unauthorized\r\n") {
+		t.Fatalf("expected HTTP/1.1 status line, got %q", simple.String())
+	}
+	if strings.Contains(simple.String(), "HTTP/0.0") {
+		t.Fatalf("unexpected HTTP/0.0 response: %q", simple.String())
+	}
+
+	var access bytes.Buffer
+	if err := writeAccessResponse(&access, http.StatusOK, "<html>ok</html>", nil); err != nil {
+		t.Fatalf("write access response: %v", err)
+	}
+	if !strings.HasPrefix(access.String(), "HTTP/1.1 200 OK\r\n") {
+		t.Fatalf("expected HTTP/1.1 access response, got %q", access.String())
+	}
+	if !strings.Contains(access.String(), "Content-Security-Policy:") {
+		t.Fatalf("expected activation security headers, got %q", access.String())
+	}
+}
+
 func TestReadResponseWithTimeoutClosesStalledStream(t *testing.T) {
 	stream := newBlockingStream()
 	request := &http.Request{Method: http.MethodGet}

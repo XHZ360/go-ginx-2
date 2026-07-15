@@ -983,6 +983,58 @@ func TestCreateProxyReconcileFailureRollsBackCreatedProxy(t *testing.T) {
 	}
 }
 
+func TestEnableProxyAccessAuthUsesCertificateIDBinding(t *testing.T) {
+	ctx := context.Background()
+	db := openTestStore(t)
+	certificateDir := t.TempDir()
+	service := Service{
+		Store:              db,
+		Certificates:       certmanager.Service{Storage: httpsproxy.ManagedCertificateStorage{CertificateDir: certificateDir}, NewID: func() (string, error) { return "cert-access-1", nil }, Now: func() time.Time { return time.Now().UTC() }},
+		ListenerReconciler: &fakeProxyListenerReconciler{},
+	}
+	user, client := createAdminTestOwnership(ctx, t, service)
+	certFile, keyFile := writeManagedCertPair(t, certificateDir, "app.example.com", time.Now().Add(24*time.Hour))
+	// 先建未绑定证书，再 bind 到 proxy：权威绑定是 proxy.certificate_id，不一定有证书侧 proxy_id 反向引用。
+	certificate, err := service.CreateCertificate(ctx, CreateCertificateInput{
+		Host: "app.example.com", ProviderType: domain.CertificateProviderFile, CertFile: certFile, KeyFile: keyFile, ActorID: "admin-1",
+	})
+	if err != nil {
+		t.Fatalf("create certificate: %v", err)
+	}
+	proxy, err := service.CreateProxy(ctx, CreateProxyInput{
+		ID: "proxy-access-1", UserID: user.ID, ClientID: client.ID, Name: "secure", Type: domain.ProxyHTTPS,
+		EntryHost: "app.example.com", TargetHost: "127.0.0.1", TargetPort: 8080, ActorID: "admin-1",
+	})
+	if err != nil {
+		t.Fatalf("create https proxy: %v", err)
+	}
+	bound, err := service.BindCertificate(ctx, BindCertificateInput{ProxyID: proxy.ID, CertificateID: certificate.ID, ActorID: "admin-1"})
+	if err != nil {
+		t.Fatalf("bind certificate: %v", err)
+	}
+	if bound.CertificateID != certificate.ID {
+		t.Fatalf("expected certificate binding, got %+v", bound)
+	}
+	if _, err := db.Certificates().ByProxyID(ctx, proxy.ID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("expected ByProxyID miss for certificate_id-only binding, got %v", err)
+	}
+
+	activation, err := service.EnableProxyAccessAuthAndCreateActivation(ctx, proxy.ID, "admin-1")
+	if err != nil {
+		t.Fatalf("enable access auth: %v", err)
+	}
+	if !strings.Contains(activation.URL, "https://app.example.com/.well-known/goginx/activate/") {
+		t.Fatalf("unexpected activation url: %q", activation.URL)
+	}
+	reloaded, err := db.Proxies().ByID(ctx, proxy.ID)
+	if err != nil {
+		t.Fatalf("reload proxy: %v", err)
+	}
+	if !reloaded.AccessAuthEnabled || reloaded.AccessAuthVersion != 1 {
+		t.Fatalf("expected access auth enabled with version 1, got %+v", reloaded)
+	}
+}
+
 func createAdminTestOwnership(ctx context.Context, t *testing.T, service Service) (domain.User, domain.Client) {
 	t.Helper()
 	user, err := service.CreateUser(ctx, CreateUserInput{ID: "user-1", Username: "alice", ActorID: "admin-1"})

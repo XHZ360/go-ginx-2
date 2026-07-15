@@ -311,8 +311,18 @@ func removeCookie(request *http.Request, name string) {
 	}
 }
 
-func writeAccessResponse(conn net.Conn, status int, body string, headers http.Header) error {
-	response := &http.Response{StatusCode: status, Status: http.StatusText(status), Header: headers, Body: io.NopCloser(strings.NewReader(body)), ContentLength: int64(len(body))}
+func writeAccessResponse(writer io.Writer, status int, body string, headers http.Header) error {
+	response := &http.Response{
+		StatusCode:    status,
+		Status:        http.StatusText(status),
+		Proto:         "HTTP/1.1",
+		ProtoMajor:    1,
+		ProtoMinor:    1,
+		Header:        headers,
+		Body:          io.NopCloser(strings.NewReader(body)),
+		ContentLength: int64(len(body)),
+		Close:         true,
+	}
 	if response.Header == nil {
 		response.Header = make(http.Header)
 	}
@@ -323,7 +333,7 @@ func writeAccessResponse(conn net.Conn, status int, body string, headers http.He
 	if body != "" {
 		response.Header.Set("Content-Type", "text/html; charset=utf-8")
 	}
-	return response.Write(conn)
+	return response.Write(writer)
 }
 
 type responseResult struct {
@@ -373,9 +383,18 @@ func (listener *Listener) certificateFile(path string) (string, error) {
 }
 
 func writeSimpleResponse(writer io.Writer, statusCode int, body string) error {
-	response := &http.Response{StatusCode: statusCode, Status: http.StatusText(statusCode), Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}
+	response := &http.Response{
+		StatusCode:    statusCode,
+		Status:        http.StatusText(statusCode),
+		Proto:         "HTTP/1.1",
+		ProtoMajor:    1,
+		ProtoMinor:    1,
+		Header:        make(http.Header),
+		Body:          io.NopCloser(strings.NewReader(body)),
+		ContentLength: int64(len(body)),
+		Close:         true,
+	}
 	response.Header.Set("Content-Type", "text/plain; charset=utf-8")
-	response.ContentLength = int64(len(body))
 	return response.Write(writer)
 }
 
