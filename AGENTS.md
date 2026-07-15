@@ -7,7 +7,7 @@
 - Go 模块：`github.com/simp-frp/go-ginx-2`，Go `1.25.0`，默认 `CGO_ENABLED=0`。
 - 后端入口在 `cmd/`，核心代码在 `internal/`，端到端测试在 `e2e/`。
 - `admin-ui/` 使用 React、Vite、TypeScript、Ant Design 和 `pnpm@10.33.2`。
-- 当前文档在 `docs/`；`openspec/` 仅作为待迁移的历史资料，不再新增或同步产物。
+- 当前文档在 `docs/`；产品行为以代码、测试和普通 Markdown 文档为准。
 - 文档默认使用简体中文，代码和技术术语可保留英文。
 
 ## 验证

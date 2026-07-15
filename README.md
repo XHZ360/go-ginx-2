@@ -62,7 +62,6 @@ internal/
 admin-ui/          React/Vite 管理前端源码
 deploy/systemd/    systemd 服务模板
 docs/              运行、E2E、后台 UI 和示例文档
-openspec/          待迁移的 OpenSpec 历史资料
 ```
 
 ## 环境要求
@@ -807,10 +806,14 @@ curl -i http://127.0.0.1:8080/api/admin/session
 
 ## 参考文档
 
-- `docs/openspec-migration.md`：OpenSpec 历史规格向普通项目文档迁移的方法和完成条件。
+- `docs/architecture.md`：系统组成、进程关系、数据流和代码入口。
+- `docs/control-channel.md`：控制通道、客户端角色、join/enrollment 和 consumer SDK。
+- `docs/reverse-proxy.md`：TCP/UDP/HTTP/HTTPS 反向代理运行时和证书边界。
+- `docs/certificate-management.md`：证书来源、健康状态、ACME/Origin CA 生命周期和失败语义。
+- `docs/admin-and-observability.md`：Admin API/UI、统计、日志和审计当前范围。
+- `docs/limits.md`：已执行的限制与明确的配额、限速和容量缺口。
 - `docs/daemon-runtime.md`：守护进程运行和部署说明。
 - `docs/engineering-quality-guardrails.md`：外部服务集成、生命周期状态和 Admin UI/API 的工程质量分层防线。
 - `docs/milestone-one-e2e.md`：当前可执行验证路径。
 - `docs/examples/admin-seed-sqlite.md`：SQLite 种子数据示例。
 - `docs/admin-ui/README.md`：管理后台页面设计文档索引。
-- `openspec/`：迁移期间保留的历史规格与变更资料，不再作为当前文档入口。

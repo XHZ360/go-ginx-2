@@ -4,6 +4,10 @@
 
 将 `openspec/` 中仍然有效的项目知识迁移到普通 Markdown 文档，之后以代码、测试和 `docs/` 描述项目当前状态，不再维护 proposal、design、spec、tasks 等固定工作流。
 
+## 当前状态
+
+本迁移已完成。有效内容已合并到 `docs/architecture.md`、`docs/control-channel.md`、`docs/reverse-proxy.md`、`docs/certificate-management.md`、`docs/admin-and-observability.md`、`docs/limits.md` 和已有运行/部署文档；`openspec/` 已删除，后续需求直接修改代码、测试和受影响的普通 Markdown 文档。
+
 迁移不是逐文件改名。应删除重复、过期和仅服务于实施过程的内容，只保留使用者或维护者仍需了解的信息。
 
 ## 内容去向
