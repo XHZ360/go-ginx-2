@@ -363,6 +363,9 @@ func readResponseWithTimeout(stream io.ReadWriteCloser, request *http.Request, t
 }
 
 func writeResponseWithTimeout(conn net.Conn, stream io.Closer, response *http.Response, timeout time.Duration) error {
+	if isStreamingHTTPResponse(response) {
+		return writeStreamingResponse(conn, stream, response, timeout)
+	}
 	result := make(chan error, 1)
 	_ = conn.SetDeadline(time.Now().Add(timeout))
 	go func() {
@@ -378,6 +381,90 @@ func writeResponseWithTimeout(conn net.Conn, stream io.Closer, response *http.Re
 		_ = conn.Close()
 		return context.DeadlineExceeded
 	}
+}
+
+func writeStreamingResponse(conn net.Conn, stream io.Closer, response *http.Response, idleTimeout time.Duration) error {
+	// SSE/chunked progress streams can outlive the absolute HTTP write budget.
+	// Keep only idle timeouts so slow-but-alive streams stay open.
+	_ = conn.SetDeadline(time.Time{})
+	body := response.Body
+	if body == nil {
+		body = http.NoBody
+	}
+	response.Body = &idleTimeoutReadCloser{
+		ReadCloser:  body,
+		idleTimeout: idleTimeout,
+		onTimeout: func() {
+			_ = stream.Close()
+			_ = conn.Close()
+		},
+	}
+	return response.Write(&deadlineResetWriter{Conn: conn, idleTimeout: idleTimeout})
+}
+
+func isStreamingHTTPResponse(response *http.Response) bool {
+	if response == nil {
+		return false
+	}
+	contentType := strings.ToLower(response.Header.Get("Content-Type"))
+	if strings.Contains(contentType, "text/event-stream") {
+		return true
+	}
+	if response.ContentLength < 0 && isChunkedResponse(response) {
+		return true
+	}
+	return false
+}
+
+func isChunkedResponse(response *http.Response) bool {
+	if response == nil {
+		return false
+	}
+	for _, value := range response.TransferEncoding {
+		if strings.EqualFold(value, "chunked") {
+			return true
+		}
+	}
+	return strings.EqualFold(response.Header.Get("Transfer-Encoding"), "chunked")
+}
+
+type idleTimeoutReadCloser struct {
+	io.ReadCloser
+	idleTimeout time.Duration
+	onTimeout   func()
+}
+
+func (reader *idleTimeoutReadCloser) Read(p []byte) (int, error) {
+	type readResult struct {
+		n   int
+		err error
+	}
+	done := make(chan readResult, 1)
+	go func() {
+		n, err := reader.ReadCloser.Read(p)
+		done <- readResult{n: n, err: err}
+	}()
+	timer := time.NewTimer(reader.idleTimeout)
+	defer timer.Stop()
+	select {
+	case result := <-done:
+		return result.n, result.err
+	case <-timer.C:
+		if reader.onTimeout != nil {
+			reader.onTimeout()
+		}
+		return 0, context.DeadlineExceeded
+	}
+}
+
+type deadlineResetWriter struct {
+	net.Conn
+	idleTimeout time.Duration
+}
+
+func (writer *deadlineResetWriter) Write(p []byte) (int, error) {
+	_ = writer.Conn.SetWriteDeadline(time.Now().Add(writer.idleTimeout))
+	return writer.Conn.Write(p)
 }
 
 func (listener *Listener) certificateFile(path string) (string, error) {

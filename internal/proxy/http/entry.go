@@ -179,6 +179,12 @@ func (server *Server) ServeHTTP(w nethttp.ResponseWriter, r *nethttp.Request) {
 	}
 	copyHeader(w.Header(), response.Header)
 	w.WriteHeader(response.StatusCode)
+	if isStreamingHTTPResponse(response) {
+		bytes, err := copyAndFlush(w, response.Body)
+		downloadBytes = bytes
+		failed = err != nil || response.StatusCode >= 500
+		return
+	}
 	bytes, err := io.Copy(w, response.Body)
 	downloadBytes = bytes
 	failed = err != nil || response.StatusCode >= 500
@@ -206,6 +212,52 @@ func (server *Server) httpsRedirectURL(ctx context.Context, webDomain domain.Dom
 	}
 	target := "https://" + host + r.URL.RequestURI()
 	return target, true
+}
+
+func isStreamingHTTPResponse(response *nethttp.Response) bool {
+	if response == nil {
+		return false
+	}
+	contentType := strings.ToLower(response.Header.Get("Content-Type"))
+	if strings.Contains(contentType, "text/event-stream") {
+		return true
+	}
+	if response.ContentLength < 0 {
+		for _, value := range response.TransferEncoding {
+			if strings.EqualFold(value, "chunked") {
+				return true
+			}
+		}
+		if strings.EqualFold(response.Header.Get("Transfer-Encoding"), "chunked") {
+			return true
+		}
+	}
+	return false
+}
+
+func copyAndFlush(w nethttp.ResponseWriter, body io.Reader) (int64, error) {
+	flusher, canFlush := w.(nethttp.Flusher)
+	buf := make([]byte, 32*1024)
+	var written int64
+	for {
+		n, readErr := body.Read(buf)
+		if n > 0 {
+			nw, writeErr := w.Write(buf[:n])
+			written += int64(nw)
+			if writeErr != nil {
+				return written, writeErr
+			}
+			if canFlush {
+				flusher.Flush()
+			}
+		}
+		if readErr != nil {
+			if errors.Is(readErr, io.EOF) {
+				return written, nil
+			}
+			return written, readErr
+		}
+	}
 }
 
 func displayBindHost(host string) string {

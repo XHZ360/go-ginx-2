@@ -11,6 +11,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"io"
 	"math/big"
 	"net"
@@ -277,6 +278,79 @@ func TestHTTPSEntryWebSocketTunnelExceedsHTTPBodyLimit(t *testing.T) {
 	}
 }
 
+func TestHTTPSEntryStreamsEventStreamBeyondAbsoluteBudget(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	origin := startPacedSSEOrigin(t, []pacedChunk{
+		{data: []byte("data: one\n\n"), delay: 20 * time.Millisecond},
+		{data: []byte("data: two\n\n"), delay: 20 * time.Millisecond},
+		{data: []byte("data: three\n\n"), delay: 20 * time.Millisecond},
+	})
+	entry, pool := startHTTPSTerminationProxyRuntime(t, ctx, origin, "app.example.com", domain.ProtocolQUIC)
+
+	conn, err := tls.DialWithDialer(&net.Dialer{Timeout: 2 * time.Second}, "tcp", entry.Addr().String(), &tls.Config{RootCAs: pool, ServerName: "app.example.com", MinVersion: tls.VersionTLS12})
+	if err != nil {
+		t.Fatalf("dial https entry: %v", err)
+	}
+	defer conn.Close()
+	if _, err := conn.Write([]byte("GET /events HTTP/1.1\r\nHost: app.example.com\r\nAccept: text/event-stream\r\n\r\n")); err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+	reader := bufio.NewReader(conn)
+	response, err := http.ReadResponse(reader, &http.Request{Method: http.MethodGet})
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("unexpected status %d", response.StatusCode)
+	}
+	if !strings.Contains(strings.ToLower(response.Header.Get("Content-Type")), "text/event-stream") {
+		t.Fatalf("expected event-stream content type, got %q", response.Header.Get("Content-Type"))
+	}
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	if string(body) != "data: one\n\ndata: two\n\ndata: three\n\n" {
+		t.Fatalf("unexpected body %q", string(body))
+	}
+}
+
+func startPacedSSEOrigin(t *testing.T, chunks []pacedChunk) net.Listener {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen paced sse origin: %v", err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			go func(conn net.Conn) {
+				defer conn.Close()
+				_, _ = http.ReadRequest(bufio.NewReader(conn))
+				_, _ = conn.Write([]byte("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nTransfer-Encoding: chunked\r\n\r\n"))
+				for _, chunk := range chunks {
+					if chunk.delay > 0 {
+						time.Sleep(chunk.delay)
+					}
+					payload := fmt.Sprintf("%x\r\n%s\r\n", len(chunk.data), chunk.data)
+					if _, err := conn.Write([]byte(payload)); err != nil {
+						return
+					}
+				}
+				_, _ = conn.Write([]byte("0\r\n\r\n"))
+			}(conn)
+		}
+	}()
+	return listener
+}
+
 func TestHTTPSEntryWebSocketIdleResumeAfterHandshakeTimeout(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping idle WebSocket deadline e2e in short mode")
@@ -503,6 +577,117 @@ func TestWriteResponseWithTimeoutClosesStalledBodyStream(t *testing.T) {
 	if !stream.isClosed() {
 		t.Fatal("expected stalled body stream to be closed")
 	}
+}
+
+func TestWriteStreamingResponseSurvivesBeyondAbsoluteBudget(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	t.Cleanup(func() { _ = clientConn.Close() })
+	t.Cleanup(func() { _ = serverConn.Close() })
+
+	received := make(chan string, 1)
+	go func() {
+		reader := bufio.NewReader(clientConn)
+		response, err := http.ReadResponse(reader, &http.Request{Method: http.MethodGet})
+		if err != nil {
+			received <- "read response: " + err.Error()
+			return
+		}
+		body, err := io.ReadAll(response.Body)
+		_ = response.Body.Close()
+		if err != nil {
+			received <- "read body: " + err.Error()
+			return
+		}
+		received <- string(body)
+	}()
+
+	stream := newBlockingStream()
+	body := &pacedReader{chunks: []pacedChunk{
+		{data: []byte("data: one\n\n"), delay: 25 * time.Millisecond},
+		{data: []byte("data: two\n\n"), delay: 25 * time.Millisecond},
+		{data: []byte("data: three\n\n"), delay: 25 * time.Millisecond},
+	}}
+	response := &http.Response{
+		StatusCode: http.StatusOK,
+		Status:     "200 OK",
+		ProtoMajor: 1,
+		ProtoMinor: 1,
+		Header: http.Header{
+			"Content-Type": {"text/event-stream"},
+		},
+		Body:          io.NopCloser(body),
+		ContentLength: -1,
+	}
+
+	// Absolute wall time of all chunks is ~75ms, well above a 40ms absolute budget.
+	// Streaming mode must keep the connection alive with an idle timeout instead.
+	err := writeResponseWithTimeout(serverConn, stream, response, 40*time.Millisecond)
+	if err != nil {
+		t.Fatalf("streaming write failed: %v", err)
+	}
+	_ = serverConn.Close()
+
+	select {
+	case payload := <-received:
+		if payload != "data: one\n\ndata: two\n\ndata: three\n\n" {
+			t.Fatalf("unexpected streamed payload %q", payload)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for streamed payload")
+	}
+}
+
+func TestWriteStreamingResponseClosesOnIdleTimeout(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	t.Cleanup(func() { _ = clientConn.Close() })
+	t.Cleanup(func() { _ = serverConn.Close() })
+	go func() { _, _ = io.Copy(io.Discard, clientConn) }()
+
+	stream := newBlockingStream()
+	response := &http.Response{
+		StatusCode:    http.StatusOK,
+		Status:        "200 OK",
+		ProtoMajor:    1,
+		ProtoMinor:    1,
+		Header:        http.Header{"Content-Type": {"text/event-stream"}},
+		Body:          io.NopCloser(stream),
+		ContentLength: -1,
+	}
+	err := writeResponseWithTimeout(serverConn, stream, response, 20*time.Millisecond)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected idle deadline exceeded, got %v", err)
+	}
+	if !stream.isClosed() {
+		t.Fatal("expected stalled streaming body to be closed")
+	}
+}
+
+type pacedChunk struct {
+	data  []byte
+	delay time.Duration
+}
+
+type pacedReader struct {
+	chunks []pacedChunk
+	index  int
+	offset int
+}
+
+func (reader *pacedReader) Read(p []byte) (int, error) {
+	if reader.index >= len(reader.chunks) {
+		return 0, io.EOF
+	}
+	chunk := reader.chunks[reader.index]
+	if reader.offset == 0 && chunk.delay > 0 {
+		time.Sleep(chunk.delay)
+	}
+	n := copy(p, chunk.data[reader.offset:])
+	reader.offset += n
+	if reader.offset >= len(chunk.data) {
+		reader.index++
+		reader.offset = 0
+	}
+	return n, nil
 }
 
 func TestCertificateFileRequiresCertificateDir(t *testing.T) {
