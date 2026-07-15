@@ -25,7 +25,7 @@
 - Domain、Proxy 与 Client 必须属于同一用户。
 - 不支持正则、Header、Method 匹配与负载均衡。
 
-> 实现状态：当前代码仍使用“一个父 Proxy + 多个 ProxyRoute 子路由”的旧模型，尚未满足上述需求。改造计划见 [../changes/active/domain-path-proxy-routing.md](../changes/active/domain-path-proxy-routing.md)。
+> 实现状态：运行时、SQLite 迁移、Admin API 与 Domain 优先 UI 已落地。ProxyRoute GraphQL 已移除；旧表清理与 operations 迁移说明见 [../operations/domain-path-routing-migration.md](../operations/domain-path-routing-migration.md)。
 
 ## HTTPS 访问激活
 

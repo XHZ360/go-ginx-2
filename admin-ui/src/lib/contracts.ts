@@ -198,20 +198,6 @@ export type ProxyEntryOptions = {
   hosts: ProxyEntryHostOption[];
 };
 
-export type ProxyRoute = {
-  id: string;
-  proxyId: string;
-  clientId: string;
-  pathPrefix: string;
-  stripPrefix: boolean;
-  upstreamPathPrefix?: string | null;
-  targetHost: string;
-  targetPort: number;
-  status: string;
-  createdAt: string;
-  updatedAt: string;
-};
-
 export type ProxyActivation = {
   url: string;
   expiresAt?: string | null;
@@ -233,7 +219,6 @@ export type ProxyRecord = {
   udpErrorCount: number;
   httpErrorCount: number;
   accessAuthEnabled?: boolean | null;
-  routes?: ProxyRoute[] | null;
   config: ProxyConfig;
   certificate?: ManagedCertificate | null;
   createdAt: string;

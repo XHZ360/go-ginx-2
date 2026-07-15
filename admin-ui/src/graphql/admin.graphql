@@ -192,20 +192,6 @@ fragment ProviderCredentialFields on AdminProviderCredential {
   updatedAt
 }
 
-fragment ProxyRouteFields on AdminProxyRoute {
-  id
-  proxyId
-  clientId
-  pathPrefix
-  stripPrefix
-  upstreamPathPrefix
-  targetHost
-  targetPort
-  status
-  createdAt
-  updatedAt
-}
-
 fragment ProxyFields on AdminProxy {
   id
   userId
@@ -222,9 +208,6 @@ fragment ProxyFields on AdminProxy {
   udpErrorCount
   httpErrorCount
   accessAuthEnabled
-  routes {
-    ...ProxyRouteFields
-  }
   config {
     ...ProxyConfigFields
   }
@@ -238,13 +221,6 @@ fragment ProxyFields on AdminProxy {
 fragment ProxyActivationFields on AdminProxyActivation {
   url
   expiresAt
-}
-
-fragment ProxyRoutePayloadFields on AdminProxyRoutePayload {
-  routeId
-  route {
-    ...ProxyRouteFields
-  }
 }
 
 fragment AuditFields on AdminAuditEvent {
@@ -620,24 +596,6 @@ mutation RevokeAllProxyAccess($input: AdminUserIDInput!) {
 mutation DisableProxyAccessAuth($input: AdminUserIDInput!) {
   disableProxyAccessAuth(input: $input) {
     ...ProxyPayloadFields
-  }
-}
-
-mutation CreateProxyRoute($input: AdminCreateProxyRouteInput!) {
-  createProxyRoute(input: $input) {
-    ...ProxyRoutePayloadFields
-  }
-}
-
-mutation UpdateProxyRoute($input: AdminUpdateProxyRouteInput!) {
-  updateProxyRoute(input: $input) {
-    ...ProxyRoutePayloadFields
-  }
-}
-
-mutation DeleteProxyRoute($input: AdminUserIDInput!) {
-  deleteProxyRoute(input: $input) {
-    routeId
   }
 }
 

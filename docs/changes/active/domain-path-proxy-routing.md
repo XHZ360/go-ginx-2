@@ -265,9 +265,9 @@ Web Proxy 应使用协议无关的类型（例如 `web`）；HTTP/HTTPS 由 Doma
 - [x] 调整 listener reconcile 由 DomainEntry 驱动
 - [x] 更新 GraphQL、Admin service/query 和结构化错误（兼容期仍保留 routes 字段空列表）
 - [x] 新增 Domain UI，重构 Proxy/Certificate UI
-- [ ] 迁移或移除 ProxyRoute API、生成代码与 UI（UI 已移除 route 编辑；GraphQL route mutations 仍兼容）
+- [x] 迁移或移除 ProxyRoute API、生成代码与 UI
 - [x] 增加单元、SQLite、runtime、Admin、前端与 E2E 测试
-- [ ] 同步 requirements、architecture、operations 与 worklog（Admin UI Domain 文档已补；operations 迁移说明仍待）
+- [x] 同步 requirements、architecture、operations 与 worklog
 - [ ] 确认迁移稳定后清理旧字段、旧表和兼容回退
 
 ## 验收条件
@@ -308,13 +308,13 @@ pnpm build
 
 ## 文档同步
 
-- [ ] requirements 已更新为最终目标与实现状态
-- [ ] architecture 已更新为完成后的当前事实
-- [ ] certificate 文档已改为 Domain 绑定
-- [ ] Admin UI 文档已增加 Domain 页面并移除 ProxyRoute 模型
-- [ ] operations 已增加迁移/回滚说明
+- [x] requirements 已更新为最终目标与实现状态
+- [x] architecture 已更新为完成后的当前事实
+- [ ] certificate 文档已改为 Domain 绑定（部分完成，生命周期文档仍可继续收敛）
+- [x] Admin UI 文档已增加 Domain 页面并移除 ProxyRoute 模型
+- [x] operations 已增加迁移/回滚说明
 - [x] worklog 已记录 active Change
 
 ## 结果
 
-进行中。当前只完成模型决策与变更计划，代码、Schema、API、UI 和迁移尚未实施。
+核心实现与 Domain 优先 Admin UI 已完成；ProxyRoute 管理 API/GraphQL 已移除。剩余：稳定后删除 `proxy_routes` 表与遗留列写入路径。

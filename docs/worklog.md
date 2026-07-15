@@ -16,7 +16,7 @@
 - 文档按信息类型收敛到 `docs/`（project / requirements / architecture / operations / changes / references）。
 - OpenSpec 已移除；有效内容已并入普通 Markdown。
 - 文档整改已落地：收敛单一事实来源、补齐 requirements 层、收缩根 README 长文。
-- active Change [domain-path-proxy-routing.md](changes/active/domain-path-proxy-routing.md)：Domain 优先 Admin UI 已落地（列表/详情、Proxy 选 Domain+Path、证书展示 Domain）；后端 Domain GraphQL/API 已通。剩余：移除 ProxyRoute GraphQL 兼容层、operations 迁移文档、旧字段清理。
+- active Change [domain-path-proxy-routing.md](changes/active/domain-path-proxy-routing.md)：Domain 模型、运行时、Admin API/UI 已落地；ProxyRoute GraphQL/API 已移除；operations 迁移文档已补。剩余：稳定后清理 `proxy_routes` 表与遗留列。
 
 ## 已实现能力（摘要）
 
@@ -36,7 +36,7 @@
 
 ## 下一步
 
-1. 移除 ProxyRoute GraphQL/API 兼容层，并补 operations 迁移/回滚说明。
+1. 确认 Domain 迁移稳定后清理 `proxy_routes` 表与 Web Proxy 遗留字段写入路径。
 2. 生产运维：备份恢复、容量校验。
 3. 有代码变更时同步更新 requirements/architecture，并回写本日志验证结果。
 

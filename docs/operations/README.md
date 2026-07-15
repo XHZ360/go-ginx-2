@@ -14,6 +14,7 @@
 | [admin-api.md](admin-api.md) | 管理 API、会话与前端构建 |
 | [docker-development.md](docker-development.md) | Docker Compose 本地开发环境 |
 | [milestone-one-e2e.md](milestone-one-e2e.md) | 里程碑一可执行验证路径 |
+| [domain-path-routing-migration.md](domain-path-routing-migration.md) | Domain + Path 路由数据迁移与回滚 |
 | [examples/admin-seed-sqlite.md](examples/admin-seed-sqlite.md) | Admin CLI SQLite 种子示例 |
 
 ## 相关设计

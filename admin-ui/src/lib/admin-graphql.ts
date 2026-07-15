@@ -24,8 +24,6 @@ import type {
   CreateProxyActivationLinkMutationVariables,
   CreateProxyMutation,
   CreateProxyMutationVariables,
-  CreateProxyRouteMutation,
-  CreateProxyRouteMutationVariables,
   CreateProviderCredentialMutation,
   CreateProviderCredentialMutationVariables,
   CreateUserMutation,
@@ -37,8 +35,6 @@ import type {
   DeleteClientMutationVariables,
   DeleteProxyMutation,
   DeleteProxyMutationVariables,
-  DeleteProxyRouteMutation,
-  DeleteProxyRouteMutationVariables,
   DeleteProviderCredentialMutation,
   DeleteProviderCredentialMutationVariables,
   DisableProxyAccessAuthMutation,
@@ -82,8 +78,6 @@ import type {
   UpdateProviderCredentialMutationVariables,
   UpdateProxyMutation,
   UpdateProxyMutationVariables,
-  UpdateProxyRouteMutation,
-  UpdateProxyRouteMutationVariables,
   UserQuery,
   UserQueryVariables,
   UsersQuery,
@@ -105,7 +99,6 @@ import type {
   ProxyActivation,
   ProxyEntryOptions,
   ProxyRecord,
-  ProxyRoute,
   User,
 } from './contracts';
 
@@ -546,27 +539,6 @@ export function mutateDeleteProxy(csrfToken: string, id: string) {
   });
 }
 
-export type ProxyRouteInput = {
-  proxyId: string;
-  clientId: string;
-  pathPrefix: string;
-  stripPrefix?: boolean;
-  upstreamPathPrefix?: string;
-  targetHost: string;
-  targetPort: number;
-};
-
-export type UpdateProxyRouteInput = {
-  id: string;
-  clientId: string;
-  pathPrefix: string;
-  stripPrefix?: boolean;
-  upstreamPathPrefix?: string;
-  targetHost: string;
-  targetPort: number;
-  status?: string;
-};
-
 export async function mutateEnableProxyAccessAuthAndCreateActivation(csrfToken: string, id: string) {
   const variables = { input: { id } } satisfies EnableProxyAccessAuthAndCreateActivationMutationVariables;
   const data = await request<EnableProxyAccessAuthAndCreateActivationMutation, EnableProxyAccessAuthAndCreateActivationMutationVariables>({
@@ -603,38 +575,6 @@ export function mutateDisableProxyAccessAuth(csrfToken: string, id: string) {
   const variables = { input: { id } } satisfies DisableProxyAccessAuthMutationVariables;
   return request<DisableProxyAccessAuthMutation, DisableProxyAccessAuthMutationVariables>({
     operationName: 'DisableProxyAccessAuth',
-    variables,
-    mutation: true,
-    csrfToken,
-  });
-}
-
-export async function mutateCreateProxyRoute(csrfToken: string, input: ProxyRouteInput) {
-  const variables = { input: cleanObject(input) } satisfies CreateProxyRouteMutationVariables;
-  const data = await request<CreateProxyRouteMutation, CreateProxyRouteMutationVariables>({
-    operationName: 'CreateProxyRoute',
-    variables,
-    mutation: true,
-    csrfToken,
-  });
-  return data.createProxyRoute.route satisfies ProxyRoute;
-}
-
-export async function mutateUpdateProxyRoute(csrfToken: string, input: UpdateProxyRouteInput) {
-  const variables = { input: cleanObject(input) } satisfies UpdateProxyRouteMutationVariables;
-  const data = await request<UpdateProxyRouteMutation, UpdateProxyRouteMutationVariables>({
-    operationName: 'UpdateProxyRoute',
-    variables,
-    mutation: true,
-    csrfToken,
-  });
-  return data.updateProxyRoute.route satisfies ProxyRoute;
-}
-
-export function mutateDeleteProxyRoute(csrfToken: string, id: string) {
-  const variables = { input: { id } } satisfies DeleteProxyRouteMutationVariables;
-  return request<DeleteProxyRouteMutation, DeleteProxyRouteMutationVariables>({
-    operationName: 'DeleteProxyRoute',
     variables,
     mutation: true,
     csrfToken,
