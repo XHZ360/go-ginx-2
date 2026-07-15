@@ -9,6 +9,7 @@
 | 项目目标、产品形态、技术栈约束 | [project/overview.md](project/overview.md) |
 | 日常开发、验证、提交流程 | [project/workflow.md](project/workflow.md) |
 | 文档目录规则、迁移流程、记录要求 | [project/documentation-workflow.md](project/documentation-workflow.md) |
+| Change 的建立、实施、完成与归档 | [project/change-workflow.md](project/change-workflow.md) |
 | 当前进展、下一步、最近验证结果 | [worklog.md](worklog.md) |
 | 产品需求和业务流程 | [requirements/README.md](requirements/README.md) |
 | 运行时、协议、数据与集成设计 | [architecture/README.md](architecture/README.md) |
