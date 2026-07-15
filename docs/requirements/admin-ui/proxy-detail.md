@@ -13,7 +13,8 @@
 - 展示代理的配置与统计信息
 - 支持编辑代理
 - 支持启用、禁用、删除代理
-- HTTPS 代理场景下展示关联证书摘要
+- HTTP/HTTPS 展示并编辑路径路由
+- HTTPS 代理场景下展示关联证书摘要与访问激活操作
 
 ## 4. 页面结构
 
@@ -23,6 +24,8 @@
 - 运行状态卡片
 - 统计卡片
 - 操作区
+- 路径路由区（HTTP/HTTPS 时显示）
+- 访问认证区（HTTPS 时显示）
 - 证书信息区（HTTPS 时显示）
 
 ## 5. 信息展示
@@ -60,7 +63,9 @@
 - 不允许修改代理类型
 - BindHost 使用后端提供的监听地址选项，不使用自由输入
 - TCP/UDP 编辑 BindHost、EntryPort、TargetHost、TargetPort
-- HTTP/HTTPS 编辑 BindHost、EntryPort、域名、TargetHost、TargetPort
+- HTTP/HTTPS 编辑 BindHost、EntryPort、域名、TargetHost、TargetPort（默认 `/` 后端）
+- HTTP/HTTPS 支持路径路由编辑器：Path Prefix、Client、Target Host/Port、StripPrefix、Upstream Path Prefix
+- 路径前缀须唯一且不得占用 `/.well-known/goginx/`；跨用户 Client 拒绝
 - HTTPS 通过证书选择控件改绑证书，不再编辑 CertFile / KeyFile 文件路径
 - 更新或启用后若发生监听冲突或 listener 启动失败，展示 `ENTRY_CONFLICT`
 - 错误需定位到对应字段或操作区
@@ -81,6 +86,18 @@ HTTPS 代理编辑表单通过证书选择控件改绑证书：
 - 跳转前保存编辑表单草稿（不含 secret material），链接携带 `returnTo=/proxies/<id>`、`draftId` 和 `host`。
 - 证书创建成功后返回详情页，重新打开编辑对话框，还原草稿字段并自动选中新证书。
 - 草稿缺失、过期或解析失败时安全降级：回退到当前 proxy 配置并预选新证书，提示草稿已失效。
+
+## 7.3 HTTPS 访问认证
+
+HTTPS 详情页提供访问认证区域：
+
+- 展示当前认证开关状态
+- “开启认证并生成激活链接”：原子开启并返回一次性 URL
+- “生成新激活链接”：已开启时可用
+- “统一撤销全部访问”
+- “关闭认证”（执行统一撤销语义）
+
+激活链接对话框展示完整 URL、复制按钮、二维码与过期时间，并提示“链接仅展示一次”。关闭对话框后清理前端内存中的 URL，不得写入长期缓存、草稿或 storage。
 
 ## 8. HTTPS 证书区
 
@@ -137,3 +154,5 @@ HTTPS 代理编辑表单通过证书选择控件改绑证书：
 - HTTPS 代理只通过证书选择器改绑证书或跳转创建证书，不再编辑 CertFile / KeyFile
 - 跳转创建证书后能恢复编辑表单草稿并自动选中新证书；草稿失效时安全降级
 - 证书摘要为只读，证书生命周期动作集中在证书页
+- HTTP/HTTPS 可管理路径路由；跨用户 Client 与保留路径校验有明确错误
+- HTTPS 可开启访问激活、生成一次性链接/二维码，并统一撤销；URL 仅展示一次

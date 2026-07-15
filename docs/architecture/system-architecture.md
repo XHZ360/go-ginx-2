@@ -26,4 +26,4 @@ GoGinX 由服务端、provider 客户端、可选的 consumer SDK、Admin API/UI
 
 ## 明确边界
 
-当前系统是反向代理平台，不是任意目标正向代理。配额、限速、备份恢复、普通用户自助和完整指标/告警仍未实现，详见 `docs/limits.md` 和 `docs/admin-and-observability.md`。
+当前系统是反向代理平台，不是任意目标正向代理。HTTP/HTTPS 支持路径前缀路由；HTTPS 支持可选访问激活。配额、限速、备份恢复、普通用户自助和完整指标/告警仍未实现，详见 [../requirements/limits.md](../requirements/limits.md)、[../requirements/proxy-runtime.md](../requirements/proxy-runtime.md) 和 [admin-and-observability.md](admin-and-observability.md)。

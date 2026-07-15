@@ -1,6 +1,6 @@
 # 证书绑定迁移与兼容说明
 
-本篇说明证书集中管理改造下的绑定模型迁移与兼容策略：旧 `managed_certificates.proxy_id` 与旧 HTTPS proxy 直接保存的 `certFile` / `keyFile` 如何收敛为“独立证书资源 + 显式绑定”，以及迁移期保留的运行时兼容路径。与 UI 行为相关的部分见 `certificates.md`、`proxies-list.md` 和 `proxy-detail.md`。
+本篇说明证书集中管理改造下的绑定模型迁移与兼容策略：旧 `managed_certificates.proxy_id` 与旧 HTTPS proxy 直接保存的 `certFile` / `keyFile` 如何收敛为“独立证书资源 + 显式绑定”，以及迁移期保留的运行时兼容路径。与 UI 行为相关的部分见 [../requirements/admin-ui/certificates.md](../requirements/admin-ui/certificates.md)、[../requirements/admin-ui/proxies-list.md](../requirements/admin-ui/proxies-list.md) 和 [../requirements/admin-ui/proxy-detail.md](../requirements/admin-ui/proxy-detail.md)。
 
 ## 1. 绑定模型变化
 

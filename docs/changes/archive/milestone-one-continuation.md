@@ -1,14 +1,16 @@
-# Continuation Notes
+# Continuation Notes（历史归档）
 
-This file records the current implementation state so work can resume after a restart.
+> **历史归档，不代表当前状态。** 当前进展见 [../../worklog.md](../../worklog.md)；产品与架构事实见 `docs/requirements/` 与 `docs/architecture/`。
 
-## Current State
+本文记录里程碑一期间的实施批次，便于查阅历史上下文。文中的分支、提交、working tree 与 “next batch” 均为当时快照。
+
+## Historical Snapshot
 
 - Repository: `go-ginx-2`
-- Branch: `master`
-- Latest commit: `c6e5e24 docs: document managed certificate automation`
-- Working tree before this note: dirty; uncommitted TCP+TLS mux, UDP runtime, stats persistence, and smoke-test updates are present
-- Source of truth: `../docs/requirements.md` and `../docs/design.md`
+- Branch at note time: `master`
+- Note-time commit: `c6e5e24 docs: document managed certificate automation`
+- Working tree at note time: dirty; uncommitted TCP+TLS mux, UDP runtime, stats persistence, and smoke-test updates were present
+- Source of truth now: `docs/`（见 `docs/README.md`）
 - Reference only: `../go-ginx-1`
 
 ## Completed Batches
@@ -142,16 +144,16 @@ This file records the current implementation state so work can resume after a re
 - TCP, UDP, HTTP, HTTPS SNI passthrough, and HTTPS TLS termination proxy paths work through daemon commands, package E2E tests, and external process smoke tests. TCP fallback proxy traffic is covered through daemon tests.
 - `goginx-admin` can seed SQLite resources.
 - Basic TCP/UDP/HTTP stats are implemented with SQLite-backed restart survival for cumulative totals.
-- Daemon runtime deployment and troubleshooting guidance is documented in `docs/daemon-runtime.md`.
+- Daemon runtime deployment and troubleshooting guidance is documented in `docs/operations/daemon-runtime.md`.
 
 ## Important Limitations
 
 - Restart-surviving stats are intentionally cumulative only; active connection counts reset on process restart.
 - No forward proxy, quotas/rate limits, ordinary-user self-service, advanced alerts/log search, backup/restore tooling, capacity validation, or broader deployment automation yet.
 
-## Recommended Next Batch
+## Recommended Next Batch（当时计划，已过期）
 
-Close the current runtime batch first, then move to production operations:
+以下为笔记撰写时的后续计划，仅供历史参考；当前下一步以 [../../worklog.md](../../worklog.md) 为准。
 
 1. Commit the in-flight `TCP+TLS` mux, UDP runtime, persistent stats, and smoke-test batch after keeping validation green.
 2. Continue implementing `add-service-supervision-and-packaging` until all bundle, `systemd`, and deployment-documentation tasks are committed.

@@ -1,8 +1,11 @@
-# HTTP 路径路由与 HTTPS 访问激活
+# HTTP 路径路由与 HTTPS 访问激活（实施记录）
 
 ## 文档状态
 
-本文描述已实现的 HTTP 路径路由与 HTTPS 访问激活行为。后续应将最终行为合并到反向代理运行时和 Admin UI 的当前事实文档，并删除不再需要的实施性描述。
+> **已完成变更的实施记录，不是当前唯一事实来源。**  
+> 产品需求见 [../../requirements/proxy-runtime.md](../../requirements/proxy-runtime.md)；运行时事实见 [../../architecture/reverse-proxy.md](../../architecture/reverse-proxy.md)；UI 见 [../../requirements/admin-ui/proxy-detail.md](../../requirements/admin-ui/proxy-detail.md)。
+
+本文保留模型、API、安全与验证细节，供实现对照与排障。
 
 ## 目标
 

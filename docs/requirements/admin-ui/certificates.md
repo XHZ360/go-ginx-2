@@ -39,7 +39,7 @@
 - 运行时优先按绑定的 certificate ID 解析 TLS active material，并校验证书覆盖该 proxy 的 SNI host。
 - 私钥材料始终只以文件路径或受管文件形式存在，绝不进入 SQLite，UI 也不回显私钥内容。
 
-旧 `managed_certificates.proxy_id` 与旧 HTTPS proxy `certFile` / `keyFile` 的迁移、运行时兼容 fallback、私钥不入库和证书在 proxy 删除后保留等策略，详见 `certificate-migration.md`。
+旧 `managed_certificates.proxy_id` 与旧 HTTPS proxy `certFile` / `keyFile` 的迁移、运行时兼容 fallback、私钥不入库和证书在 proxy 删除后保留等策略，详见 [../../references/certificate-binding-migration.md](../../references/certificate-binding-migration.md)。
 
 ## 6. 创建证书
 
