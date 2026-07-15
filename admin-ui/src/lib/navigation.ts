@@ -7,6 +7,8 @@ const safeRoutes = [
   /^\/users\/[^/]+$/,
   /^\/clients$/,
   /^\/clients\/[^/]+$/,
+  /^\/domains$/,
+  /^\/domains\/[^/]+$/,
   /^\/proxies$/,
   /^\/proxies\/[^/]+$/,
   /^\/certificates$/,

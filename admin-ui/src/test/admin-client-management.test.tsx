@@ -161,6 +161,44 @@ function createFetchMock(options?: { createValidationFailure?: boolean; rotateFa
     if (operationName === 'Proxies') {
       return graphQL({ data: { proxies: { items: [], totalCount: 0, pageInfo } } });
     }
+    if (operationName === 'Domains') {
+      return graphQL({ data: { domains: { items: [], totalCount: 0, pageInfo } } });
+    }
+    if (operationName === 'CreateProxy') {
+      const input = (variables.input ?? {}) as {
+        userId?: string;
+        clientId?: string;
+        name?: string;
+        type?: string;
+        config?: Record<string, unknown>;
+      };
+      return graphQL({
+        data: {
+          createProxy: {
+            proxyId: 'proxy-created',
+            status: 'enabled',
+            proxy: {
+              id: 'proxy-created',
+              userId: input.userId ?? '',
+              clientId: input.clientId ?? '',
+              name: input.name ?? '',
+              type: input.type ?? 'tcp',
+              status: 'enabled',
+              runtimeStatus: 'offline',
+              activeTCPConnections: 0,
+              uploadBytes: 0,
+              downloadBytes: 0,
+              tcpErrorCount: 0,
+              udpErrorCount: 0,
+              httpErrorCount: 0,
+              config: input.config ?? {},
+              createdAt: '2026-05-17T00:00:00Z',
+              updatedAt: '2026-05-17T00:00:00Z',
+            },
+          },
+        },
+      });
+    }
     if (operationName === 'CreateClientJoin') {
       return graphQL({
         data: {
@@ -353,8 +391,9 @@ describe('admin client management', () => {
 
     await userEvent.selectOptions(within(dialog).getByLabelText('Client'), 'client-all');
     await userEvent.type(within(dialog).getByLabelText('Name'), 'web');
+    // Domain-first form: either select a domain or switch to TCP for raw listeners.
+    await userEvent.selectOptions(within(dialog).getByLabelText('Type'), 'tcp');
     await userEvent.type(within(dialog).getByLabelText('Entry port'), '8080');
-    await userEvent.type(within(dialog).getByLabelText('HTTP domain'), 'app.example.com');
     await userEvent.type(within(dialog).getByLabelText('Target host'), '127.0.0.1');
     await userEvent.type(within(dialog).getByLabelText('Target port'), '8080');
     await userEvent.click(within(dialog).getByRole('button', { name: 'Create proxy' }));

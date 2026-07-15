@@ -83,18 +83,22 @@ type ReviewClientJoinTokenResult struct {
 }
 
 type CreateProxyInput struct {
-	ID            string
-	UserID        string
-	ClientID      string
-	Name          string
-	Type          domain.ProxyType
-	EntryBindHost string
-	EntryHost     string
-	EntryPort     int
-	TargetHost    string
-	TargetPort    int
-	CertFile      string
-	KeyFile       string
+	ID                 string
+	UserID             string
+	ClientID           string
+	Name               string
+	Type               domain.ProxyType
+	DomainID           string
+	PathPrefix         string
+	StripPrefix        bool
+	UpstreamPathPrefix string
+	EntryBindHost      string
+	EntryHost          string
+	EntryPort          int
+	TargetHost         string
+	TargetPort         int
+	CertFile           string
+	KeyFile            string
 	// CertificateID 选择一个既有证书资源进行绑定（权威绑定路径）。
 	CertificateID string
 	Description   string
@@ -102,16 +106,24 @@ type CreateProxyInput struct {
 }
 
 type UpdateProxyInput struct {
-	ID            string
-	Type          domain.ProxyType
-	Name          string
-	EntryBindHost string
-	EntryHost     string
-	EntryPort     int
-	TargetHost    string
-	TargetPort    int
-	CertFile      string
-	KeyFile       string
+	ID                 string
+	Type               domain.ProxyType
+	Name               string
+	DomainID           string
+	DomainIDSet        bool
+	PathPrefix         string
+	PathPrefixSet      bool
+	StripPrefix        bool
+	StripPrefixSet     bool
+	UpstreamPathPrefix string
+	UpstreamPathPrefixSet bool
+	EntryBindHost      string
+	EntryHost          string
+	EntryPort          int
+	TargetHost         string
+	TargetPort         int
+	CertFile           string
+	KeyFile            string
 	// CertificateID 选择/清除绑定的证书资源；CertificateIDSet 为 true 且值为空时表示清除绑定。
 	CertificateID    string
 	CertificateIDSet bool
@@ -748,11 +760,25 @@ func (service Service) CreateProxy(ctx context.Context, input CreateProxyInput) 
 	if domain.NormalizeClientKind(client.Kind) != domain.ClientKindProvider {
 		return domain.Proxy{}, contracterr.Validation("validation failed", map[string]string{"clientId": "client cannot provide proxy service"})
 	}
+	// Preferred web path: DomainID + PathPrefix.
+	if input.Type == domain.ProxyWeb || (input.Type.IsWeb() && strings.TrimSpace(input.DomainID) != "") {
+		proxy, err := service.createWebProxy(ctx, input)
+		if err != nil {
+			return domain.Proxy{}, err
+		}
+		if err := service.reconcileProxyListeners(ctx); err != nil {
+			_ = service.Store.Proxies().Delete(ctx, proxy.ID)
+			_ = service.reconcileProxyListeners(ctx)
+			return domain.Proxy{}, err
+		}
+		return proxy, nil
+	}
 	certificateID, err := service.resolveProxyCertificateSelection(ctx, input.Type, "", input.CertificateID, true, input.EntryHost, input.CertFile, input.KeyFile, input.ActorID)
 	if err != nil {
 		return domain.Proxy{}, err
 	}
 	// 证书绑定为权威路径：代理记录不再持久化原始静态证书路径。
+	// Legacy http/https create still accepted and converted by store to Domain+Web.
 	proxy := domain.Proxy{ID: input.ID, UserID: input.UserID, ClientID: input.ClientID, Name: input.Name, Type: input.Type, Status: domain.ProxyEnabled, EntryBindHost: input.EntryBindHost, EntryHost: input.EntryHost, EntryPort: input.EntryPort, TargetHost: input.TargetHost, TargetPort: input.TargetPort, CertificateID: certificateID, Description: input.Description}
 	if err := service.ensureProxyAdmission(ctx, proxy, ""); err != nil {
 		return domain.Proxy{}, err
@@ -894,6 +920,39 @@ func (service Service) UpdateProxy(ctx context.Context, input UpdateProxyInput) 
 	existing.TargetPort = input.TargetPort
 	existing.Description = input.Description
 	if existing.Type.IsWeb() {
+		domainChanged := false
+		pathChanged := false
+		if input.DomainIDSet && strings.TrimSpace(input.DomainID) != "" && input.DomainID != existing.DomainID {
+			webDomain, domainErr := service.Store.Domains().ByID(ctx, input.DomainID)
+			if domainErr != nil {
+				return domain.Proxy{}, domainErr
+			}
+			if webDomain.UserID != existing.UserID {
+				return domain.Proxy{}, contracterr.Conflict("domain does not belong to proxy user", nil)
+			}
+			existing.DomainID = webDomain.ID
+			domainChanged = true
+		}
+		if input.PathPrefixSet && strings.TrimSpace(input.PathPrefix) != "" {
+			normalized, pathErr := domain.NormalizeProxyRoutePrefix(input.PathPrefix)
+			if pathErr != nil {
+				return domain.Proxy{}, contracterr.Validation("validation failed", map[string]string{"pathPrefix": pathErr.Error()})
+			}
+			if normalized != existing.PathPrefix {
+				existing.PathPrefix = normalized
+				pathChanged = true
+			}
+		}
+		if input.StripPrefixSet {
+			existing.StripPrefix = input.StripPrefix
+		}
+		if input.UpstreamPathPrefixSet {
+			upstream, upErr := domain.NormalizeProxyUpstreamPathPrefix(input.UpstreamPathPrefix)
+			if upErr != nil {
+				return domain.Proxy{}, contracterr.Validation("validation failed", map[string]string{"upstreamPathPrefix": upErr.Error()})
+			}
+			existing.UpstreamPathPrefix = upstream
+		}
 		// host rename updates Domain; entry fields are not stored on web proxy
 		if strings.TrimSpace(input.EntryHost) != "" && strings.TrimSpace(existing.DomainID) != "" {
 			webDomain, domainErr := service.Store.Domains().ByID(ctx, existing.DomainID)
@@ -926,6 +985,12 @@ func (service Service) UpdateProxy(ctx context.Context, input UpdateProxyInput) 
 					return domain.Proxy{}, err
 				}
 				existing.CertificateID = webDomain.CertificateID
+			}
+		}
+		if (domainChanged || pathChanged) && existing.AccessAuthEnabled {
+			if access, ok := store.Access(service.Store); ok {
+				_ = access.RevokeAllAccess(ctx, existing.ID, existing.AccessAuthVersion+1)
+				existing.AccessAuthVersion++
 			}
 		}
 	} else {

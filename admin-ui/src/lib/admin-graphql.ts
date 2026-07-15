@@ -96,6 +96,8 @@ import type {
   AuditEvent,
   Client,
   DashboardSummary,
+  DomainEntry,
+  DomainRecord,
   ManagedCertificate,
   PageInfo,
   PageResult,
@@ -170,6 +172,10 @@ export type ProviderCredentialInput = {
 };
 
 type ProxyConfigInput = {
+  domainId?: string;
+  pathPrefix?: string;
+  stripPrefix?: boolean;
+  upstreamPathPrefix?: string;
   entryBindHost?: string;
   entryHost?: string;
   entryPort?: number;
@@ -178,6 +184,12 @@ type ProxyConfigInput = {
   certFile?: string;
   keyFile?: string;
   certificateId?: string;
+};
+
+export type DomainFilter = {
+  query?: string;
+  userId?: string;
+  status?: string;
 };
 
 export type ClientJoinInput = {
@@ -256,6 +268,23 @@ export async function queryProxies(input: ListInput<ProxyFilter>) {
   const variables = { input: cleanObject(input) } satisfies ProxiesQueryVariables;
   const data = await request<ProxiesQuery, ProxiesQueryVariables>({ operationName: 'Proxies', variables });
   return normalizePageResult<ProxyRecord>(data.proxies);
+}
+
+export async function queryDomains(input: ListInput<DomainFilter>) {
+  const variables = { input: cleanObject(input) };
+  const data = await request<{ domains: PageResult<DomainRecord> }, { input: ListInput<DomainFilter> }>({
+    operationName: 'Domains',
+    variables,
+  });
+  return normalizePageResult<DomainRecord>(data.domains);
+}
+
+export async function queryDomain(id: string) {
+  const data = await request<{ domain: DomainRecord }, { id: string }>({
+    operationName: 'Domain',
+    variables: { id },
+  });
+  return data.domain;
 }
 
 export async function queryProxy(id: string) {
@@ -355,6 +384,97 @@ export function mutateDeleteClient(csrfToken: string, id: string) {
     mutation: true,
     csrfToken,
   });
+}
+
+export async function mutateCreateDomain(
+  csrfToken: string,
+  input: { userId: string; host: string; certificateId?: string },
+) {
+  const data = await request<{ createDomain: { domainId: string; status: string; domain: DomainRecord } }, { input: typeof input }>({
+    operationName: 'CreateDomain',
+    variables: { input: cleanObject(input) },
+    mutation: true,
+    csrfToken,
+  });
+  return data.createDomain.domain;
+}
+
+export async function mutateUpdateDomain(
+  csrfToken: string,
+  input: { id: string; host?: string; certificateId?: string },
+) {
+  const data = await request<{ updateDomain: { domain: DomainRecord } }, { input: typeof input }>({
+    operationName: 'UpdateDomain',
+    variables: { input: cleanObject(input) },
+    mutation: true,
+    csrfToken,
+  });
+  return data.updateDomain.domain;
+}
+
+export function mutateEnableDomain(csrfToken: string, id: string) {
+  return request({ operationName: 'EnableDomain', variables: { input: { id } }, mutation: true, csrfToken });
+}
+
+export function mutateDisableDomain(csrfToken: string, id: string) {
+  return request({ operationName: 'DisableDomain', variables: { input: { id } }, mutation: true, csrfToken });
+}
+
+export function mutateDeleteDomain(csrfToken: string, id: string) {
+  return request({ operationName: 'DeleteDomain', variables: { input: { id } }, mutation: true, csrfToken });
+}
+
+export async function mutateCreateDomainEntry(
+  csrfToken: string,
+  input: { domainId: string; protocol: string; bindHost?: string; port: number },
+) {
+  const data = await request<{ createDomainEntry: { entry: DomainEntry } }, { input: typeof input }>({
+    operationName: 'CreateDomainEntry',
+    variables: { input: cleanObject(input) },
+    mutation: true,
+    csrfToken,
+  });
+  return data.createDomainEntry.entry;
+}
+
+export async function mutateUpdateDomainEntry(
+  csrfToken: string,
+  input: { id: string; bindHost?: string; port?: number; status?: string },
+) {
+  const data = await request<{ updateDomainEntry: { entry: DomainEntry } }, { input: typeof input }>({
+    operationName: 'UpdateDomainEntry',
+    variables: { input: cleanObject(input) },
+    mutation: true,
+    csrfToken,
+  });
+  return data.updateDomainEntry.entry;
+}
+
+export function mutateDeleteDomainEntry(csrfToken: string, id: string) {
+  return request({ operationName: 'DeleteDomainEntry', variables: { input: { id } }, mutation: true, csrfToken });
+}
+
+export async function mutateBindDomainCertificate(
+  csrfToken: string,
+  input: { domainId: string; certificateId: string },
+) {
+  const data = await request<{ bindDomainCertificate: { domain: DomainRecord } }, { input: typeof input }>({
+    operationName: 'BindDomainCertificate',
+    variables: { input },
+    mutation: true,
+    csrfToken,
+  });
+  return data.bindDomainCertificate.domain;
+}
+
+export async function mutateUnbindDomainCertificate(csrfToken: string, id: string) {
+  const data = await request<{ unbindDomainCertificate: { domain: DomainRecord } }, { input: { id: string } }>({
+    operationName: 'UnbindDomainCertificate',
+    variables: { input: { id } },
+    mutation: true,
+    csrfToken,
+  });
+  return data.unbindDomainCertificate.domain;
 }
 
 export function mutateCreateProxy(

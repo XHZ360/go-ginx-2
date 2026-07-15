@@ -83,6 +83,10 @@ fragment ClientDetailFields on AdminClientDetail {
 }
 
 fragment ProxyConfigFields on AdminProxyConfig {
+  domainId
+  pathPrefix
+  stripPrefix
+  upstreamPathPrefix
   entryBindHost
   entryHost
   entryPort
@@ -97,6 +101,7 @@ fragment ManagedCertificateFields on AdminManagedCertificate {
   proxyId
   certificateId
   boundProxyId
+  boundDomainId
   referenced
   servable
   deletionRisk
@@ -123,6 +128,55 @@ fragment ManagedCertificateFields on AdminManagedCertificate {
   failureCount
   fingerprint
   lastError
+}
+
+fragment DomainEntryFields on AdminDomainEntry {
+  id
+  domainId
+  protocol
+  bindHost
+  port
+  status
+  createdAt
+  updatedAt
+}
+
+fragment DomainFields on AdminDomain {
+  id
+  userId
+  host
+  certificateId
+  status
+  proxyCount
+  httpEntryCount
+  httpsEntryCount
+  certificate {
+    ...ManagedCertificateFields
+  }
+  entries {
+    ...DomainEntryFields
+  }
+  proxies {
+    ...ProxyFields
+  }
+  createdAt
+  updatedAt
+}
+
+fragment DomainSummaryFields on AdminDomain {
+  id
+  userId
+  host
+  certificateId
+  status
+  proxyCount
+  httpEntryCount
+  httpsEntryCount
+  certificate {
+    ...ManagedCertificateFields
+  }
+  createdAt
+  updatedAt
 }
 
 fragment ProviderCredentialFields on AdminProviderCredential {
@@ -306,6 +360,24 @@ query Proxies($input: AdminProxiesInput) {
   }
 }
 
+query Domains($input: AdminDomainsInput) {
+  domains(input: $input) {
+    totalCount
+    pageInfo {
+      ...PageInfoFields
+    }
+    items {
+      ...DomainSummaryFields
+    }
+  }
+}
+
+query Domain($id: String!) {
+  domain(id: $id) {
+    ...DomainFields
+  }
+}
+
 query Proxy($id: String!) {
   proxy(id: $id) {
     ...ProxyFields
@@ -402,6 +474,97 @@ mutation RotateClientCredential($input: AdminUserIDInput!) {
 mutation DeleteClient($input: AdminUserIDInput!) {
   deleteClient(input: $input) {
     clientId
+  }
+}
+
+mutation CreateDomain($input: AdminCreateDomainInput!) {
+  createDomain(input: $input) {
+    domainId
+    status
+    domain {
+      ...DomainFields
+    }
+  }
+}
+
+mutation UpdateDomain($input: AdminUpdateDomainInput!) {
+  updateDomain(input: $input) {
+    domainId
+    status
+    domain {
+      ...DomainFields
+    }
+  }
+}
+
+mutation EnableDomain($input: AdminUserIDInput!) {
+  enableDomain(input: $input) {
+    domainId
+    status
+    domain {
+      ...DomainFields
+    }
+  }
+}
+
+mutation DisableDomain($input: AdminUserIDInput!) {
+  disableDomain(input: $input) {
+    domainId
+    status
+    domain {
+      ...DomainFields
+    }
+  }
+}
+
+mutation DeleteDomain($input: AdminUserIDInput!) {
+  deleteDomain(input: $input) {
+    domainId
+    status
+  }
+}
+
+mutation CreateDomainEntry($input: AdminCreateDomainEntryInput!) {
+  createDomainEntry(input: $input) {
+    entryId
+    entry {
+      ...DomainEntryFields
+    }
+  }
+}
+
+mutation UpdateDomainEntry($input: AdminUpdateDomainEntryInput!) {
+  updateDomainEntry(input: $input) {
+    entryId
+    entry {
+      ...DomainEntryFields
+    }
+  }
+}
+
+mutation DeleteDomainEntry($input: AdminUserIDInput!) {
+  deleteDomainEntry(input: $input) {
+    entryId
+  }
+}
+
+mutation BindDomainCertificate($input: AdminBindDomainCertificateInput!) {
+  bindDomainCertificate(input: $input) {
+    domainId
+    status
+    domain {
+      ...DomainFields
+    }
+  }
+}
+
+mutation UnbindDomainCertificate($input: AdminUserIDInput!) {
+  unbindDomainCertificate(input: $input) {
+    domainId
+    status
+    domain {
+      ...DomainFields
+    }
   }
 }
 

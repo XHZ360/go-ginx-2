@@ -719,6 +719,7 @@ func (server *Server) buildSchema() (graphql.Schema, error) {
 		"proxyId":                 &graphql.Field{Type: graphql.String},
 		"certificateId":           &graphql.Field{Type: graphql.String},
 		"boundProxyId":            &graphql.Field{Type: graphql.String},
+		"boundDomainId":           &graphql.Field{Type: graphql.String},
 		"referenced":              &graphql.Field{Type: graphql.Boolean},
 		"servable":                &graphql.Field{Type: graphql.Boolean},
 		"deletionRisk":            &graphql.Field{Type: graphql.String, Resolve: certificateDeletionRiskResolve()},
@@ -1152,6 +1153,150 @@ func (server *Server) buildSchema() (graphql.Schema, error) {
 		"totalCount": &graphql.Field{Type: graphql.Int},
 		"pageInfo":   &graphql.Field{Type: pageInfoType},
 	}})
+	domainEntryType := graphql.NewObject(graphql.ObjectConfig{Name: "AdminDomainEntry", Fields: graphql.Fields{
+		"id":       &graphql.Field{Type: graphql.String},
+		"domainId": &graphql.Field{Type: graphql.String},
+		"protocol": &graphql.Field{Type: graphql.String},
+		"bindHost": &graphql.Field{Type: graphql.String},
+		"port":     &graphql.Field{Type: graphql.Int},
+		"status":   &graphql.Field{Type: graphql.String},
+		"createdAt": &graphql.Field{Type: graphql.String, Resolve: func(params graphql.ResolveParams) (interface{}, error) {
+			if value, ok := params.Source.(adminquery.DomainEntryItem); ok {
+				return value.CreatedAt.UTC().Format(time.RFC3339), nil
+			}
+			return "", nil
+		}},
+		"updatedAt": &graphql.Field{Type: graphql.String, Resolve: func(params graphql.ResolveParams) (interface{}, error) {
+			if value, ok := params.Source.(adminquery.DomainEntryItem); ok {
+				return value.UpdatedAt.UTC().Format(time.RFC3339), nil
+			}
+			return "", nil
+		}},
+	}})
+	domainType := graphql.NewObject(graphql.ObjectConfig{Name: "AdminDomain", Fields: graphql.Fields{
+		"id":              &graphql.Field{Type: graphql.String},
+		"userId":          &graphql.Field{Type: graphql.String},
+		"host":            &graphql.Field{Type: graphql.String},
+		"certificateId":   &graphql.Field{Type: graphql.String},
+		"status":          &graphql.Field{Type: graphql.String},
+		"proxyCount":      &graphql.Field{Type: graphql.Int},
+		"httpEntryCount":  &graphql.Field{Type: graphql.Int},
+		"httpsEntryCount": &graphql.Field{Type: graphql.Int},
+		"certificate":     &graphql.Field{Type: managedCertificateType},
+		"entries": &graphql.Field{Type: graphql.NewList(domainEntryType), Resolve: func(params graphql.ResolveParams) (interface{}, error) {
+			switch value := params.Source.(type) {
+			case adminquery.DomainDetail:
+				if value.Entries == nil {
+					return []adminquery.DomainEntryItem{}, nil
+				}
+				return value.Entries, nil
+			default:
+				return []adminquery.DomainEntryItem{}, nil
+			}
+		}},
+		"proxies": &graphql.Field{Type: graphql.NewList(proxyType), Resolve: func(params graphql.ResolveParams) (interface{}, error) {
+			switch value := params.Source.(type) {
+			case adminquery.DomainDetail:
+				if value.Proxies == nil {
+					return []adminquery.ProxyListItem{}, nil
+				}
+				return value.Proxies, nil
+			default:
+				return []adminquery.ProxyListItem{}, nil
+			}
+		}},
+		"createdAt": &graphql.Field{Type: graphql.String, Resolve: func(params graphql.ResolveParams) (interface{}, error) {
+			switch value := params.Source.(type) {
+			case adminquery.DomainListItem:
+				return value.CreatedAt.UTC().Format(time.RFC3339), nil
+			case adminquery.DomainDetail:
+				return value.CreatedAt.UTC().Format(time.RFC3339), nil
+			default:
+				return "", nil
+			}
+		}},
+		"updatedAt": &graphql.Field{Type: graphql.String, Resolve: func(params graphql.ResolveParams) (interface{}, error) {
+			switch value := params.Source.(type) {
+			case adminquery.DomainListItem:
+				return value.UpdatedAt.UTC().Format(time.RFC3339), nil
+			case adminquery.DomainDetail:
+				return value.UpdatedAt.UTC().Format(time.RFC3339), nil
+			default:
+				return "", nil
+			}
+		}},
+	}})
+	domainsPageType := graphql.NewObject(graphql.ObjectConfig{Name: "AdminDomainsPage", Fields: graphql.Fields{
+		"items":      &graphql.Field{Type: graphql.NewList(domainType)},
+		"totalCount": &graphql.Field{Type: graphql.Int},
+		"pageInfo":   &graphql.Field{Type: pageInfoType},
+	}})
+	domainFilterInput := graphql.NewInputObject(graphql.InputObjectConfig{Name: "AdminDomainFilterInput", Fields: graphql.InputObjectConfigFieldMap{
+		"query":  &graphql.InputObjectFieldConfig{Type: graphql.String},
+		"userId": &graphql.InputObjectFieldConfig{Type: graphql.String},
+		"status": &graphql.InputObjectFieldConfig{Type: graphql.String},
+	}})
+	domainsInput := graphql.NewInputObject(graphql.InputObjectConfig{Name: "AdminDomainsInput", Fields: graphql.InputObjectConfigFieldMap{
+		"page":   &graphql.InputObjectFieldConfig{Type: paginationInput},
+		"filter": &graphql.InputObjectFieldConfig{Type: domainFilterInput},
+		"sort":   &graphql.InputObjectFieldConfig{Type: sortInput},
+	}})
+	createDomainInput := graphql.NewInputObject(graphql.InputObjectConfig{Name: "AdminCreateDomainInput", Fields: graphql.InputObjectConfigFieldMap{
+		"userId":        &graphql.InputObjectFieldConfig{Type: graphql.NewNonNull(graphql.String)},
+		"host":          &graphql.InputObjectFieldConfig{Type: graphql.NewNonNull(graphql.String)},
+		"certificateId": &graphql.InputObjectFieldConfig{Type: graphql.String},
+	}})
+	updateDomainInput := graphql.NewInputObject(graphql.InputObjectConfig{Name: "AdminUpdateDomainInput", Fields: graphql.InputObjectConfigFieldMap{
+		"id":            &graphql.InputObjectFieldConfig{Type: graphql.NewNonNull(graphql.String)},
+		"host":          &graphql.InputObjectFieldConfig{Type: graphql.String},
+		"certificateId": &graphql.InputObjectFieldConfig{Type: graphql.String},
+	}})
+	createDomainEntryInput := graphql.NewInputObject(graphql.InputObjectConfig{Name: "AdminCreateDomainEntryInput", Fields: graphql.InputObjectConfigFieldMap{
+		"domainId": &graphql.InputObjectFieldConfig{Type: graphql.NewNonNull(graphql.String)},
+		"protocol": &graphql.InputObjectFieldConfig{Type: graphql.NewNonNull(graphql.String)},
+		"bindHost": &graphql.InputObjectFieldConfig{Type: graphql.String},
+		"port":     &graphql.InputObjectFieldConfig{Type: graphql.NewNonNull(graphql.Int)},
+	}})
+	updateDomainEntryInput := graphql.NewInputObject(graphql.InputObjectConfig{Name: "AdminUpdateDomainEntryInput", Fields: graphql.InputObjectConfigFieldMap{
+		"id":       &graphql.InputObjectFieldConfig{Type: graphql.NewNonNull(graphql.String)},
+		"bindHost": &graphql.InputObjectFieldConfig{Type: graphql.String},
+		"port":     &graphql.InputObjectFieldConfig{Type: graphql.Int},
+		"status":   &graphql.InputObjectFieldConfig{Type: graphql.String},
+	}})
+	bindDomainCertificateInput := graphql.NewInputObject(graphql.InputObjectConfig{Name: "AdminBindDomainCertificateInput", Fields: graphql.InputObjectConfigFieldMap{
+		"domainId":      &graphql.InputObjectFieldConfig{Type: graphql.NewNonNull(graphql.String)},
+		"certificateId": &graphql.InputObjectFieldConfig{Type: graphql.NewNonNull(graphql.String)},
+	}})
+	domainPayloadType := graphql.NewObject(graphql.ObjectConfig{Name: "AdminDomainPayload", Fields: graphql.Fields{
+		"domain": &graphql.Field{Type: domainType},
+		"domainId": &graphql.Field{Type: graphql.String, Resolve: func(params graphql.ResolveParams) (interface{}, error) {
+			switch value := params.Source.(type) {
+			case domainPayload:
+				return value.ID, nil
+			default:
+				return "", nil
+			}
+		}},
+		"status": &graphql.Field{Type: graphql.String, Resolve: func(params graphql.ResolveParams) (interface{}, error) {
+			switch value := params.Source.(type) {
+			case domainPayload:
+				return value.Status, nil
+			default:
+				return "", nil
+			}
+		}},
+	}})
+	domainEntryPayloadType := graphql.NewObject(graphql.ObjectConfig{Name: "AdminDomainEntryPayload", Fields: graphql.Fields{
+		"entry": &graphql.Field{Type: domainEntryType},
+		"entryId": &graphql.Field{Type: graphql.String, Resolve: func(params graphql.ResolveParams) (interface{}, error) {
+			switch value := params.Source.(type) {
+			case domainEntryPayload:
+				return value.ID, nil
+			default:
+				return "", nil
+			}
+		}},
+	}})
 	certificatesPageType := graphql.NewObject(graphql.ObjectConfig{Name: "AdminCertificatesPage", Fields: graphql.Fields{
 		"items":      &graphql.Field{Type: graphql.NewList(managedCertificateType)},
 		"totalCount": &graphql.Field{Type: graphql.Int},
@@ -1260,6 +1405,12 @@ func (server *Server) buildSchema() (graphql.Schema, error) {
 		})},
 		"proxy": &graphql.Field{Type: proxyType, Args: graphql.FieldConfigArgument{"id": &graphql.ArgumentConfig{Type: graphql.NewNonNull(graphql.String)}}, Resolve: server.wrapResolve(func(params graphql.ResolveParams) (interface{}, error) {
 			return server.query.ProxyDetail(params.Context, params.Args["id"].(string))
+		})},
+		"domains": &graphql.Field{Type: domainsPageType, Args: graphql.FieldConfigArgument{"input": &graphql.ArgumentConfig{Type: domainsInput}}, Resolve: server.wrapResolve(func(params graphql.ResolveParams) (interface{}, error) {
+			return server.query.ListDomains(params.Context, domainListInputFromArgs(params.Args))
+		})},
+		"domain": &graphql.Field{Type: domainType, Args: graphql.FieldConfigArgument{"id": &graphql.ArgumentConfig{Type: graphql.NewNonNull(graphql.String)}}, Resolve: server.wrapResolve(func(params graphql.ResolveParams) (interface{}, error) {
+			return server.query.DomainDetail(params.Context, params.Args["id"].(string))
 		})},
 		"proxyEntryOptions": &graphql.Field{Type: proxyEntryOptionsType, Resolve: server.wrapResolve(func(params graphql.ResolveParams) (interface{}, error) {
 			return server.proxyEntryOptions(), nil
@@ -1378,6 +1529,130 @@ func (server *Server) buildSchema() (graphql.Schema, error) {
 				return nil, err
 			}
 			return clientPayload{Client: detail, Credential: rotated.Credential}, nil
+		})},
+		"createDomain": &graphql.Field{Type: domainPayloadType, Args: graphql.FieldConfigArgument{"input": &graphql.ArgumentConfig{Type: graphql.NewNonNull(createDomainInput)}}, Resolve: server.wrapResolve(func(params graphql.ResolveParams) (interface{}, error) {
+			input := mapArg(params.Args, "input")
+			created, err := server.commands.CreateDomain(params.Context, admin.CreateDomainInput{
+				UserID:        stringValue(input, "userId"),
+				Host:          stringValue(input, "host"),
+				CertificateID: stringValue(input, "certificateId"),
+				ActorID:       actorFromContext(params.Context),
+			})
+			if err != nil {
+				return nil, err
+			}
+			detail, err := server.query.DomainDetail(params.Context, created.ID)
+			if err != nil {
+				return nil, err
+			}
+			return domainPayload{Domain: detail, ID: created.ID, Status: string(detail.Status)}, nil
+		})},
+		"updateDomain": &graphql.Field{Type: domainPayloadType, Args: graphql.FieldConfigArgument{"input": &graphql.ArgumentConfig{Type: graphql.NewNonNull(updateDomainInput)}}, Resolve: server.wrapResolve(func(params graphql.ResolveParams) (interface{}, error) {
+			input := mapArg(params.Args, "input")
+			_, certificateIDSet := input["certificateId"]
+			updated, err := server.commands.UpdateDomain(params.Context, admin.UpdateDomainInput{
+				ID:               stringValue(input, "id"),
+				Host:             stringValue(input, "host"),
+				CertificateID:    stringValue(input, "certificateId"),
+				CertificateIDSet: certificateIDSet,
+				ActorID:          actorFromContext(params.Context),
+			})
+			if err != nil {
+				return nil, err
+			}
+			detail, err := server.query.DomainDetail(params.Context, updated.ID)
+			if err != nil {
+				return nil, err
+			}
+			return domainPayload{Domain: detail, ID: updated.ID, Status: string(detail.Status)}, nil
+		})},
+		"enableDomain": &graphql.Field{Type: domainPayloadType, Args: graphql.FieldConfigArgument{"input": &graphql.ArgumentConfig{Type: graphql.NewNonNull(userIDInput)}}, Resolve: server.wrapResolve(func(params graphql.ResolveParams) (interface{}, error) {
+			domainID := stringValue(mapArg(params.Args, "input"), "id")
+			if err := server.commands.EnableDomain(params.Context, domainID, actorFromContext(params.Context)); err != nil {
+				return nil, err
+			}
+			detail, err := server.query.DomainDetail(params.Context, domainID)
+			if err != nil {
+				return nil, err
+			}
+			return domainPayload{Domain: detail, ID: domainID, Status: string(detail.Status)}, nil
+		})},
+		"disableDomain": &graphql.Field{Type: domainPayloadType, Args: graphql.FieldConfigArgument{"input": &graphql.ArgumentConfig{Type: graphql.NewNonNull(userIDInput)}}, Resolve: server.wrapResolve(func(params graphql.ResolveParams) (interface{}, error) {
+			domainID := stringValue(mapArg(params.Args, "input"), "id")
+			if err := server.commands.DisableDomain(params.Context, domainID, actorFromContext(params.Context)); err != nil {
+				return nil, err
+			}
+			detail, err := server.query.DomainDetail(params.Context, domainID)
+			if err != nil {
+				return nil, err
+			}
+			return domainPayload{Domain: detail, ID: domainID, Status: string(detail.Status)}, nil
+		})},
+		"deleteDomain": &graphql.Field{Type: domainPayloadType, Args: graphql.FieldConfigArgument{"input": &graphql.ArgumentConfig{Type: graphql.NewNonNull(userIDInput)}}, Resolve: server.wrapResolve(func(params graphql.ResolveParams) (interface{}, error) {
+			domainID := stringValue(mapArg(params.Args, "input"), "id")
+			if err := server.commands.DeleteDomain(params.Context, domainID, actorFromContext(params.Context)); err != nil {
+				return nil, err
+			}
+			return domainPayload{ID: domainID, Status: "deleted"}, nil
+		})},
+		"createDomainEntry": &graphql.Field{Type: domainEntryPayloadType, Args: graphql.FieldConfigArgument{"input": &graphql.ArgumentConfig{Type: graphql.NewNonNull(createDomainEntryInput)}}, Resolve: server.wrapResolve(func(params graphql.ResolveParams) (interface{}, error) {
+			input := mapArg(params.Args, "input")
+			created, err := server.commands.CreateDomainEntry(params.Context, admin.CreateDomainEntryInput{
+				DomainID: stringValue(input, "domainId"),
+				Protocol: domain.DomainEntryProtocol(stringValue(input, "protocol")),
+				BindHost: stringValue(input, "bindHost"),
+				Port:     intValue(input, "port"),
+				ActorID:  actorFromContext(params.Context),
+			})
+			if err != nil {
+				return nil, err
+			}
+			return domainEntryPayload{Entry: adminquery.DomainEntryItem{ID: created.ID, DomainID: created.DomainID, Protocol: created.Protocol, BindHost: created.BindHost, Port: created.Port, Status: created.Status, CreatedAt: created.CreatedAt, UpdatedAt: created.UpdatedAt}, ID: created.ID}, nil
+		})},
+		"updateDomainEntry": &graphql.Field{Type: domainEntryPayloadType, Args: graphql.FieldConfigArgument{"input": &graphql.ArgumentConfig{Type: graphql.NewNonNull(updateDomainEntryInput)}}, Resolve: server.wrapResolve(func(params graphql.ResolveParams) (interface{}, error) {
+			input := mapArg(params.Args, "input")
+			updated, err := server.commands.UpdateDomainEntry(params.Context, admin.UpdateDomainEntryInput{
+				ID:       stringValue(input, "id"),
+				BindHost: stringValue(input, "bindHost"),
+				Port:     intValue(input, "port"),
+				Status:   domain.DomainEntryStatus(stringValue(input, "status")),
+				ActorID:  actorFromContext(params.Context),
+			})
+			if err != nil {
+				return nil, err
+			}
+			return domainEntryPayload{Entry: adminquery.DomainEntryItem{ID: updated.ID, DomainID: updated.DomainID, Protocol: updated.Protocol, BindHost: updated.BindHost, Port: updated.Port, Status: updated.Status, CreatedAt: updated.CreatedAt, UpdatedAt: updated.UpdatedAt}, ID: updated.ID}, nil
+		})},
+		"deleteDomainEntry": &graphql.Field{Type: domainEntryPayloadType, Args: graphql.FieldConfigArgument{"input": &graphql.ArgumentConfig{Type: graphql.NewNonNull(userIDInput)}}, Resolve: server.wrapResolve(func(params graphql.ResolveParams) (interface{}, error) {
+			entryID := stringValue(mapArg(params.Args, "input"), "id")
+			if err := server.commands.DeleteDomainEntry(params.Context, entryID, actorFromContext(params.Context)); err != nil {
+				return nil, err
+			}
+			return domainEntryPayload{ID: entryID}, nil
+		})},
+		"bindDomainCertificate": &graphql.Field{Type: domainPayloadType, Args: graphql.FieldConfigArgument{"input": &graphql.ArgumentConfig{Type: graphql.NewNonNull(bindDomainCertificateInput)}}, Resolve: server.wrapResolve(func(params graphql.ResolveParams) (interface{}, error) {
+			input := mapArg(params.Args, "input")
+			updated, err := server.commands.BindDomainCertificate(params.Context, stringValue(input, "domainId"), stringValue(input, "certificateId"), actorFromContext(params.Context))
+			if err != nil {
+				return nil, err
+			}
+			detail, err := server.query.DomainDetail(params.Context, updated.ID)
+			if err != nil {
+				return nil, err
+			}
+			return domainPayload{Domain: detail, ID: updated.ID, Status: string(detail.Status)}, nil
+		})},
+		"unbindDomainCertificate": &graphql.Field{Type: domainPayloadType, Args: graphql.FieldConfigArgument{"input": &graphql.ArgumentConfig{Type: graphql.NewNonNull(userIDInput)}}, Resolve: server.wrapResolve(func(params graphql.ResolveParams) (interface{}, error) {
+			domainID := stringValue(mapArg(params.Args, "input"), "id")
+			updated, err := server.commands.UnbindDomainCertificate(params.Context, domainID, actorFromContext(params.Context))
+			if err != nil {
+				return nil, err
+			}
+			detail, err := server.query.DomainDetail(params.Context, updated.ID)
+			if err != nil {
+				return nil, err
+			}
+			return domainPayload{Domain: detail, ID: updated.ID, Status: string(detail.Status)}, nil
 		})},
 		"createProxy": &graphql.Field{Type: proxyPayloadType, Args: graphql.FieldConfigArgument{"input": &graphql.ArgumentConfig{Type: graphql.NewNonNull(createProxyInput)}}, Resolve: server.wrapResolve(func(params graphql.ResolveParams) (interface{}, error) {
 			created, err := server.commands.CreateProxy(params.Context, createProxyInputFromArgs(mapArg(params.Args, "input"), actorFromContext(params.Context)))
@@ -1863,7 +2138,26 @@ func localIPv4Hosts() []string {
 
 func createProxyInputFromArgs(args map[string]interface{}, actor string) admin.CreateProxyInput {
 	config := mapValue(args, "config")
-	return admin.CreateProxyInput{UserID: stringValue(args, "userId"), ClientID: stringValue(args, "clientId"), Name: stringValue(args, "name"), Type: domain.ProxyType(stringValue(args, "type")), EntryBindHost: stringValue(config, "entryBindHost"), EntryHost: stringValue(config, "entryHost"), EntryPort: intValue(config, "entryPort"), TargetHost: stringValue(config, "targetHost"), TargetPort: intValue(config, "targetPort"), CertFile: stringValue(config, "certFile"), KeyFile: stringValue(config, "keyFile"), CertificateID: stringValue(config, "certificateId"), Description: stringValue(args, "description"), ActorID: actor}
+	return admin.CreateProxyInput{
+		UserID:             stringValue(args, "userId"),
+		ClientID:           stringValue(args, "clientId"),
+		Name:               stringValue(args, "name"),
+		Type:               domain.ProxyType(stringValue(args, "type")),
+		DomainID:           stringValue(config, "domainId"),
+		PathPrefix:         stringValue(config, "pathPrefix"),
+		StripPrefix:        boolValue(config, "stripPrefix"),
+		UpstreamPathPrefix: stringValue(config, "upstreamPathPrefix"),
+		EntryBindHost:      stringValue(config, "entryBindHost"),
+		EntryHost:          stringValue(config, "entryHost"),
+		EntryPort:          intValue(config, "entryPort"),
+		TargetHost:         stringValue(config, "targetHost"),
+		TargetPort:         intValue(config, "targetPort"),
+		CertFile:           stringValue(config, "certFile"),
+		KeyFile:            stringValue(config, "keyFile"),
+		CertificateID:      stringValue(config, "certificateId"),
+		Description:        stringValue(args, "description"),
+		ActorID:            actor,
+	}
 }
 
 func createClientJoinInputFromArgs(args map[string]interface{}, actor string) admin.CreateClientJoinInput {
@@ -1890,7 +2184,55 @@ func deploymentRelativePath(path string) string {
 func updateProxyInputFromArgs(args map[string]interface{}, actor string) admin.UpdateProxyInput {
 	config := mapValue(args, "config")
 	_, certificateIDSet := config["certificateId"]
-	return admin.UpdateProxyInput{ID: stringValue(args, "id"), Type: domain.ProxyType(stringValue(args, "type")), Name: stringValue(args, "name"), EntryBindHost: stringValue(config, "entryBindHost"), EntryHost: stringValue(config, "entryHost"), EntryPort: intValue(config, "entryPort"), TargetHost: stringValue(config, "targetHost"), TargetPort: intValue(config, "targetPort"), CertFile: stringValue(config, "certFile"), KeyFile: stringValue(config, "keyFile"), CertificateID: stringValue(config, "certificateId"), CertificateIDSet: certificateIDSet, Description: stringValue(args, "description"), ActorID: actor}
+	_, domainIDSet := config["domainId"]
+	_, pathPrefixSet := config["pathPrefix"]
+	_, stripPrefixSet := config["stripPrefix"]
+	_, upstreamPathPrefixSet := config["upstreamPathPrefix"]
+	return admin.UpdateProxyInput{
+		ID:                    stringValue(args, "id"),
+		Type:                  domain.ProxyType(stringValue(args, "type")),
+		Name:                  stringValue(args, "name"),
+		DomainID:              stringValue(config, "domainId"),
+		DomainIDSet:           domainIDSet,
+		PathPrefix:            stringValue(config, "pathPrefix"),
+		PathPrefixSet:         pathPrefixSet,
+		StripPrefix:           boolValue(config, "stripPrefix"),
+		StripPrefixSet:        stripPrefixSet,
+		UpstreamPathPrefix:    stringValue(config, "upstreamPathPrefix"),
+		UpstreamPathPrefixSet: upstreamPathPrefixSet,
+		EntryBindHost:         stringValue(config, "entryBindHost"),
+		EntryHost:             stringValue(config, "entryHost"),
+		EntryPort:             intValue(config, "entryPort"),
+		TargetHost:            stringValue(config, "targetHost"),
+		TargetPort:            intValue(config, "targetPort"),
+		CertFile:              stringValue(config, "certFile"),
+		KeyFile:               stringValue(config, "keyFile"),
+		CertificateID:         stringValue(config, "certificateId"),
+		CertificateIDSet:      certificateIDSet,
+		Description:           stringValue(args, "description"),
+		ActorID:               actor,
+	}
+}
+
+type domainPayload struct {
+	Domain adminquery.DomainDetail
+	ID     string
+	Status string
+}
+
+type domainEntryPayload struct {
+	Entry adminquery.DomainEntryItem
+	ID    string
+}
+
+func domainListInputFromArgs(args map[string]interface{}) adminquery.DomainListInput {
+	input := mapArg(args, "input")
+	filter := mapValue(input, "filter")
+	return adminquery.DomainListInput{
+		Page:   pageInput(mapValue(input, "page")),
+		Filter: adminquery.DomainFilter{Query: stringValue(filter, "query"), UserID: stringValue(filter, "userId"), Status: stringValue(filter, "status")},
+		Sort:   sortInput(mapValue(input, "sort")),
+	}
 }
 
 func certificateMutationInputFromArgs(args map[string]interface{}, actor string) admin.CertificateInput {

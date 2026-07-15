@@ -115,6 +115,30 @@ function createProxyFetchMock(certificates: ManagedCertificate[]) {
     if (op === 'Proxies') {
       return graphQL({ data: { proxies: { items: [], totalCount: 0, pageInfo } } });
     }
+    if (op === 'Domains') {
+      return graphQL({
+        data: {
+          domains: {
+            items: [
+              {
+                id: 'domain-1',
+                userId: 'user-1',
+                host: 'app.example.com',
+                certificateId: '',
+                status: 'enabled',
+                proxyCount: 0,
+                httpEntryCount: 1,
+                httpsEntryCount: 1,
+                createdAt: '2026-05-17T00:00:00Z',
+                updatedAt: '2026-05-17T00:00:00Z',
+              },
+            ],
+            totalCount: 1,
+            pageInfo: { ...pageInfo, totalCount: 1 },
+          },
+        },
+      });
+    }
     if (op === 'ProxyEntryOptions') {
       return graphQL({
         data: {
@@ -181,137 +205,97 @@ function storedDraftIds(): string[] {
   return ids;
 }
 
-describe('proxy form ⇄ certificate creation flow', () => {
-  it('saves a draft and navigates to the certificate create link when clicking 创建证书 on the HTTPS create form', async () => {
-    vi.stubGlobal('fetch', createProxyFetchMock([]));
+describe('proxy form domain-first creation', () => {
+  it('creates a web path proxy with domain and path prefix', async () => {
+    const fetchMock = createProxyFetchMock([]);
+    vi.stubGlobal('fetch', fetchMock);
     renderProxies(['/proxies']);
 
     await screen.findByRole('heading', { name: 'Proxies' });
     await userEvent.click(screen.getByRole('button', { name: 'Create proxy' }));
 
     const dialog = await screen.findByRole('dialog', { name: 'Create proxy' });
-    // 切换到 HTTPS 以暴露证书选择控件与「创建证书」入口。
-    await userEvent.selectOptions(within(dialog).getByLabelText('Type'), 'https');
+    expect(within(dialog).getByLabelText('Type')).toHaveValue('web');
     await userEvent.selectOptions(within(dialog).getByLabelText('User'), 'user-1');
     await userEvent.selectOptions(within(dialog).getByLabelText('Client'), 'client-1');
-    await userEvent.type(within(dialog).getByLabelText('Name'), 'secure-web');
-    await userEvent.type(within(dialog).getByLabelText('SNI domain'), 'app.example.com');
+    await userEvent.type(within(dialog).getByLabelText('Name'), 'api-path');
+    await waitFor(() => expect(within(dialog).getByLabelText('Domain')).not.toBeDisabled());
+    await userEvent.selectOptions(within(dialog).getByLabelText('Domain'), 'domain-1');
+    await userEvent.type(within(dialog).getByLabelText('Target host'), '127.0.0.1');
+    await userEvent.type(within(dialog).getByLabelText('Target port'), '9000');
+    await userEvent.click(within(dialog).getByRole('button', { name: 'Create proxy' }));
 
-    expect(storedDraftIds()).toHaveLength(0);
-    await userEvent.click(within(dialog).getByRole('button', { name: '创建证书' }));
-
-    // 草稿已写入 sessionStorage。
-    const draftIds = storedDraftIds();
-    expect(draftIds).toHaveLength(1);
-
-    // 导航目标是证书创建链接，携带 create=1 / draftId / host / returnTo。
-    await waitFor(() => expect(screen.getByText('Certificates route stub')).toBeInTheDocument());
-    const url = locationUrl();
-    expect(url.startsWith('/certificates?')).toBe(true);
-    const params = new URLSearchParams(url.slice(url.indexOf('?')));
-    expect(params.get('create')).toBe('1');
-    expect(params.get('draftId')).toBe(draftIds[0]);
-    expect(params.get('host')).toBe('app.example.com');
-    // returnTo 指回 proxies 创建流程，便于成功后返回。
-    expect(params.get('returnTo')).toContain('/proxies');
-    expect(params.get('returnTo')).toContain('create=1');
-  });
-
-  it('restores the saved draft and auto-selects the new certificate when returning with createdCertificateId + draftId', async () => {
-    const newCert = makeCert({
-      certificateId: 'cert-new',
-      proxyId: 'proxy-pending',
-      host: 'app.example.com',
-      hostnames: ['app.example.com'],
-      providerName: 'ACME DNS-01',
-    });
-    vi.stubGlobal('fetch', createProxyFetchMock([newCert]));
-
-    // 预置一份与点击「创建证书」时一致的草稿快照。
-    const draftId = saveProxyDraft({
-      userId: 'user-1',
-      clientId: 'client-1',
-      name: 'secure-web',
-      type: 'https',
-      description: 'restored draft',
-      entryBindHost: '',
-      entryHost: 'app.example.com',
-      entryPort: '8443',
-      targetHost: '127.0.0.1',
-      targetPort: '9000',
-      certificateId: '',
-    });
-
-    renderProxies([`/proxies?create=1&createdCertificateId=cert-new&draftId=${draftId}`]);
-
-    // 返回时自动打开创建对话框并完成草稿还原。
-    const dialog = await screen.findByRole('dialog', { name: 'Create proxy' });
-
-    // 先前字段被还原。
-    expect(within(dialog).getByLabelText('Name')).toHaveValue('secure-web');
-    expect(within(dialog).getByLabelText('Entry port')).toHaveValue('8443');
-    expect(within(dialog).getByLabelText('SNI domain')).toHaveValue('app.example.com');
-    expect(within(dialog).getByLabelText('Target host')).toHaveValue('127.0.0.1');
-    expect(within(dialog).getByLabelText('Target port')).toHaveValue('9000');
-
-    // 新证书被自动选中（证书选择控件显示新证书 id 为当前值）。
-    await waitFor(() => expect(within(dialog).getByLabelText('证书')).toHaveValue('cert-new'));
-    expect(within(dialog).getByRole('option', { name: /app\.example\.com/ })).toBeInTheDocument();
-
-    // 没有降级提示横幅（草稿成功还原）。
-    expect(within(dialog).queryByText(/表单草稿已失效/)).not.toBeInTheDocument();
-
-    // 消费后清理：草稿与 query param 都被移除（避免刷新重复触发）。
-    expect(storedDraftIds()).toHaveLength(0);
     await waitFor(() => {
-      const params = new URLSearchParams(locationUrl().slice(locationUrl().indexOf('?')));
-      expect(params.get('createdCertificateId')).toBeNull();
-      expect(params.get('draftId')).toBeNull();
+      const bodies = fetchMock.mock.calls
+        .filter((call) => String(call[0]).endsWith('/api/admin/graphql'))
+        .map((call) => String(call[1]?.body ?? ''));
+      expect(bodies.some((body) => body.includes('"domainId":"domain-1"') && body.includes('"type":"web"'))).toBe(true);
     });
-
-    // 回归保护：清理 query param 触发的 effect 二次运行 + 后续用户交互都不得清空已还原表单。
-    await userEvent.type(within(dialog).getByLabelText('Description'), '!');
-    expect(within(dialog).getByLabelText('Name')).toHaveValue('secure-web');
-    expect(within(dialog).getByLabelText('SNI domain')).toHaveValue('app.example.com');
-    expect(within(dialog).getByLabelText('证书')).toHaveValue('cert-new');
-    expect(within(dialog).getByLabelText('Type')).toHaveValue('https');
   });
 
-  it('degrades safely with a banner when the draft is missing but still preselects the new certificate', async () => {
-    const newCert = makeCert({
-      certificateId: 'cert-orphan',
-      proxyId: 'proxy-orphan',
-      host: 'late.example.com',
-      hostnames: ['late.example.com'],
-    });
-    vi.stubGlobal('fetch', createProxyFetchMock([newCert]));
-
-    // 不预置草稿，draftId 指向一个不存在的草稿（模拟过期/丢失）。
-    renderProxies(['/proxies?create=1&createdCertificateId=cert-orphan&draftId=missing-draft-id']);
-
-    const dialog = await screen.findByRole('dialog', { name: 'Create proxy' });
-
-    // 安全降级横幅出现（草稿丢失，但不丢失整个流程）。
-    expect(within(dialog).getByText(/表单草稿已失效/)).toBeInTheDocument();
-
-    // 类型回退为 https 以展示证书选择控件；草稿丢失后域名为空，
-    // 证书选择控件因缺少 SNI 域名而禁用（提示先填域名），等待用户补填。
-    expect(within(dialog).getByLabelText('Type')).toHaveValue('https');
-    // 证书选择控件因缺少 SNI 域名而禁用（hint 提示先填域名）。
-    const certSelect = dialog.querySelector('.field-stack select') as HTMLSelectElement;
-    expect(certSelect).toBeTruthy();
-    expect(certSelect).toBeDisabled();
-    expect(within(dialog).getByText(/请先填写 SNI 域名以匹配可用证书/)).toBeInTheDocument();
-
-    // 新建证书 ID 已被表单预选（写入 config.certificateId）。由于域名为空、选择控件禁用，
-    // 它体现为「当前选择，已不可用」的占位项，待证书列表加载后出现，且 select 选中该证书。
-    await waitFor(() =>
-      expect(within(certSelect).getByRole('option', { name: /late\.example\.com.*已不可用/ })).toBeInTheDocument(),
+  it('offers create domain guidance when no domains exist for the user', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.endsWith('/api/admin/session')) {
+          return new Response(JSON.stringify({ authenticated: true, username: 'admin', csrfToken: 'csrf', pollIntervalSeconds: 5 }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+        const body = JSON.parse(String(init?.body ?? '{}')) as { operationName?: string };
+        if (body.operationName === 'Domains') {
+          return new Response(JSON.stringify({ data: { domains: { items: [], totalCount: 0, pageInfo } } }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+        if (body.operationName === 'Users') {
+          return new Response(JSON.stringify({ data: { users: { items: users, totalCount: 1, pageInfo: { ...pageInfo, totalCount: 1 } } } }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+        if (body.operationName === 'Clients') {
+          return new Response(JSON.stringify({ data: { clients: { items: [client('client-1', 'user-1', 'home')], totalCount: 1, pageInfo: { ...pageInfo, totalCount: 1 } } } }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+        if (body.operationName === 'Proxies') {
+          return new Response(JSON.stringify({ data: { proxies: { items: [], totalCount: 0, pageInfo } } }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          });
+        }
+        if (body.operationName === 'ProxyEntryOptions') {
+          return new Response(
+            JSON.stringify({
+              data: {
+                proxyEntryOptions: {
+                  tcpDefaultBindHost: '127.0.0.1',
+                  httpDefaultBindHost: '127.0.0.1',
+                  httpDefaultPort: 80,
+                  httpsDefaultBindHost: '127.0.0.1',
+                  httpsDefaultPort: 443,
+                  hosts: [{ value: '', label: 'Default listener host', isDefault: true }],
+                },
+              },
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } },
+          );
+        }
+        return new Response(JSON.stringify({ data: {} }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }),
     );
-    expect(certSelect).toHaveValue('cert-orphan');
 
-    // 草稿缺失时也不残留任何草稿。
-    expect(storedDraftIds()).toHaveLength(0);
+    renderProxies(['/proxies']);
+    await userEvent.click(await screen.findByRole('button', { name: 'Create proxy' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Create proxy' });
+    await userEvent.selectOptions(within(dialog).getByLabelText('User'), 'user-1');
+    expect(await within(dialog).findByText(/No enabled domains for this user/)).toBeInTheDocument();
+    expect(within(dialog).getByRole('button', { name: 'Create a domain first' })).toBeInTheDocument();
   });
 });
 

@@ -264,10 +264,10 @@ Web Proxy 应使用协议无关的类型（例如 `web`）；HTTP/HTTPS 由 Doma
 - [x] 迁移 Proxy 级访问认证并处理 Cookie/Token 失效
 - [x] 调整 listener reconcile 由 DomainEntry 驱动
 - [x] 更新 GraphQL、Admin service/query 和结构化错误（兼容期仍保留 routes 字段空列表）
-- [ ] 新增 Domain UI，重构 Proxy/Certificate UI
-- [ ] 迁移或移除 ProxyRoute API、生成代码与 UI
-- [x] 增加单元、SQLite、runtime、Admin、E2E 测试（前端测试待 UI 完成后补）
-- [ ] 同步 requirements、architecture、operations 与 worklog
+- [x] 新增 Domain UI，重构 Proxy/Certificate UI
+- [ ] 迁移或移除 ProxyRoute API、生成代码与 UI（UI 已移除 route 编辑；GraphQL route mutations 仍兼容）
+- [x] 增加单元、SQLite、runtime、Admin、前端与 E2E 测试
+- [ ] 同步 requirements、architecture、operations 与 worklog（Admin UI Domain 文档已补；operations 迁移说明仍待）
 - [ ] 确认迁移稳定后清理旧字段、旧表和兼容回退
 
 ## 验收条件

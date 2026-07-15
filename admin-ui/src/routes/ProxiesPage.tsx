@@ -1,10 +1,9 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { LinkOutlined, PlusOutlined, ReloadOutlined, ThunderboltOutlined } from '@ant-design/icons';
-import { Button } from 'antd';
+import { Button, Switch } from 'antd';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { Dialog } from '../components/Dialog';
-import { CertificateSelectField } from '../components/CertificateSelectField';
 import { SelectField, TextAreaField, TextField } from '../components/FormField';
 import { EmptyState, ErrorState, FilteredEmptyState, PageLoading, ValidationBanner } from '../components/PageStates';
 import { ConfirmButton } from '../components/ConfirmButton';
@@ -15,32 +14,27 @@ import {
   mutateDisableProxy,
   mutateEnableProxy,
   queryClients,
+  queryDomains,
   queryProxyEntryOptions,
   queryProxies,
   queryUsers,
   type ProxyFilter,
 } from '../lib/admin-graphql';
-import { isApiError, type Client, type ProxyEntryHostOption, type ProxyRecord, type User } from '../lib/contracts';
-import {
-  buildCertificateCreateLink,
-  clearProxyDraft,
-  loadProxyDraft,
-  saveProxyDraft,
-  CREATED_CERT_PARAM,
-  DRAFT_ID_PARAM,
-} from '../lib/proxy-draft';
+import { isApiError, type Client, type DomainRecord, type ProxyEntryHostOption, type ProxyRecord, type User } from '../lib/contracts';
 import { formatBytes } from '../lib/format';
 import { useSession } from '../session';
-import { PageHeader, Pagination, StatusBadge, Timestamp } from './shared';
+import { PageHeader, Pagination, StatusBadge } from './shared';
 
-// ProxyFormDraft：proxy 创建/编辑表单跳转「创建证书」时的草稿快照。
-// 必须不含任何 secret material（私钥/token），proxy 表单本身也没有这类字段。
 export type ProxyFormDraft = {
   userId: string;
   clientId: string;
   name: string;
   type: string;
   description: string;
+  domainId: string;
+  pathPrefix: string;
+  stripPrefix: boolean;
+  upstreamPathPrefix: string;
   entryBindHost: string;
   entryHost: string;
   entryPort: string;
@@ -56,8 +50,12 @@ function defaultProxyForm(userId = '', clientId = ''): ProxyFormDraft {
     userId,
     clientId,
     name: '',
-    type: 'http',
+    type: 'web',
     description: '',
+    domainId: '',
+    pathPrefix: '/',
+    stripPrefix: false,
+    upstreamPathPrefix: '/',
     entryBindHost: '',
     entryHost: '',
     entryPort: '',
@@ -67,17 +65,20 @@ function defaultProxyForm(userId = '', clientId = ''): ProxyFormDraft {
   };
 }
 
-function isRouteProxy(type: string) {
-  return type === 'http' || type === 'https';
+function isWebProxy(type: string) {
+  return type === 'web' || type === 'http' || type === 'https';
 }
 
-function isHTTPSProxy(type: string) {
-  return type === 'https';
+function isTCPUDP(type: string) {
+  return type === 'tcp' || type === 'udp';
 }
 
-// ProxyConfigSubmit 与 admin-graphql 的 ProxyConfigInput 结构一致，外加 certificateId 绑定字段。
-// （ProxyConfigInput 未导出；此处的形状与之兼容，可直接作为 config 传入 mutate*Proxy。）
+// ProxyConfigSubmit 与 admin-graphql 的 ProxyConfigInput 结构一致。
 type ProxyConfigSubmit = {
+  domainId?: string;
+  pathPrefix?: string;
+  stripPrefix?: boolean;
+  upstreamPathPrefix?: string;
   entryBindHost?: string;
   entryHost?: string;
   entryPort?: number;
@@ -86,24 +87,35 @@ type ProxyConfigSubmit = {
   certificateId?: string;
 };
 
-// buildProxyConfig 由表单组装提交用的 config（含 certificateId 绑定）。
-// 注意：不再从主表单提交 certFile/keyFile（证书改由 certificateId 绑定）。
 function buildProxyConfig(form: ProxyFormDraft): ProxyConfigSubmit {
+  if (isWebProxy(form.type)) {
+    return {
+      domainId: form.domainId || undefined,
+      pathPrefix: form.pathPrefix || '/',
+      stripPrefix: form.stripPrefix,
+      upstreamPathPrefix: form.upstreamPathPrefix || '/',
+      targetHost: form.targetHost || undefined,
+      targetPort: form.targetPort ? Number(form.targetPort) : undefined,
+    };
+  }
   return {
     entryBindHost: form.entryBindHost || undefined,
     entryHost: form.entryHost || undefined,
     entryPort: form.entryPort ? Number(form.entryPort) : undefined,
     targetHost: form.targetHost || undefined,
     targetPort: form.targetPort ? Number(form.targetPort) : undefined,
-    certificateId: isHTTPSProxy(form.type) ? form.certificateId : undefined,
   };
 }
 
 function proxyEntryLabel(proxy: ProxyRecord) {
+  if (isWebProxy(proxy.type)) {
+    const host = proxy.config.entryHost || proxy.config.domainId || 'domain';
+    const path = proxy.config.pathPrefix || '/';
+    return `${host}${path}`;
+  }
   const bindHost = proxy.config.entryBindHost || 'default';
   const entryPort = proxy.config.entryPort ?? 'default';
-  const routeHost = isRouteProxy(proxy.type) ? proxy.config.entryHost || 'domain pending' : '';
-  return routeHost ? `${bindHost}:${entryPort} / ${routeHost}` : `${bindHost}:${entryPort}`;
+  return `${bindHost}:${entryPort}`;
 }
 
 function hostOptionsWithCurrent(options: ProxyEntryHostOption[], current: string) {
@@ -178,64 +190,11 @@ export function ProxiesPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const [page, setPage] = useState(1);
   const [filter, setFilter] = useState<ProxyFilter>(defaultFilter);
-  const [showDialog, setShowDialog] = useState(false);
+  const [showDialog, setShowDialog] = useState(searchParams.get('create') === '1');
   const [formError, setFormError] = useState<string>();
   const [actionError, setActionError] = useState<string>();
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>();
-  const [draftNotice, setDraftNotice] = useState<string>();
-  const [form, setForm] = useState(defaultProxyForm());
-  // 标记「还原草稿后清理 query param 触发的二次运行」，避免把已还原表单重置为默认值。
-  const justRestoredRef = useRef(false);
-
-  useEffect(() => {
-    if (searchParams.get('create') !== '1') {
-      // 对话框关闭（create 参数移除）后复位，确保下次重新打开按全新创建处理。
-      justRestoredRef.current = false;
-      return;
-    }
-    // 从「创建证书」流程返回：还原草稿并自动选中新建证书（任务 5.5 / 5.6）。
-    const createdCertificateId = searchParams.get(CREATED_CERT_PARAM);
-    const draftId = searchParams.get(DRAFT_ID_PARAM);
-    if (createdCertificateId) {
-      const draft = loadProxyDraft<ProxyFormDraft>(draftId);
-      if (draft) {
-        setForm({ ...draft, type: 'https', certificateId: createdCertificateId });
-        setDraftNotice(undefined);
-      } else {
-        // 草稿缺失/过期/解析失败：安全降级——仍打开对话框并预选新证书，避免丢失全部工作。
-        setForm({
-          ...defaultProxyForm(searchParams.get('userId') ?? '', searchParams.get('clientId') ?? ''),
-          type: 'https',
-          certificateId: createdCertificateId,
-        });
-        setDraftNotice('表单草稿已失效，请重新填写；已为你选中新创建的证书。');
-      }
-      clearProxyDraft(draftId);
-      setFieldErrors(undefined);
-      setFormError(undefined);
-      setShowDialog(true);
-      // 标记本次为草稿还原；清理已消费的 query param 会再次触发本 effect。
-      justRestoredRef.current = true;
-      // 清理已消费的 query param，避免刷新重复触发还原。
-      setSearchParams((current) => {
-        const next = new URLSearchParams(current);
-        next.delete(CREATED_CERT_PARAM);
-        next.delete(DRAFT_ID_PARAM);
-        return next;
-      }, { replace: true });
-      return;
-    }
-    if (justRestoredRef.current) {
-      // 这是上一步清理 param 触发的二次运行：保留已还原的表单，不做默认重置。
-      justRestoredRef.current = false;
-      return;
-    }
-    setForm(defaultProxyForm(searchParams.get('userId') ?? '', searchParams.get('clientId') ?? ''));
-    setDraftNotice(undefined);
-    setFieldErrors(undefined);
-    setFormError(undefined);
-    setShowDialog(true);
-  }, [searchParams, setSearchParams]);
+  const [form, setForm] = useState(defaultProxyForm(searchParams.get('userId') ?? '', searchParams.get('clientId') ?? ''));
 
   const query = useAuthedQuery({
     queryKey: ['proxies', page, filter],
@@ -253,6 +212,15 @@ export function ProxiesPage() {
         page: { page: 1, pageSize: 100 },
         sort: { field: 'name', direction: 'asc' },
         filter: form.userId ? { userId: form.userId } : {},
+      }),
+  });
+  const domainsQuery = useAuthedQuery({
+    queryKey: ['proxy-domain-options', form.userId],
+    queryFn: () =>
+      queryDomains({
+        page: { page: 1, pageSize: 100 },
+        sort: { field: 'host', direction: 'asc' },
+        filter: form.userId ? { userId: form.userId, status: 'enabled' } : { status: 'enabled' },
       }),
   });
   const entryOptionsQuery = useAuthedQuery({
@@ -315,10 +283,10 @@ export function ProxiesPage() {
     },
   });
 
-  const usesRouteHost = useMemo(() => isRouteProxy(form.type), [form.type]);
-  const usesCertificates = useMemo(() => isHTTPSProxy(form.type), [form.type]);
+  const usesWeb = useMemo(() => isWebProxy(form.type), [form.type]);
   const users = usersQuery.data?.items ?? [];
   const clients = clientsQuery.data?.items ?? [];
+  const domains = (domainsQuery.data?.items ?? []).filter((domain: DomainRecord) => !form.userId || domain.userId === form.userId);
   const hostOptions = hostOptionsWithCurrent(entryOptionsQuery.data?.hosts ?? [{ value: '', label: 'Default listener host', isDefault: true }], form.entryBindHost);
   const clientSelectionMismatch = Boolean(form.clientId && clientsQuery.data && !clients.some((client) => client.id === form.clientId));
 
@@ -326,13 +294,11 @@ export function ProxiesPage() {
     setForm(defaultProxyForm());
     setFieldErrors(undefined);
     setFormError(undefined);
-    setDraftNotice(undefined);
     setShowDialog(true);
   };
 
   const closeCreateDialog = () => {
     setShowDialog(false);
-    setDraftNotice(undefined);
     setSearchParams((current) => {
       const next = new URLSearchParams(current);
       next.delete('create');
@@ -343,22 +309,7 @@ export function ProxiesPage() {
   };
 
   const updateFormUser = (userId: string) => {
-    setForm((current) => ({ ...current, userId, clientId: '' }));
-  };
-
-  // handleCreateCertificate：保存当前表单草稿（不含 secret material）并跳转到证书创建流程。
-  // 返回路径携带 user/client 上下文，确保返回时重新打开创建对话框（其余字段由草稿还原）。
-  const handleCreateCertificate = () => {
-    const draftId = saveProxyDraft<ProxyFormDraft>({ ...form });
-    const returnParams = new URLSearchParams({ create: '1' });
-    if (form.userId) {
-      returnParams.set('userId', form.userId);
-    }
-    if (form.clientId) {
-      returnParams.set('clientId', form.clientId);
-    }
-    const returnTo = `/proxies?${returnParams.toString()}`;
-    navigate(buildCertificateCreateLink({ returnTo, draftId, host: form.entryHost || undefined }));
+    setForm((current) => ({ ...current, userId, clientId: '', domainId: '' }));
   };
 
   if (query.isLoading) {
@@ -379,11 +330,14 @@ export function ProxiesPage() {
     <section className="page-section">
       <PageHeader
         title="Proxies"
-        description="Manage TCP, UDP, HTTP, and HTTPS proxy resources."
+        description="TCP/UDP listeners and web path proxies. Prefer creating web paths from a Domain so host, TLS, and paths stay consistent."
         actions={
           <>
             <Button type="default" icon={<ReloadOutlined aria-hidden="true" />} onClick={() => query.refetch()}>
               Refresh
+            </Button>
+            <Button type="default" onClick={() => navigate('/domains?create=1')}>
+              Create domain
             </Button>
             <Button type="primary" icon={<PlusOutlined aria-hidden="true" />} onClick={openCreateDialog}>
               Create proxy
@@ -399,10 +353,11 @@ export function ProxiesPage() {
         <TextField label="Client ID" value={filter.clientId ?? ''} onChange={(event) => setFilter((current) => ({ ...current, clientId: event.target.value }))} />
         <SelectField label="Type" value={filter.type ?? ''} onChange={(event) => setFilter((current) => ({ ...current, type: event.target.value }))}>
           <option value="">All</option>
+          <option value="web">Web path</option>
           <option value="tcp">TCP</option>
           <option value="udp">UDP</option>
-          <option value="http">HTTP</option>
-          <option value="https">HTTPS</option>
+          <option value="http">HTTP (legacy)</option>
+          <option value="https">HTTPS (legacy)</option>
         </SelectField>
         <SelectField label="Status" value={filter.status ?? ''} onChange={(event) => setFilter((current) => ({ ...current, status: event.target.value }))}>
           <option value="">All</option>
@@ -487,11 +442,12 @@ export function ProxiesPage() {
         }
       >
         {formError ? <div className="banner banner--danger">{formError}</div> : null}
-        {draftNotice ? <div className="banner banner--warning">{draftNotice}</div> : null}
         {usersQuery.error ? <div className="banner banner--danger">User options failed to load: {usersQuery.error.message}</div> : null}
         {clientsQuery.error ? <div className="banner banner--danger">Client options failed to load: {clientsQuery.error.message}</div> : null}
+        {domainsQuery.error ? <div className="banner banner--danger">Domain options failed to load: {domainsQuery.error.message}</div> : null}
         {entryOptionsQuery.error ? <div className="banner banner--danger">Entry options failed to load: {entryOptionsQuery.error.message}</div> : null}
         <ValidationBanner fields={fieldErrors} />
+        <p className="muted">Web path proxies attach to a Domain. TCP/UDP still use raw listeners. Certificates and HTTP/HTTPS ports are managed on the Domain page.</p>
         <div className="toolbar-grid toolbar-grid--wide">
           <UserSelectField value={form.userId} users={users} error={fieldErrors?.userId} onChange={updateFormUser} />
           <ClientSelectField value={form.clientId} clients={clients} error={clientSelectionMismatch ? 'Selected client does not belong to the selected user.' : fieldErrors?.clientId} onChange={(clientId) => setForm((current) => ({ ...current, clientId }))} />
@@ -501,39 +457,55 @@ export function ProxiesPage() {
             return {
               ...current,
               type,
-              entryHost: isRouteProxy(type) ? current.entryHost : '',
-              certificateId: isHTTPSProxy(type) ? current.certificateId : '',
+              domainId: isWebProxy(type) ? current.domainId : '',
+              pathPrefix: isWebProxy(type) ? current.pathPrefix || '/' : '',
             };
           })}>
+            <option value="web">Web path (recommended)</option>
             <option value="tcp">TCP</option>
             <option value="udp">UDP</option>
-            <option value="http">HTTP</option>
-            <option value="https">HTTPS</option>
           </SelectField>
-          <SelectField label="Bind host" value={form.entryBindHost} error={fieldErrors?.entryBindHost} onChange={(event) => setForm((current) => ({ ...current, entryBindHost: event.target.value }))}>
-            {hostOptions.map((option) => (
-              <option key={option.value || '__default'} value={option.value}>
-                {option.label}
-              </option>
-            ))}
-          </SelectField>
-          <TextField label="Entry port" value={form.entryPort} error={fieldErrors?.entryPort} onChange={(event) => setForm((current) => ({ ...current, entryPort: event.target.value }))} />
-          {usesRouteHost ? (
-            <TextField label={form.type === 'https' ? 'SNI domain' : 'HTTP domain'} value={form.entryHost} error={fieldErrors?.entryHost} onChange={(event) => setForm((current) => ({ ...current, entryHost: event.target.value }))} />
-          ) : null}
+          {usesWeb ? (
+            <>
+              <SelectField label="Domain" value={form.domainId} error={fieldErrors?.domainId} onChange={(event) => setForm((current) => ({ ...current, domainId: event.target.value }))}>
+                <option value="">Select domain</option>
+                {domains.map((domain) => (
+                  <option key={domain.id} value={domain.id}>
+                    {domain.host}
+                  </option>
+                ))}
+              </SelectField>
+              <TextField label="Path prefix" value={form.pathPrefix} error={fieldErrors?.pathPrefix} placeholder="/" onChange={(event) => setForm((current) => ({ ...current, pathPrefix: event.target.value }))} hint="Longest path wins. Create domains first if the list is empty." />
+              <TextField label="Upstream path prefix" value={form.upstreamPathPrefix} error={fieldErrors?.upstreamPathPrefix} onChange={(event) => setForm((current) => ({ ...current, upstreamPathPrefix: event.target.value }))} />
+              <label className="field">
+                <span className="field__label">Strip path prefix</span>
+                <Switch checked={form.stripPrefix} onChange={(checked) => setForm((current) => ({ ...current, stripPrefix: checked }))} />
+              </label>
+            </>
+          ) : (
+            <>
+              <SelectField label="Bind host" value={form.entryBindHost} error={fieldErrors?.entryBindHost} onChange={(event) => setForm((current) => ({ ...current, entryBindHost: event.target.value }))}>
+                {hostOptions.map((option) => (
+                  <option key={option.value || '__default'} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </SelectField>
+              <TextField label="Entry port" value={form.entryPort} error={fieldErrors?.entryPort} onChange={(event) => setForm((current) => ({ ...current, entryPort: event.target.value }))} />
+            </>
+          )}
           <TextField label="Target host" value={form.targetHost} error={fieldErrors?.targetHost} onChange={(event) => setForm((current) => ({ ...current, targetHost: event.target.value }))} />
           <TextField label="Target port" value={form.targetPort} error={fieldErrors?.targetPort} onChange={(event) => setForm((current) => ({ ...current, targetPort: event.target.value }))} />
-          {usesCertificates ? (
-            <CertificateSelectField
-              entryHost={form.entryHost}
-              value={form.certificateId}
-              onChange={(certificateId) => setForm((current) => ({ ...current, certificateId }))}
-              onCreateCertificate={handleCreateCertificate}
-              error={fieldErrors?.certificateId}
-            />
-          ) : null}
           <TextAreaField label="Description" value={form.description} onChange={(event) => setForm((current) => ({ ...current, description: event.target.value }))} />
         </div>
+        {usesWeb && domains.length === 0 ? (
+          <p className="banner banner--warning">
+            No enabled domains for this user.{' '}
+            <Button type="link" onClick={() => navigate('/domains?create=1')}>
+              Create a domain first
+            </Button>
+          </p>
+        ) : null}
       </Dialog>
     </section>
   );

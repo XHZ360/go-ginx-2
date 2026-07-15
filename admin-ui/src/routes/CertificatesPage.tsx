@@ -530,7 +530,7 @@ export function CertificatesPage() {
                   <th>Certificate</th>
                   <th>Provider</th>
                   <th>Hostnames</th>
-                  <th>Bound proxy</th>
+                  <th>Bound domain</th>
                   <th>Use</th>
                   <th>Serving</th>
                   <th>Operation</th>
@@ -666,6 +666,7 @@ function CertificateRow({
   const hostLabel = certificate.host ?? certificate.proxyId;
   const hostnames = certificate.hostnames ?? [];
   const boundProxyId = certificate.boundProxyId ?? '';
+  const boundDomainId = (certificate as { boundDomainId?: string }).boundDomainId ?? '';
   const referenced = Boolean(certificate.referenced);
   const strongDelete = certificate.deletionRisk === 'requires_strong_confirmation';
 
@@ -709,7 +710,15 @@ function CertificateRow({
           {hostnames.length > 0 ? hostnames.map((name) => <span key={name}>{name}</span>) : <span className="muted-text">{certificate.host ?? 'N/A'}</span>}
         </div>
       </td>
-      <td>{boundProxyId ? boundProxyId : <span className="muted-text">未绑定</span>}</td>
+      <td>
+        {boundDomainId ? (
+          <span className="mono">{boundDomainId}</span>
+        ) : boundProxyId ? (
+          <span className="mono muted-text" title="legacy proxy binding">{boundProxyId}</span>
+        ) : (
+          <span className="muted-text">未绑定</span>
+        )}
+      </td>
       <td><StatusBadge value={referenced ? 'active' : 'idle'} /></td>
       <td><StatusBadge value={certificate.servingStatus ?? certificate.status ?? 'unknown'} /></td>
       <td><StatusBadge value={certificate.operationStatus ?? 'unknown'} /></td>
@@ -750,7 +759,7 @@ function CertificateRow({
           ) : null}
 
           {strongDelete ? (
-            <ActionGate reason={`该证书正在为代理 ${boundProxyId || certificate.proxyId} 提供服务，删除需要强确认。`}>
+            <ActionGate reason={`该证书正在为 Domain ${boundDomainId || boundProxyId || certificate.proxyId} 提供服务，删除需要强确认。`}>
               <Button type="primary" danger onClick={onDelete}>
                 Delete
               </Button>

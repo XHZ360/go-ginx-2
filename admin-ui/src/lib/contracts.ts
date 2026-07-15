@@ -99,6 +99,7 @@ export type ManagedCertificate = {
   proxyId: string;
   certificateId?: string | null;
   boundProxyId?: string | null;
+  boundDomainId?: string | null;
   referenced?: boolean | null;
   servable?: boolean | null;
   deletionRisk?: CertificateDeletionRisk | string | null;
@@ -141,6 +142,10 @@ export type ProviderCredential = {
 };
 
 export type ProxyConfig = {
+  domainId?: string | null;
+  pathPrefix?: string | null;
+  stripPrefix?: boolean | null;
+  upstreamPathPrefix?: string | null;
   entryBindHost?: string | null;
   entryHost?: string | null;
   entryPort?: number | null;
@@ -149,6 +154,33 @@ export type ProxyConfig = {
   certFile?: string | null;
   keyFile?: string | null;
   certificateId?: string | null;
+};
+
+export type DomainEntry = {
+  id: string;
+  domainId: string;
+  protocol: string;
+  bindHost?: string | null;
+  port: number;
+  status: string;
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type DomainRecord = {
+  id: string;
+  userId: string;
+  host: string;
+  certificateId?: string | null;
+  status: string;
+  proxyCount: number;
+  httpEntryCount: number;
+  httpsEntryCount: number;
+  certificate?: ManagedCertificate | null;
+  entries?: DomainEntry[] | null;
+  proxies?: ProxyRecord[] | null;
+  createdAt: string;
+  updatedAt: string;
 };
 
 export type ProxyEntryHostOption = {

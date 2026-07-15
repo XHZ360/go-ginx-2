@@ -6,6 +6,8 @@ import { UsersPage } from './routes/UsersPage';
 import { UserDetailPage } from './routes/UserDetailPage';
 import { ClientsPage } from './routes/ClientsPage';
 import { ClientDetailPage } from './routes/ClientDetailPage';
+import { DomainsPage } from './routes/DomainsPage';
+import { DomainDetailPage } from './routes/DomainDetailPage';
 import { ProxiesPage } from './routes/ProxiesPage';
 import { ProxyDetailPage } from './routes/ProxyDetailPage';
 import { CertificatesPage } from './routes/CertificatesPage';
@@ -30,6 +32,8 @@ export function createAdminBrowserRouter() {
         { path: 'users/:id', element: <UserDetailPage /> },
         { path: 'clients', element: <ClientsPage /> },
         { path: 'clients/:id', element: <ClientDetailPage /> },
+        { path: 'domains', element: <DomainsPage /> },
+        { path: 'domains/:id', element: <DomainDetailPage /> },
         { path: 'proxies', element: <ProxiesPage /> },
         { path: 'proxies/:id', element: <ProxyDetailPage /> },
         { path: 'certificates', element: <CertificatesPage /> },
