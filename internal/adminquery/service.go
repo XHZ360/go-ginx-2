@@ -295,6 +295,20 @@ type ProxySummary struct {
 	ActiveTCPConnections int64
 }
 
+type ProxyRouteItem struct {
+	ID                 string
+	ProxyID            string
+	ClientID           string
+	PathPrefix         string
+	StripPrefix        bool
+	UpstreamPathPrefix string
+	TargetHost         string
+	TargetPort         int
+	Status             domain.ProxyRouteStatus
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
+}
+
 type ProxyListItem struct {
 	ID                   string
 	UserID               string
@@ -310,6 +324,7 @@ type ProxyListItem struct {
 	TCPErrorCount        int64
 	UDPErrorCount        int64
 	HTTPErrorCount       int64
+	AccessAuthEnabled    bool
 	Config               ProxyTypeConfig
 	Certificate          *ManagedCertificateSummary
 	CreatedAt            time.Time
@@ -331,6 +346,8 @@ type ProxyDetail struct {
 	TCPErrorCount        int64
 	UDPErrorCount        int64
 	HTTPErrorCount       int64
+	AccessAuthEnabled    bool
+	Routes               []ProxyRouteItem
 	Config               ProxyTypeConfig
 	Certificate          *ManagedCertificateSummary
 	CreatedAt            time.Time
@@ -535,7 +552,18 @@ func (service Service) ProxyDetail(ctx context.Context, proxyID string) (ProxyDe
 		return ProxyDetail{}, err
 	}
 	item := proxyListItemFromDomain(proxy, latestByClient[proxy.ClientID], statsByProxy[proxy.ID], certificate)
-	return ProxyDetail{ID: item.ID, UserID: item.UserID, ClientID: item.ClientID, Name: item.Name, Type: item.Type, Status: item.Status, Description: item.Description, RuntimeStatus: item.RuntimeStatus, ActiveTCPConnections: item.ActiveTCPConnections, UploadBytes: item.UploadBytes, DownloadBytes: item.DownloadBytes, TCPErrorCount: item.TCPErrorCount, UDPErrorCount: item.UDPErrorCount, HTTPErrorCount: item.HTTPErrorCount, Config: item.Config, Certificate: item.Certificate, CreatedAt: proxy.CreatedAt, UpdatedAt: proxy.UpdatedAt}, nil
+	routes := make([]ProxyRouteItem, 0)
+	if repository, ok := store.Routes(service.Store); ok {
+		configured, routeErr := repository.ListByProxyID(ctx, proxyID)
+		if routeErr != nil {
+			return ProxyDetail{}, routeErr
+		}
+		routes = make([]ProxyRouteItem, 0, len(configured))
+		for _, route := range configured {
+			routes = append(routes, proxyRouteItemFromDomain(route))
+		}
+	}
+	return ProxyDetail{ID: item.ID, UserID: item.UserID, ClientID: item.ClientID, Name: item.Name, Type: item.Type, Status: item.Status, Description: item.Description, RuntimeStatus: item.RuntimeStatus, ActiveTCPConnections: item.ActiveTCPConnections, UploadBytes: item.UploadBytes, DownloadBytes: item.DownloadBytes, TCPErrorCount: item.TCPErrorCount, UDPErrorCount: item.UDPErrorCount, HTTPErrorCount: item.HTTPErrorCount, AccessAuthEnabled: item.AccessAuthEnabled, Routes: routes, Config: item.Config, Certificate: item.Certificate, CreatedAt: proxy.CreatedAt, UpdatedAt: proxy.UpdatedAt}, nil
 }
 
 func (service Service) ListManagedCertificates(ctx context.Context, input CertificateListInput) (ManagedCertificatePage, error) {
@@ -808,7 +836,23 @@ func proxyListItemFromDomain(proxy domain.Proxy, runtimeSession session.Session,
 			runtimeStatus = domain.ProxyOnline
 		}
 	}
-	return ProxyListItem{ID: proxy.ID, UserID: proxy.UserID, ClientID: proxy.ClientID, Name: proxy.Name, Type: proxy.Type, Status: proxy.Status, Description: proxy.Description, RuntimeStatus: runtimeStatus, ActiveTCPConnections: proxyStats.TCPCurrentConnections, UploadBytes: proxyStats.TCPUploadBytes + proxyStats.UDPUploadBytes + proxyStats.HTTPUploadBytes, DownloadBytes: proxyStats.TCPDownloadBytes + proxyStats.UDPDownloadBytes + proxyStats.HTTPDownloadBytes, TCPErrorCount: proxyStats.TCPErrors, UDPErrorCount: proxyStats.UDPErrors, HTTPErrorCount: proxyStats.HTTPErrors, Config: ProxyTypeConfig{EntryBindHost: proxy.EntryBindHost, EntryHost: proxy.EntryHost, EntryPort: proxy.EntryPort, TargetHost: proxy.TargetHost, TargetPort: proxy.TargetPort, CertFile: proxy.CertFile, KeyFile: proxy.KeyFile, CertificateID: proxy.CertificateID}, Certificate: certificate, CreatedAt: proxy.CreatedAt, UpdatedAt: proxy.UpdatedAt}
+	return ProxyListItem{ID: proxy.ID, UserID: proxy.UserID, ClientID: proxy.ClientID, Name: proxy.Name, Type: proxy.Type, Status: proxy.Status, Description: proxy.Description, RuntimeStatus: runtimeStatus, ActiveTCPConnections: proxyStats.TCPCurrentConnections, UploadBytes: proxyStats.TCPUploadBytes + proxyStats.UDPUploadBytes + proxyStats.HTTPUploadBytes, DownloadBytes: proxyStats.TCPDownloadBytes + proxyStats.UDPDownloadBytes + proxyStats.HTTPDownloadBytes, TCPErrorCount: proxyStats.TCPErrors, UDPErrorCount: proxyStats.UDPErrors, HTTPErrorCount: proxyStats.HTTPErrors, AccessAuthEnabled: proxy.AccessAuthEnabled, Config: ProxyTypeConfig{EntryBindHost: proxy.EntryBindHost, EntryHost: proxy.EntryHost, EntryPort: proxy.EntryPort, TargetHost: proxy.TargetHost, TargetPort: proxy.TargetPort, CertFile: proxy.CertFile, KeyFile: proxy.KeyFile, CertificateID: proxy.CertificateID}, Certificate: certificate, CreatedAt: proxy.CreatedAt, UpdatedAt: proxy.UpdatedAt}
+}
+
+func proxyRouteItemFromDomain(route domain.ProxyRoute) ProxyRouteItem {
+	return ProxyRouteItem{
+		ID:                 route.ID,
+		ProxyID:            route.ProxyID,
+		ClientID:           route.ClientID,
+		PathPrefix:         route.PathPrefix,
+		StripPrefix:        route.StripPrefix,
+		UpstreamPathPrefix: route.UpstreamPathPrefix,
+		TargetHost:         route.TargetHost,
+		TargetPort:         route.TargetPort,
+		Status:             route.Status,
+		CreatedAt:          route.CreatedAt,
+		UpdatedAt:          route.UpdatedAt,
+	}
 }
 
 func proxySummaryFromDomain(proxy domain.Proxy, runtimeSession session.Session, proxyStats stats.ProxyStats, certificate *ManagedCertificateSummary) ProxySummary {

@@ -87,6 +87,25 @@ func (server *Server) ServeHTTP(w nethttp.ResponseWriter, r *nethttp.Request) {
 		nethttp.Error(w, "proxy not found", nethttp.StatusNotFound)
 		return
 	}
+	if !domain.ValidProxyRequestPath(r.URL.Path, r.URL.RawPath) {
+		nethttp.Error(w, "invalid request path", nethttp.StatusBadRequest)
+		return
+	}
+	targetHost, targetPort := proxy.TargetHost, proxy.TargetPort
+	clientID := proxy.ClientID
+	if routes, ok := store.Routes(server.entry.Store); ok {
+		configured, routeErr := routes.ListByProxyID(r.Context(), proxy.ID)
+		if routeErr != nil {
+			nethttp.Error(w, "proxy route unavailable", nethttp.StatusBadGateway)
+			return
+		}
+		if route, matched := domain.SelectProxyRoute(configured, r.URL.Path); matched {
+			clientID = route.ClientID
+			targetHost, targetPort = route.TargetHost, route.TargetPort
+			r.URL.Path = domain.RewriteProxyRoutePath(r.URL.Path, route)
+			r.URL.RawPath = ""
+		}
+	}
 	statusCode := nethttp.StatusBadGateway
 	failed := true
 	var uploadBytes int64
@@ -96,7 +115,7 @@ func (server *Server) ServeHTTP(w nethttp.ResponseWriter, r *nethttp.Request) {
 			server.entry.Stats.RecordHTTP(proxy.ID, statusCode, uploadBytes, downloadBytes, failed)
 		}()
 	}
-	latest, ok := server.entry.Sessions.Latest(proxy.ClientID)
+	latest, ok := server.entry.Sessions.Latest(clientID)
 	if !ok || latest.StreamOpener == nil {
 		log.Printf("http proxy route failed: bind_host=%s port=%d host=%s proxy_id=%s category=client_offline", displayBindHost(server.entry.EntryBindHost), server.entry.EntryPort, hostWithoutPort(r.Host), proxy.ID)
 		statusCode = nethttp.StatusServiceUnavailable
@@ -115,7 +134,7 @@ func (server *Server) ServeHTTP(w nethttp.ResponseWriter, r *nethttp.Request) {
 		nethttp.Error(w, "request id failed", nethttp.StatusInternalServerError)
 		return
 	}
-	if err := control.WriteMessage(stream, control.MessageOpenStream, control.OpenStream{Kind: "http", ProxyID: proxy.ID, ConnectionID: requestID, TargetHost: proxy.TargetHost, TargetPort: proxy.TargetPort}); err != nil {
+	if err := control.WriteMessage(stream, control.MessageOpenStream, control.OpenStream{Kind: "http", ProxyID: proxy.ID, ConnectionID: requestID, TargetHost: targetHost, TargetPort: targetPort}); err != nil {
 		nethttp.Error(w, "write proxy stream failed", nethttp.StatusBadGateway)
 		return
 	}

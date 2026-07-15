@@ -289,10 +289,147 @@ type Proxy struct {
 	CertFile      string
 	KeyFile       string
 	// CertificateID 是代理选择的证书资源 ID（权威绑定，证书侧仅保留 ProxyID 作为遗留反向引用）。
-	CertificateID string
-	Description   string
-	CreatedAt     time.Time
-	UpdatedAt     time.Time
+	CertificateID     string
+	AccessAuthEnabled bool
+	AccessAuthVersion int64
+	Description       string
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
+}
+
+type ProxyRouteStatus string
+
+const (
+	ProxyRouteEnabled  ProxyRouteStatus = "enabled"
+	ProxyRouteDisabled ProxyRouteStatus = "disabled"
+)
+
+type ProxyRoute struct {
+	ID                 string
+	ProxyID            string
+	ClientID           string
+	PathPrefix         string
+	StripPrefix        bool
+	UpstreamPathPrefix string
+	TargetHost         string
+	TargetPort         int
+	Status             ProxyRouteStatus
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
+}
+
+type ProxyActivationToken struct {
+	ID          string
+	ProxyID     string
+	AuthVersion int64
+	TokenHash   string
+	ExpiresAt   time.Time
+	UsedAt      *time.Time
+	CreatedAt   time.Time
+	CreatedBy   string
+}
+
+type ProxyAccessCredential struct {
+	ID          string
+	ProxyID     string
+	AuthVersion int64
+	SecretHash  string
+	CreatedAt   time.Time
+	LastUsedAt  *time.Time
+}
+
+const ReservedProxyRoutePrefix = "/.well-known/goginx/"
+
+func (route ProxyRoute) Validate() error {
+	if strings.TrimSpace(route.ID) == "" || strings.TrimSpace(route.ProxyID) == "" || strings.TrimSpace(route.ClientID) == "" {
+		return errors.New("proxy route identifiers are required")
+	}
+	pathPrefix, err := NormalizeProxyRoutePrefix(route.PathPrefix)
+	if err != nil {
+		return err
+	}
+	if _, err := NormalizeProxyUpstreamPathPrefix(route.UpstreamPathPrefix); err != nil {
+		return err
+	}
+	if strings.HasPrefix(pathPrefix, ReservedProxyRoutePrefix) || pathPrefix == strings.TrimSuffix(ReservedProxyRoutePrefix, "/") {
+		return errors.New("proxy route path prefix is reserved")
+	}
+	if route.TargetPort <= 0 || route.TargetPort > 65535 {
+		return errors.New("proxy route target port is invalid")
+	}
+	if ip := net.ParseIP(route.TargetHost); ip == nil && !validHostname(route.TargetHost) {
+		return errors.New("proxy route target host is invalid")
+	}
+	if route.Status != ProxyRouteEnabled && route.Status != ProxyRouteDisabled {
+		return errors.New("proxy route status is invalid")
+	}
+	return nil
+}
+
+func NormalizeProxyRoutePrefix(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" || !strings.HasPrefix(value, "/") || strings.ContainsAny(value, "?#%\\\x00") || strings.Contains(value, "//") {
+		return "", errors.New("proxy route path prefix is invalid")
+	}
+	if len(value) > 1 {
+		value = strings.TrimRight(value, "/")
+	}
+	return value, nil
+}
+
+func NormalizeProxyUpstreamPathPrefix(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "/", nil
+	}
+	if !strings.HasPrefix(value, "/") || strings.ContainsAny(value, "?#%\\\x00") || strings.Contains(value, "//") {
+		return "", errors.New("proxy route upstream path prefix is invalid")
+	}
+	if len(value) > 1 {
+		value = strings.TrimRight(value, "/")
+	}
+	return value, nil
+}
+
+func ProxyRouteMatches(path string, prefix string) bool {
+	return prefix == "/" || path == prefix || strings.HasPrefix(path, prefix+"/")
+}
+
+func SelectProxyRoute(routes []ProxyRoute, path string) (ProxyRoute, bool) {
+	var selected ProxyRoute
+	found := false
+	for _, route := range routes {
+		if route.Status != ProxyRouteEnabled || !ProxyRouteMatches(path, route.PathPrefix) {
+			continue
+		}
+		if !found || len(route.PathPrefix) > len(selected.PathPrefix) {
+			selected = route
+			found = true
+		}
+	}
+	return selected, found
+}
+
+func ValidProxyRequestPath(path string, rawPath string) bool {
+	if path == "" || !strings.HasPrefix(path, "/") || strings.ContainsRune(path, '\x00') {
+		return false
+	}
+	rawPath = strings.ToLower(rawPath)
+	return !strings.Contains(rawPath, "%2f") && !strings.Contains(rawPath, "%5c") && !strings.Contains(rawPath, "%00")
+}
+
+func RewriteProxyRoutePath(path string, route ProxyRoute) string {
+	if !route.StripPrefix {
+		return path
+	}
+	remainder := strings.TrimPrefix(path, route.PathPrefix)
+	if remainder == "" {
+		return route.UpstreamPathPrefix
+	}
+	if route.UpstreamPathPrefix == "/" {
+		return remainder
+	}
+	return strings.TrimRight(route.UpstreamPathPrefix, "/") + "/" + strings.TrimLeft(remainder, "/")
 }
 
 type ManagedCertificate struct {

@@ -138,6 +138,20 @@ fragment ProviderCredentialFields on AdminProviderCredential {
   updatedAt
 }
 
+fragment ProxyRouteFields on AdminProxyRoute {
+  id
+  proxyId
+  clientId
+  pathPrefix
+  stripPrefix
+  upstreamPathPrefix
+  targetHost
+  targetPort
+  status
+  createdAt
+  updatedAt
+}
+
 fragment ProxyFields on AdminProxy {
   id
   userId
@@ -153,6 +167,10 @@ fragment ProxyFields on AdminProxy {
   tcpErrorCount
   udpErrorCount
   httpErrorCount
+  accessAuthEnabled
+  routes {
+    ...ProxyRouteFields
+  }
   config {
     ...ProxyConfigFields
   }
@@ -161,6 +179,18 @@ fragment ProxyFields on AdminProxy {
   }
   createdAt
   updatedAt
+}
+
+fragment ProxyActivationFields on AdminProxyActivation {
+  url
+  expiresAt
+}
+
+fragment ProxyRoutePayloadFields on AdminProxyRoutePayload {
+  routeId
+  route {
+    ...ProxyRouteFields
+  }
 }
 
 fragment AuditFields on AdminAuditEvent {
@@ -403,6 +433,48 @@ mutation DeleteProxy($input: AdminUserIDInput!) {
   deleteProxy(input: $input) {
     proxyId
     status
+  }
+}
+
+mutation EnableProxyAccessAuthAndCreateActivation($input: AdminUserIDInput!) {
+  enableProxyAccessAuthAndCreateActivation(input: $input) {
+    ...ProxyActivationFields
+  }
+}
+
+mutation CreateProxyActivationLink($input: AdminUserIDInput!) {
+  createProxyActivationLink(input: $input) {
+    ...ProxyActivationFields
+  }
+}
+
+mutation RevokeAllProxyAccess($input: AdminUserIDInput!) {
+  revokeAllProxyAccess(input: $input) {
+    ...ProxyPayloadFields
+  }
+}
+
+mutation DisableProxyAccessAuth($input: AdminUserIDInput!) {
+  disableProxyAccessAuth(input: $input) {
+    ...ProxyPayloadFields
+  }
+}
+
+mutation CreateProxyRoute($input: AdminCreateProxyRouteInput!) {
+  createProxyRoute(input: $input) {
+    ...ProxyRoutePayloadFields
+  }
+}
+
+mutation UpdateProxyRoute($input: AdminUpdateProxyRouteInput!) {
+  updateProxyRoute(input: $input) {
+    ...ProxyRoutePayloadFields
+  }
+}
+
+mutation DeleteProxyRoute($input: AdminUserIDInput!) {
+  deleteProxyRoute(input: $input) {
+    routeId
   }
 }
 

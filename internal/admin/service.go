@@ -3,6 +3,7 @@ package admin
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -116,6 +117,133 @@ type UpdateProxyInput struct {
 	CertificateIDSet bool
 	Description      string
 	ActorID          string
+}
+
+type CreateProxyRouteInput struct {
+	ID                 string
+	ProxyID            string
+	ClientID           string
+	PathPrefix         string
+	StripPrefix        bool
+	UpstreamPathPrefix string
+	TargetHost         string
+	TargetPort         int
+	ActorID            string
+}
+
+type UpdateProxyRouteInput struct {
+	ID                 string
+	ClientID           string
+	PathPrefix         string
+	StripPrefix        bool
+	UpstreamPathPrefix string
+	TargetHost         string
+	TargetPort         int
+	Status             domain.ProxyRouteStatus
+	ActorID            string
+}
+
+type ProxyActivationResult struct {
+	URL       string
+	ExpiresAt time.Time
+}
+
+func (service Service) EnableProxyAccessAuthAndCreateActivation(ctx context.Context, proxyID string, actorID string) (ProxyActivationResult, error) {
+	proxy, err := service.Store.Proxies().ByID(ctx, proxyID)
+	if err != nil {
+		return ProxyActivationResult{}, err
+	}
+	if proxy.Type != domain.ProxyHTTPS || strings.TrimSpace(proxy.EntryHost) == "" {
+		return ProxyActivationResult{}, contracterr.Validation("validation failed", map[string]string{"proxyId": "access authentication requires an HTTPS proxy with a host"})
+	}
+	certificate, err := service.Store.Certificates().ByProxyID(ctx, proxyID)
+	if err != nil {
+		return ProxyActivationResult{}, err
+	}
+	if !certificate.ServingStatus.ServesTLS() {
+		return ProxyActivationResult{}, contracterr.Conflict("proxy certificate is not serving TLS", nil)
+	}
+	access, ok := store.Access(service.Store)
+	if !ok {
+		return ProxyActivationResult{}, errors.New("proxy access repository is unavailable")
+	}
+	tokenValue := newCredential()
+	expiresAt := time.Now().UTC().Add(10 * time.Minute)
+	token := domain.ProxyActivationToken{ID: newID("activation"), ProxyID: proxyID, AuthVersion: proxy.AccessAuthVersion + 1, TokenHash: hashAccessValue(tokenValue), ExpiresAt: expiresAt, CreatedBy: actorID}
+	if err := access.EnableAuthAndCreateActivation(ctx, proxyID, token.AuthVersion, token); err != nil {
+		return ProxyActivationResult{}, err
+	}
+	if err := service.audit(ctx, actorID, "proxy", proxyID, "enable_proxy_access_auth"); err != nil {
+		return ProxyActivationResult{}, err
+	}
+	return ProxyActivationResult{URL: proxyActivationURL(proxy, tokenValue), ExpiresAt: expiresAt}, nil
+}
+
+func (service Service) CreateProxyActivationLink(ctx context.Context, proxyID string, actorID string) (ProxyActivationResult, error) {
+	proxy, err := service.Store.Proxies().ByID(ctx, proxyID)
+	if err != nil {
+		return ProxyActivationResult{}, err
+	}
+	if !proxy.AccessAuthEnabled {
+		return ProxyActivationResult{}, contracterr.Conflict("proxy access authentication is disabled", nil)
+	}
+	access, ok := store.Access(service.Store)
+	if !ok {
+		return ProxyActivationResult{}, errors.New("proxy access repository is unavailable")
+	}
+	tokenValue := newCredential()
+	expiresAt := time.Now().UTC().Add(10 * time.Minute)
+	token := domain.ProxyActivationToken{ID: newID("activation"), ProxyID: proxyID, AuthVersion: proxy.AccessAuthVersion, TokenHash: hashAccessValue(tokenValue), ExpiresAt: expiresAt, CreatedBy: actorID}
+	if err := access.CreateActivationToken(ctx, token); err != nil {
+		return ProxyActivationResult{}, err
+	}
+	if err := service.audit(ctx, actorID, "proxy", proxyID, "create_proxy_activation"); err != nil {
+		return ProxyActivationResult{}, err
+	}
+	return ProxyActivationResult{URL: proxyActivationURL(proxy, tokenValue), ExpiresAt: expiresAt}, nil
+}
+
+func (service Service) RevokeAllProxyAccess(ctx context.Context, proxyID string, actorID string) error {
+	proxy, err := service.Store.Proxies().ByID(ctx, proxyID)
+	if err != nil {
+		return err
+	}
+	access, ok := store.Access(service.Store)
+	if !ok {
+		return errors.New("proxy access repository is unavailable")
+	}
+	if err := access.RevokeAllAccess(ctx, proxyID, proxy.AccessAuthVersion+1); err != nil {
+		return err
+	}
+	return service.audit(ctx, actorID, "proxy", proxyID, "revoke_proxy_access")
+}
+
+func (service Service) DisableProxyAccessAuth(ctx context.Context, proxyID string, actorID string) error {
+	proxy, err := service.Store.Proxies().ByID(ctx, proxyID)
+	if err != nil {
+		return err
+	}
+	access, ok := store.Access(service.Store)
+	if !ok {
+		return errors.New("proxy access repository is unavailable")
+	}
+	if err := access.DisableAuth(ctx, proxyID, proxy.AccessAuthVersion+1); err != nil {
+		return err
+	}
+	return service.audit(ctx, actorID, "proxy", proxyID, "disable_proxy_access_auth")
+}
+
+func hashAccessValue(value string) string {
+	hash := sha256.Sum256([]byte(value))
+	return hex.EncodeToString(hash[:])
+}
+
+func proxyActivationURL(proxy domain.Proxy, token string) string {
+	port := ""
+	if proxy.EntryPort != 0 && proxy.EntryPort != 443 {
+		port = fmt.Sprintf(":%d", proxy.EntryPort)
+	}
+	return fmt.Sprintf("https://%s%s/.well-known/goginx/activate/%s", proxy.EntryHost, port, token)
 }
 
 type CertificateInput struct {
@@ -579,8 +707,15 @@ func (service Service) CreateProxy(ctx context.Context, input CreateProxyInput) 
 	if _, err := service.Store.Users().ByID(ctx, input.UserID); err != nil {
 		return domain.Proxy{}, err
 	}
-	if _, err := service.Store.Clients().ByID(ctx, input.ClientID); err != nil {
+	client, err := service.Store.Clients().ByID(ctx, input.ClientID)
+	if err != nil {
 		return domain.Proxy{}, err
+	}
+	if client.UserID != input.UserID {
+		return domain.Proxy{}, contracterr.Conflict("client does not belong to proxy user", nil)
+	}
+	if domain.NormalizeClientKind(client.Kind) != domain.ClientKindProvider {
+		return domain.Proxy{}, contracterr.Validation("validation failed", map[string]string{"clientId": "client cannot provide proxy service"})
 	}
 	certificateID, err := service.resolveProxyCertificateSelection(ctx, input.Type, "", input.CertificateID, true, input.EntryHost, input.CertFile, input.KeyFile, input.ActorID)
 	if err != nil {
@@ -613,6 +748,96 @@ func (service Service) CreateProxy(ctx context.Context, input CreateProxyInput) 
 		action = "create_udp_proxy"
 	}
 	return proxy, service.audit(ctx, input.ActorID, "proxy", proxy.ID, action)
+}
+
+func (service Service) CreateProxyRoute(ctx context.Context, input CreateProxyRouteInput) (domain.ProxyRoute, error) {
+	if service.Store == nil {
+		return domain.ProxyRoute{}, errors.New("store is required")
+	}
+	repository, ok := store.Routes(service.Store)
+	if !ok {
+		return domain.ProxyRoute{}, errors.New("proxy route repository is unavailable")
+	}
+	proxy, err := service.Store.Proxies().ByID(ctx, input.ProxyID)
+	if err != nil {
+		return domain.ProxyRoute{}, err
+	}
+	if proxy.Type != domain.ProxyHTTP && proxy.Type != domain.ProxyHTTPS {
+		return domain.ProxyRoute{}, contracterr.Validation("validation failed", map[string]string{"proxyId": "routes require an HTTP or HTTPS proxy"})
+	}
+	client, err := service.Store.Clients().ByID(ctx, input.ClientID)
+	if err != nil {
+		return domain.ProxyRoute{}, err
+	}
+	if client.UserID != proxy.UserID {
+		return domain.ProxyRoute{}, contracterr.Conflict("client does not belong to proxy user", nil)
+	}
+	if domain.NormalizeClientKind(client.Kind) != domain.ClientKindProvider {
+		return domain.ProxyRoute{}, contracterr.Validation("validation failed", map[string]string{"clientId": "client cannot provide proxy service"})
+	}
+	if strings.TrimSpace(input.ID) == "" {
+		input.ID = newID("route")
+	}
+	route := domain.ProxyRoute{ID: input.ID, ProxyID: input.ProxyID, ClientID: input.ClientID, PathPrefix: input.PathPrefix, StripPrefix: input.StripPrefix, UpstreamPathPrefix: input.UpstreamPathPrefix, TargetHost: input.TargetHost, TargetPort: input.TargetPort, Status: domain.ProxyRouteEnabled}
+	if err := route.Validate(); err != nil {
+		return domain.ProxyRoute{}, contracterr.Validation("validation failed", map[string]string{"route": err.Error()})
+	}
+	if err := repository.Create(ctx, route); err != nil {
+		return domain.ProxyRoute{}, err
+	}
+	return route, service.audit(ctx, input.ActorID, "proxy_route", route.ID, "create_proxy_route")
+}
+
+func (service Service) UpdateProxyRoute(ctx context.Context, input UpdateProxyRouteInput) (domain.ProxyRoute, error) {
+	if service.Store == nil {
+		return domain.ProxyRoute{}, errors.New("store is required")
+	}
+	repository, ok := store.Routes(service.Store)
+	if !ok {
+		return domain.ProxyRoute{}, errors.New("proxy route repository is unavailable")
+	}
+	existing, err := repository.ByID(ctx, input.ID)
+	if err != nil {
+		return domain.ProxyRoute{}, err
+	}
+	proxy, err := service.Store.Proxies().ByID(ctx, existing.ProxyID)
+	if err != nil {
+		return domain.ProxyRoute{}, err
+	}
+	client, err := service.Store.Clients().ByID(ctx, input.ClientID)
+	if err != nil {
+		return domain.ProxyRoute{}, err
+	}
+	if client.UserID != proxy.UserID || domain.NormalizeClientKind(client.Kind) != domain.ClientKindProvider {
+		return domain.ProxyRoute{}, contracterr.Conflict("client cannot be assigned to proxy route", nil)
+	}
+	existing.ClientID = input.ClientID
+	existing.PathPrefix = input.PathPrefix
+	existing.StripPrefix = input.StripPrefix
+	existing.UpstreamPathPrefix = input.UpstreamPathPrefix
+	existing.TargetHost = input.TargetHost
+	existing.TargetPort = input.TargetPort
+	if input.Status != "" {
+		existing.Status = input.Status
+	}
+	if err := repository.Update(ctx, existing); err != nil {
+		return domain.ProxyRoute{}, err
+	}
+	return existing, service.audit(ctx, input.ActorID, "proxy_route", existing.ID, "update_proxy_route")
+}
+
+func (service Service) DeleteProxyRoute(ctx context.Context, routeID string, actorID string) error {
+	if service.Store == nil {
+		return errors.New("store is required")
+	}
+	repository, ok := store.Routes(service.Store)
+	if !ok {
+		return errors.New("proxy route repository is unavailable")
+	}
+	if err := repository.Delete(ctx, routeID); err != nil {
+		return err
+	}
+	return service.audit(ctx, actorID, "proxy_route", routeID, "delete_proxy_route")
 }
 
 func (service Service) UpdateProxy(ctx context.Context, input UpdateProxyInput) (domain.Proxy, error) {
