@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/tls"
 	"encoding/binary"
 	"encoding/hex"
@@ -131,8 +132,37 @@ func (listener *Listener) handleTerminatedConn(ctx context.Context, conn net.Con
 		return
 	}
 	request.Body = &maxBytesReadCloser{reader: request.Body, close: request.Body.Close, remaining: maxHTTPBodyBytes}
+	if isAccessActivationPath(request.URL.Path) {
+		listener.handleAccessActivation(ctx, tlsConn, request, proxy)
+		return
+	}
+	if proxy.AccessAuthEnabled {
+		if err := listener.authenticateAccessRequest(ctx, request, proxy); err != nil {
+			_ = writeSimpleResponse(tlsConn, http.StatusUnauthorized, "access activation required\n")
+			return
+		}
+	}
+	if !domain.ValidProxyRequestPath(request.URL.Path, request.URL.RawPath) {
+		_ = writeSimpleResponse(tlsConn, http.StatusBadRequest, "invalid request path\n")
+		return
+	}
+	targetHost, targetPort := proxy.TargetHost, proxy.TargetPort
+	clientID := proxy.ClientID
+	if routes, ok := store.Routes(listener.entry.Store); ok {
+		configured, routeErr := routes.ListByProxyID(ctx, proxy.ID)
+		if routeErr != nil {
+			_ = writeSimpleResponse(tlsConn, http.StatusBadGateway, "proxy route unavailable\n")
+			return
+		}
+		if route, matched := domain.SelectProxyRoute(configured, request.URL.Path); matched {
+			clientID = route.ClientID
+			targetHost, targetPort = route.TargetHost, route.TargetPort
+			request.URL.Path = domain.RewriteProxyRoutePath(request.URL.Path, route)
+			request.URL.RawPath = ""
+		}
+	}
 
-	latest, ok := listener.entry.Sessions.Latest(proxy.ClientID)
+	latest, ok := listener.entry.Sessions.Latest(clientID)
 	if !ok || latest.StreamOpener == nil {
 		log.Printf("https proxy route failed: bind_host=%s port=%d sni=%s proxy_id=%s category=client_offline", displayBindHost(listener.entry.EntryBindHost), listener.entry.EntryPort, proxy.EntryHost, proxy.ID)
 		_ = writeSimpleResponse(tlsConn, http.StatusServiceUnavailable, "client offline\n")
@@ -150,7 +180,7 @@ func (listener *Listener) handleTerminatedConn(ctx context.Context, conn net.Con
 		_ = writeSimpleResponse(tlsConn, http.StatusInternalServerError, "request id failed\n")
 		return
 	}
-	if err := control.WriteMessage(stream, control.MessageOpenStream, control.OpenStream{Kind: "http", ProxyID: proxy.ID, ConnectionID: connectionID, TargetHost: proxy.TargetHost, TargetPort: proxy.TargetPort}); err != nil {
+	if err := control.WriteMessage(stream, control.MessageOpenStream, control.OpenStream{Kind: "http", ProxyID: proxy.ID, ConnectionID: connectionID, TargetHost: targetHost, TargetPort: targetPort}); err != nil {
 		_ = writeSimpleResponse(tlsConn, http.StatusBadGateway, "write proxy stream failed\n")
 		return
 	}
@@ -179,6 +209,121 @@ func (listener *Listener) handleTerminatedConn(ctx context.Context, conn net.Con
 		return
 	}
 	_ = writeResponseWithTimeout(tlsConn, stream, response, httpsReadTimeout)
+}
+
+func isAccessActivationPath(path string) bool {
+	return strings.HasPrefix(path, "/.well-known/goginx/activate/")
+}
+
+func (listener *Listener) authenticateAccessRequest(ctx context.Context, request *http.Request, proxy domain.Proxy) error {
+	access, ok := store.Access(listener.entry.Store)
+	if !ok {
+		return errors.New("proxy access repository is unavailable")
+	}
+	cookie, err := request.Cookie(accessCookieName(proxy.ID))
+	if err != nil || cookie.Value == "" {
+		return errors.New("access cookie is missing")
+	}
+	if err := access.ValidateAccessCredential(ctx, proxy.ID, proxy.AccessAuthVersion, hashAccessValue(cookie.Value), time.Now().UTC()); err != nil {
+		return err
+	}
+	removeCookie(request, cookie.Name)
+	return nil
+}
+
+func (listener *Listener) handleAccessActivation(ctx context.Context, conn net.Conn, request *http.Request, proxy domain.Proxy) {
+	access, ok := store.Access(listener.entry.Store)
+	if !ok {
+		_ = writeSimpleResponse(conn, http.StatusInternalServerError, "access storage unavailable\n")
+		return
+	}
+	tokenValue := strings.TrimPrefix(request.URL.Path, "/.well-known/goginx/activate/")
+	if tokenValue == "" || strings.Contains(tokenValue, "/") {
+		_ = writeSimpleResponse(conn, http.StatusNotFound, "activation link unavailable\n")
+		return
+	}
+	token, err := access.ActivationToken(ctx, proxy.ID, hashAccessValue(tokenValue), time.Now().UTC())
+	if err != nil || token.AuthVersion != proxy.AccessAuthVersion {
+		_ = writeSimpleResponse(conn, http.StatusNotFound, "activation link unavailable\n")
+		return
+	}
+	if request.Method != http.MethodPost {
+		writeAccessResponse(conn, http.StatusOK, "<!doctype html><meta charset=utf-8><title>Activate access</title><form method=post><button type=submit>Activate access</button></form>", nil)
+		return
+	}
+	secret := newAccessSecret()
+	if secret == "" {
+		_ = writeSimpleResponse(conn, http.StatusInternalServerError, "access secret generation failed\n")
+		return
+	}
+	credential := domain.ProxyAccessCredential{ID: newAccessID(), ProxyID: proxy.ID, AuthVersion: proxy.AccessAuthVersion}
+	if credential.ID == "" {
+		_ = writeSimpleResponse(conn, http.StatusInternalServerError, "access credential generation failed\n")
+		return
+	}
+	if err := access.RedeemActivationToken(ctx, token.ID, hashAccessValue(secret), credential, time.Now().UTC()); err != nil {
+		_ = writeSimpleResponse(conn, http.StatusNotFound, "activation link unavailable\n")
+		return
+	}
+	header := http.Header{}
+	header.Set("Set-Cookie", (&http.Cookie{Name: accessCookieName(proxy.ID), Value: secret, Path: "/", Secure: true, HttpOnly: true, SameSite: http.SameSiteLaxMode}).String())
+	header.Set("Location", "/")
+	writeAccessResponse(conn, http.StatusSeeOther, "", header)
+}
+
+func accessCookieName(proxyID string) string {
+	return "__Host-goginx-access-" + hashAccessValue(proxyID)[:12]
+}
+
+func hashAccessValue(value string) string {
+	hash := sha256.Sum256([]byte(value))
+	return hex.EncodeToString(hash[:])
+}
+
+func newAccessSecret() string {
+	var value [32]byte
+	if _, err := rand.Read(value[:]); err != nil {
+		return ""
+	}
+	return hex.EncodeToString(value[:])
+}
+
+func newAccessID() string {
+	var value [16]byte
+	if _, err := rand.Read(value[:]); err != nil {
+		return ""
+	}
+	return hex.EncodeToString(value[:])
+}
+
+func removeCookie(request *http.Request, name string) {
+	cookies := request.Cookies()
+	values := make([]string, 0, len(cookies))
+	for _, cookie := range cookies {
+		if cookie.Name != name {
+			values = append(values, cookie.Name+"="+cookie.Value)
+		}
+	}
+	if len(values) == 0 {
+		request.Header.Del("Cookie")
+	} else {
+		request.Header.Set("Cookie", strings.Join(values, "; "))
+	}
+}
+
+func writeAccessResponse(conn net.Conn, status int, body string, headers http.Header) error {
+	response := &http.Response{StatusCode: status, Status: http.StatusText(status), Header: headers, Body: io.NopCloser(strings.NewReader(body)), ContentLength: int64(len(body))}
+	if response.Header == nil {
+		response.Header = make(http.Header)
+	}
+	response.Header.Set("Cache-Control", "no-store")
+	response.Header.Set("Referrer-Policy", "no-referrer")
+	response.Header.Set("X-Content-Type-Options", "nosniff")
+	response.Header.Set("Content-Security-Policy", "default-src 'none'; form-action 'self'; style-src 'unsafe-inline'")
+	if body != "" {
+		response.Header.Set("Content-Type", "text/html; charset=utf-8")
+	}
+	return response.Write(conn)
 }
 
 type responseResult struct {

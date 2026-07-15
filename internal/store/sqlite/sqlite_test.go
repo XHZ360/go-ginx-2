@@ -1129,6 +1129,84 @@ func openTestStore(t *testing.T) *Store {
 	return db
 }
 
+func TestProxyRoutesPersistAndOrderByLongestPrefix(t *testing.T) {
+	ctx := context.Background()
+	db := openTestStore(t)
+	seedUserAndClient(t, ctx, db)
+	proxy := domain.Proxy{ID: "p-route", UserID: "u1", ClientID: "c1", Name: "web", Type: domain.ProxyHTTP, Status: domain.ProxyEnabled, EntryHost: "app.example.com", TargetHost: "127.0.0.1", TargetPort: 8080}
+	if err := db.Proxies().Create(ctx, proxy); err != nil {
+		t.Fatalf("create proxy: %v", err)
+	}
+	routes := db.ProxyRoutes()
+	for _, route := range []domain.ProxyRoute{
+		{ID: "r-api", ProxyID: proxy.ID, ClientID: "c1", PathPrefix: "/api/", TargetHost: "127.0.0.1", TargetPort: 8081, Status: domain.ProxyRouteEnabled},
+		{ID: "r-v2", ProxyID: proxy.ID, ClientID: "c1", PathPrefix: "/api/v2", TargetHost: "127.0.0.1", TargetPort: 8082, Status: domain.ProxyRouteEnabled},
+	} {
+		if err := routes.Create(ctx, route); err != nil {
+			t.Fatalf("create route: %v", err)
+		}
+	}
+	stored, err := routes.ListByProxyID(ctx, proxy.ID)
+	if err != nil {
+		t.Fatalf("list routes: %v", err)
+	}
+	if len(stored) != 2 || stored[0].PathPrefix != "/api/v2" || stored[1].PathPrefix != "/api" {
+		t.Fatalf("unexpected route order: %+v", stored)
+	}
+}
+
+func TestProxyAccessTokenRedeemIsSingleUseAndRevocable(t *testing.T) {
+	ctx := context.Background()
+	db := openTestStore(t)
+	seedUserAndClient(t, ctx, db)
+	proxy := domain.Proxy{ID: "p-access", UserID: "u1", ClientID: "c1", Name: "secure", Type: domain.ProxyHTTPS, Status: domain.ProxyEnabled, EntryHost: "secure.example.com", TargetHost: "127.0.0.1", TargetPort: 8080, AccessAuthEnabled: true, AccessAuthVersion: 1}
+	if err := db.Proxies().Create(ctx, proxy); err != nil {
+		t.Fatal(err)
+	}
+	access := db.ProxyAccess()
+	now := time.Now().UTC()
+	if err := access.CreateActivationToken(ctx, domain.ProxyActivationToken{ID: "token-1", ProxyID: proxy.ID, AuthVersion: 1, TokenHash: "token-hash", ExpiresAt: now.Add(time.Minute)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := access.ActivationToken(ctx, proxy.ID, "token-hash", now); err != nil {
+		t.Fatal(err)
+	}
+	if err := access.RedeemActivationToken(ctx, "token-1", "secret-hash", domain.ProxyAccessCredential{ID: "credential-1", ProxyID: proxy.ID, AuthVersion: 1}, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := access.RedeemActivationToken(ctx, "token-1", "other-secret", domain.ProxyAccessCredential{ID: "credential-2", ProxyID: proxy.ID, AuthVersion: 1}, now); !errors.Is(err, store.ErrConflict) {
+		t.Fatalf("expected single-use conflict, got %v", err)
+	}
+	if err := access.ValidateAccessCredential(ctx, proxy.ID, 1, "secret-hash", now); err != nil {
+		t.Fatal(err)
+	}
+	if err := access.RevokeAllAccess(ctx, proxy.ID, 2); err != nil {
+		t.Fatal(err)
+	}
+	if err := access.ValidateAccessCredential(ctx, proxy.ID, 1, "secret-hash", now); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("expected revoked credential, got %v", err)
+	}
+	if err := access.CreateActivationToken(ctx, domain.ProxyActivationToken{ID: "token-2", ProxyID: proxy.ID, AuthVersion: 2, TokenHash: "token-hash-2", ExpiresAt: now.Add(time.Minute)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := access.RedeemActivationToken(ctx, "token-2", "secret-hash-2", domain.ProxyAccessCredential{ID: "credential-3", ProxyID: proxy.ID, AuthVersion: 2}, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := access.DisableAuth(ctx, proxy.ID, 3); err != nil {
+		t.Fatal(err)
+	}
+	disabled, err := db.Proxies().ByID(ctx, proxy.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if disabled.AccessAuthEnabled || disabled.AccessAuthVersion != 3 {
+		t.Fatalf("expected auth disabled with version 3, got enabled=%v version=%d", disabled.AccessAuthEnabled, disabled.AccessAuthVersion)
+	}
+	if err := access.ValidateAccessCredential(ctx, proxy.ID, 2, "secret-hash-2", now); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("expected disabled credential invalid, got %v", err)
+	}
+}
+
 func seedUserAndClient(t *testing.T, ctx context.Context, db *Store) {
 	t.Helper()
 	user := domain.User{ID: "u1", Username: "alice", Role: domain.RoleUser, Status: domain.UserEnabled}

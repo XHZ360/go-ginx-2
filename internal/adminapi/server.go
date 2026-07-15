@@ -145,6 +145,11 @@ type proxyPayload struct {
 	Status string
 }
 
+type proxyRoutePayload struct {
+	Route domain.ProxyRoute
+	ID    string
+}
+
 type userPayload struct {
 	User   adminquery.UserDetail
 	ID     string
@@ -850,6 +855,37 @@ func (server *Server) buildSchema() (graphql.Schema, error) {
 		"httpsDefaultPort":     &graphql.Field{Type: graphql.Int},
 		"hosts":                &graphql.Field{Type: graphql.NewList(proxyEntryHostOptionType)},
 	}})
+	proxyRouteType := graphql.NewObject(graphql.ObjectConfig{Name: "AdminProxyRoute", Fields: graphql.Fields{
+		"id":                 &graphql.Field{Type: graphql.String},
+		"proxyId":            &graphql.Field{Type: graphql.String},
+		"clientId":           &graphql.Field{Type: graphql.String},
+		"pathPrefix":         &graphql.Field{Type: graphql.String},
+		"stripPrefix":        &graphql.Field{Type: graphql.Boolean},
+		"upstreamPathPrefix": &graphql.Field{Type: graphql.String},
+		"targetHost":         &graphql.Field{Type: graphql.String},
+		"targetPort":         &graphql.Field{Type: graphql.Int},
+		"status":             &graphql.Field{Type: graphql.String},
+		"createdAt": &graphql.Field{Type: graphql.String, Resolve: func(params graphql.ResolveParams) (interface{}, error) {
+			switch value := params.Source.(type) {
+			case adminquery.ProxyRouteItem:
+				return value.CreatedAt.UTC().Format(time.RFC3339), nil
+			case domain.ProxyRoute:
+				return value.CreatedAt.UTC().Format(time.RFC3339), nil
+			default:
+				return "", nil
+			}
+		}},
+		"updatedAt": &graphql.Field{Type: graphql.String, Resolve: func(params graphql.ResolveParams) (interface{}, error) {
+			switch value := params.Source.(type) {
+			case adminquery.ProxyRouteItem:
+				return value.UpdatedAt.UTC().Format(time.RFC3339), nil
+			case domain.ProxyRoute:
+				return value.UpdatedAt.UTC().Format(time.RFC3339), nil
+			default:
+				return "", nil
+			}
+		}},
+	}})
 	proxyType := graphql.NewObject(graphql.ObjectConfig{Name: "AdminProxy", Fields: graphql.Fields{
 		"id":                   &graphql.Field{Type: graphql.String},
 		"userId":               &graphql.Field{Type: graphql.String},
@@ -865,10 +901,22 @@ func (server *Server) buildSchema() (graphql.Schema, error) {
 		"tcpErrorCount":        &graphql.Field{Type: graphql.Int},
 		"udpErrorCount":        &graphql.Field{Type: graphql.Int},
 		"httpErrorCount":       &graphql.Field{Type: graphql.Int},
-		"config":               &graphql.Field{Type: proxyConfigType},
-		"certificate":          &graphql.Field{Type: managedCertificateType},
-		"createdAt":            &graphql.Field{Type: graphql.String, Resolve: proxyCreatedAtResolve()},
-		"updatedAt":            &graphql.Field{Type: graphql.String, Resolve: proxyUpdatedAtResolve()},
+		"accessAuthEnabled":    &graphql.Field{Type: graphql.Boolean},
+		"routes": &graphql.Field{Type: graphql.NewList(proxyRouteType), Resolve: func(params graphql.ResolveParams) (interface{}, error) {
+			switch value := params.Source.(type) {
+			case adminquery.ProxyDetail:
+				if value.Routes == nil {
+					return []adminquery.ProxyRouteItem{}, nil
+				}
+				return value.Routes, nil
+			default:
+				return []adminquery.ProxyRouteItem{}, nil
+			}
+		}},
+		"config":      &graphql.Field{Type: proxyConfigType},
+		"certificate": &graphql.Field{Type: managedCertificateType},
+		"createdAt":   &graphql.Field{Type: graphql.String, Resolve: proxyCreatedAtResolve()},
+		"updatedAt":   &graphql.Field{Type: graphql.String, Resolve: proxyUpdatedAtResolve()},
 	}})
 	dashboardType := graphql.NewObject(graphql.ObjectConfig{Name: "AdminDashboard", Fields: graphql.Fields{
 		"onlineClientCount":        &graphql.Field{Type: graphql.Int},
@@ -1000,6 +1048,32 @@ func (server *Server) buildSchema() (graphql.Schema, error) {
 		"description": &graphql.InputObjectFieldConfig{Type: graphql.String},
 		"config":      &graphql.InputObjectFieldConfig{Type: graphql.NewNonNull(proxyConfigInput)},
 	}})
+	createProxyRouteInput := graphql.NewInputObject(graphql.InputObjectConfig{Name: "AdminCreateProxyRouteInput", Fields: graphql.InputObjectConfigFieldMap{
+		"proxyId":            &graphql.InputObjectFieldConfig{Type: graphql.NewNonNull(graphql.String)},
+		"clientId":           &graphql.InputObjectFieldConfig{Type: graphql.NewNonNull(graphql.String)},
+		"pathPrefix":         &graphql.InputObjectFieldConfig{Type: graphql.NewNonNull(graphql.String)},
+		"stripPrefix":        &graphql.InputObjectFieldConfig{Type: graphql.Boolean},
+		"upstreamPathPrefix": &graphql.InputObjectFieldConfig{Type: graphql.String},
+		"targetHost":         &graphql.InputObjectFieldConfig{Type: graphql.NewNonNull(graphql.String)},
+		"targetPort":         &graphql.InputObjectFieldConfig{Type: graphql.NewNonNull(graphql.Int)},
+	}})
+	updateProxyRouteInput := graphql.NewInputObject(graphql.InputObjectConfig{Name: "AdminUpdateProxyRouteInput", Fields: graphql.InputObjectConfigFieldMap{
+		"id":                 &graphql.InputObjectFieldConfig{Type: graphql.NewNonNull(graphql.String)},
+		"clientId":           &graphql.InputObjectFieldConfig{Type: graphql.NewNonNull(graphql.String)},
+		"pathPrefix":         &graphql.InputObjectFieldConfig{Type: graphql.NewNonNull(graphql.String)},
+		"stripPrefix":        &graphql.InputObjectFieldConfig{Type: graphql.Boolean},
+		"upstreamPathPrefix": &graphql.InputObjectFieldConfig{Type: graphql.String},
+		"targetHost":         &graphql.InputObjectFieldConfig{Type: graphql.NewNonNull(graphql.String)},
+		"targetPort":         &graphql.InputObjectFieldConfig{Type: graphql.NewNonNull(graphql.Int)},
+		"status":             &graphql.InputObjectFieldConfig{Type: graphql.String},
+	}})
+	proxyRoutePayloadType := graphql.NewObject(graphql.ObjectConfig{Name: "AdminProxyRoutePayload", Fields: graphql.Fields{
+		"route": &graphql.Field{Type: proxyRouteType},
+		"routeId": &graphql.Field{Type: graphql.String, Resolve: func(params graphql.ResolveParams) (interface{}, error) {
+			payload, _ := params.Source.(proxyRoutePayload)
+			return payload.ID, nil
+		}},
+	}})
 	certificateInput := graphql.NewInputObject(graphql.InputObjectConfig{Name: "AdminCertificateMutationInput", Fields: graphql.InputObjectConfigFieldMap{
 		"proxyId":           &graphql.InputObjectFieldConfig{Type: graphql.String},
 		"certificateId":     &graphql.InputObjectFieldConfig{Type: graphql.String},
@@ -1016,6 +1090,16 @@ func (server *Server) buildSchema() (graphql.Schema, error) {
 		"requestedValidity": &graphql.InputObjectFieldConfig{Type: graphql.Int},
 		"certFile":          &graphql.InputObjectFieldConfig{Type: graphql.String},
 		"keyFile":           &graphql.InputObjectFieldConfig{Type: graphql.String},
+	}})
+	proxyActivationType := graphql.NewObject(graphql.ObjectConfig{Name: "AdminProxyActivation", Fields: graphql.Fields{
+		"url": &graphql.Field{Type: graphql.NewNonNull(graphql.String)},
+		"expiresAt": &graphql.Field{Type: graphql.String, Resolve: func(params graphql.ResolveParams) (interface{}, error) {
+			result, ok := params.Source.(admin.ProxyActivationResult)
+			if !ok {
+				return "", nil
+			}
+			return result.ExpiresAt.UTC().Format(time.RFC3339), nil
+		}},
 	}})
 	deleteCertificateInput := graphql.NewInputObject(graphql.InputObjectConfig{Name: "AdminDeleteCertificateInput", Fields: graphql.InputObjectConfigFieldMap{
 		"certificateId":        &graphql.InputObjectFieldConfig{Type: graphql.NewNonNull(graphql.String)},
@@ -1308,6 +1392,78 @@ func (server *Server) buildSchema() (graphql.Schema, error) {
 				return nil, err
 			}
 			return proxyPayload{Proxy: detail, ID: updated.ID, Status: string(detail.Status)}, nil
+		})},
+		"enableProxyAccessAuthAndCreateActivation": &graphql.Field{Type: proxyActivationType, Args: graphql.FieldConfigArgument{"input": &graphql.ArgumentConfig{Type: graphql.NewNonNull(userIDInput)}}, Resolve: server.wrapResolve(func(params graphql.ResolveParams) (interface{}, error) {
+			proxyID := stringValue(mapArg(params.Args, "input"), "id")
+			return server.commands.EnableProxyAccessAuthAndCreateActivation(params.Context, proxyID, actorFromContext(params.Context))
+		})},
+		"createProxyActivationLink": &graphql.Field{Type: proxyActivationType, Args: graphql.FieldConfigArgument{"input": &graphql.ArgumentConfig{Type: graphql.NewNonNull(userIDInput)}}, Resolve: server.wrapResolve(func(params graphql.ResolveParams) (interface{}, error) {
+			proxyID := stringValue(mapArg(params.Args, "input"), "id")
+			return server.commands.CreateProxyActivationLink(params.Context, proxyID, actorFromContext(params.Context))
+		})},
+		"revokeAllProxyAccess": &graphql.Field{Type: proxyPayloadType, Args: graphql.FieldConfigArgument{"input": &graphql.ArgumentConfig{Type: graphql.NewNonNull(userIDInput)}}, Resolve: server.wrapResolve(func(params graphql.ResolveParams) (interface{}, error) {
+			proxyID := stringValue(mapArg(params.Args, "input"), "id")
+			if err := server.commands.RevokeAllProxyAccess(params.Context, proxyID, actorFromContext(params.Context)); err != nil {
+				return nil, err
+			}
+			detail, err := server.query.ProxyDetail(params.Context, proxyID)
+			if err != nil {
+				return nil, err
+			}
+			return proxyPayload{Proxy: detail, ID: proxyID, Status: string(detail.Status)}, nil
+		})},
+		"disableProxyAccessAuth": &graphql.Field{Type: proxyPayloadType, Args: graphql.FieldConfigArgument{"input": &graphql.ArgumentConfig{Type: graphql.NewNonNull(userIDInput)}}, Resolve: server.wrapResolve(func(params graphql.ResolveParams) (interface{}, error) {
+			proxyID := stringValue(mapArg(params.Args, "input"), "id")
+			if err := server.commands.DisableProxyAccessAuth(params.Context, proxyID, actorFromContext(params.Context)); err != nil {
+				return nil, err
+			}
+			detail, err := server.query.ProxyDetail(params.Context, proxyID)
+			if err != nil {
+				return nil, err
+			}
+			return proxyPayload{Proxy: detail, ID: proxyID, Status: string(detail.Status)}, nil
+		})},
+		"createProxyRoute": &graphql.Field{Type: proxyRoutePayloadType, Args: graphql.FieldConfigArgument{"input": &graphql.ArgumentConfig{Type: graphql.NewNonNull(createProxyRouteInput)}}, Resolve: server.wrapResolve(func(params graphql.ResolveParams) (interface{}, error) {
+			input := mapArg(params.Args, "input")
+			created, err := server.commands.CreateProxyRoute(params.Context, admin.CreateProxyRouteInput{
+				ProxyID:            stringValue(input, "proxyId"),
+				ClientID:           stringValue(input, "clientId"),
+				PathPrefix:         stringValue(input, "pathPrefix"),
+				StripPrefix:        boolValue(input, "stripPrefix"),
+				UpstreamPathPrefix: stringValue(input, "upstreamPathPrefix"),
+				TargetHost:         stringValue(input, "targetHost"),
+				TargetPort:         intValue(input, "targetPort"),
+				ActorID:            actorFromContext(params.Context),
+			})
+			if err != nil {
+				return nil, err
+			}
+			return proxyRoutePayload{Route: created, ID: created.ID}, nil
+		})},
+		"updateProxyRoute": &graphql.Field{Type: proxyRoutePayloadType, Args: graphql.FieldConfigArgument{"input": &graphql.ArgumentConfig{Type: graphql.NewNonNull(updateProxyRouteInput)}}, Resolve: server.wrapResolve(func(params graphql.ResolveParams) (interface{}, error) {
+			input := mapArg(params.Args, "input")
+			updated, err := server.commands.UpdateProxyRoute(params.Context, admin.UpdateProxyRouteInput{
+				ID:                 stringValue(input, "id"),
+				ClientID:           stringValue(input, "clientId"),
+				PathPrefix:         stringValue(input, "pathPrefix"),
+				StripPrefix:        boolValue(input, "stripPrefix"),
+				UpstreamPathPrefix: stringValue(input, "upstreamPathPrefix"),
+				TargetHost:         stringValue(input, "targetHost"),
+				TargetPort:         intValue(input, "targetPort"),
+				Status:             domain.ProxyRouteStatus(stringValue(input, "status")),
+				ActorID:            actorFromContext(params.Context),
+			})
+			if err != nil {
+				return nil, err
+			}
+			return proxyRoutePayload{Route: updated, ID: updated.ID}, nil
+		})},
+		"deleteProxyRoute": &graphql.Field{Type: proxyRoutePayloadType, Args: graphql.FieldConfigArgument{"input": &graphql.ArgumentConfig{Type: graphql.NewNonNull(userIDInput)}}, Resolve: server.wrapResolve(func(params graphql.ResolveParams) (interface{}, error) {
+			routeID := stringValue(mapArg(params.Args, "input"), "id")
+			if err := server.commands.DeleteProxyRoute(params.Context, routeID, actorFromContext(params.Context)); err != nil {
+				return nil, err
+			}
+			return proxyRoutePayload{ID: routeID}, nil
 		})},
 		"enableProxy": &graphql.Field{Type: proxyPayloadType, Args: graphql.FieldConfigArgument{"input": &graphql.ArgumentConfig{Type: graphql.NewNonNull(userIDInput)}}, Resolve: server.wrapResolve(func(params graphql.ResolveParams) (interface{}, error) {
 			proxyID := stringValue(mapArg(params.Args, "input"), "id")
@@ -1812,6 +1968,14 @@ func boolPointer(values map[string]interface{}, key string) *bool {
 	}
 	copy := value
 	return &copy
+}
+
+func boolValue(values map[string]interface{}, key string) bool {
+	if values == nil {
+		return false
+	}
+	value, _ := values[key].(bool)
+	return value
 }
 
 func extractUserPayload(source interface{}) userPayload {

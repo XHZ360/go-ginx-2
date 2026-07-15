@@ -1,6 +1,6 @@
-import { useEffect, useState } from 'react';
-import { EditOutlined, ThunderboltOutlined } from '@ant-design/icons';
-import { Button } from 'antd';
+import { useEffect, useMemo, useState } from 'react';
+import { EditOutlined, PlusOutlined, ThunderboltOutlined } from '@ant-design/icons';
+import { Button, QRCode, Switch } from 'antd';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { ConfirmButton } from '../components/ConfirmButton';
@@ -11,14 +11,22 @@ import { ErrorState, NotFoundState, PageLoading, ValidationBanner } from '../com
 import { useAuthedQuery } from '../hooks/useAuthedQuery';
 import { useMutationWithAuth } from '../hooks/useMutationWithAuth';
 import {
+  mutateCreateProxyActivationLink,
+  mutateCreateProxyRoute,
   mutateDeleteProxy,
+  mutateDeleteProxyRoute,
   mutateDisableProxy,
+  mutateDisableProxyAccessAuth,
   mutateEnableProxy,
+  mutateEnableProxyAccessAuthAndCreateActivation,
+  mutateRevokeAllProxyAccess,
   mutateUpdateProxy,
+  mutateUpdateProxyRoute,
+  queryClients,
   queryProxyEntryOptions,
   queryProxy,
 } from '../lib/admin-graphql';
-import { isApiError, isNotFoundError, type ProxyEntryHostOption, type ProxyRecord } from '../lib/contracts';
+import { isApiError, isNotFoundError, type ProxyActivation, type ProxyEntryHostOption, type ProxyRecord, type ProxyRoute } from '../lib/contracts';
 import {
   buildCertificateCreateLink,
   clearProxyDraft,
@@ -31,7 +39,6 @@ import { formatBytes } from '../lib/format';
 import { useSession } from '../session';
 import { DetailBackLink, PageHeader, StatusBadge, Timestamp } from './shared';
 
-// ProxyEditDraft：编辑表单跳转「创建证书」时的草稿快照（不含 secret material）。
 type ProxyEditDraft = {
   name: string;
   description: string;
@@ -43,7 +50,6 @@ type ProxyEditDraft = {
   certificateId: string;
 };
 
-// ProxyConfigSubmit 与 admin-graphql 的 ProxyConfigInput 兼容，外加 certificateId 绑定字段。
 type ProxyConfigSubmit = {
   entryBindHost?: string;
   entryHost?: string;
@@ -51,6 +57,17 @@ type ProxyConfigSubmit = {
   targetHost?: string;
   targetPort?: number;
   certificateId?: string;
+};
+
+type RouteDraft = {
+  id?: string;
+  clientId: string;
+  pathPrefix: string;
+  stripPrefix: boolean;
+  upstreamPathPrefix: string;
+  targetHost: string;
+  targetPort: string;
+  status: string;
 };
 
 function isRouteProxy(type: string) {
@@ -75,8 +92,6 @@ function hostOptionsWithCurrent(options: ProxyEntryHostOption[], current: string
   return [{ value: current, label: current, isDefault: false }, ...options];
 }
 
-// buildUpdateConfig 组装更新用的 config（含 certificateId 绑定）。
-// 注意：不再提交 certFile/keyFile（证书改由 certificateId 绑定）。
 function buildUpdateConfig(input: ProxyEditDraft, type?: string): ProxyConfigSubmit {
   return {
     entryBindHost: input.entryBindHost || undefined,
@@ -85,6 +100,31 @@ function buildUpdateConfig(input: ProxyEditDraft, type?: string): ProxyConfigSub
     targetHost: input.targetHost || undefined,
     targetPort: input.targetPort ? Number(input.targetPort) : undefined,
     certificateId: type && isHTTPSProxy(type) ? input.certificateId : undefined,
+  };
+}
+
+function emptyRouteDraft(clientId = ''): RouteDraft {
+  return {
+    clientId,
+    pathPrefix: '/',
+    stripPrefix: false,
+    upstreamPathPrefix: '/',
+    targetHost: '',
+    targetPort: '',
+    status: 'enabled',
+  };
+}
+
+function routeDraftFromRoute(route: ProxyRoute): RouteDraft {
+  return {
+    id: route.id,
+    clientId: route.clientId,
+    pathPrefix: route.pathPrefix,
+    stripPrefix: route.stripPrefix,
+    upstreamPathPrefix: route.upstreamPathPrefix || '/',
+    targetHost: route.targetHost,
+    targetPort: String(route.targetPort),
+    status: route.status,
   };
 }
 
@@ -108,6 +148,10 @@ export function ProxyDetailPage() {
     targetPort: '',
     certificateId: '',
   });
+  const [routeDialogOpen, setRouteDialogOpen] = useState(false);
+  const [routeDraft, setRouteDraft] = useState<RouteDraft>(emptyRouteDraft());
+  const [routeError, setRouteError] = useState<string>();
+  const [activation, setActivation] = useState<ProxyActivation>();
 
   const query = useAuthedQuery({
     queryKey: ['proxy', id],
@@ -118,12 +162,16 @@ export function ProxyDetailPage() {
     queryKey: ['proxy-entry-options'],
     queryFn: () => queryProxyEntryOptions(),
   });
+  const clientsQuery = useAuthedQuery({
+    queryKey: ['clients', 'proxy-routes', query.data?.userId],
+    queryFn: () => queryClients({ page: { page: 1, pageSize: 200 }, filter: { userId: query.data?.userId } }),
+    enabled: Boolean(query.data?.userId),
+  });
 
   useEffect(() => {
     if (!query.data) {
       return;
     }
-    // 编辑中（或从证书创建流程返回）时不要用轮询数据覆盖表单，避免丢失未保存的修改。
     if (editing) {
       return;
     }
@@ -139,7 +187,6 @@ export function ProxyDetailPage() {
     });
   }, [query.data, editing]);
 
-  // 从「创建证书」流程返回：还原草稿并自动选中新建证书（任务 5.5 / 5.6）。
   useEffect(() => {
     const createdCertificateId = searchParams.get(CREATED_CERT_PARAM);
     if (!createdCertificateId) {
@@ -151,7 +198,6 @@ export function ProxyDetailPage() {
       setLocalForm({ ...draft, certificateId: createdCertificateId });
       setDraftNotice(undefined);
     } else {
-      // 草稿缺失/过期/解析失败：安全降级——回退到当前 proxy 配置（若已加载），并预选新证书。
       const fallback = query.data;
       setLocalForm((current) =>
         fallback
@@ -246,6 +292,110 @@ export function ProxyDetailPage() {
     },
   });
 
+  const enableAuthMutation = useMutationWithAuth({
+    mutationFn: () => mutateEnableProxyAccessAuthAndCreateActivation(session.csrfToken ?? '', id),
+    onSuccess: async (result) => {
+      setFormError(undefined);
+      setActivation(result);
+      await queryClient.invalidateQueries({ queryKey: ['proxy', id] });
+    },
+    onError: (error) => {
+      if (isApiError(error)) {
+        setFormError(error.message);
+      }
+    },
+  });
+
+  const createActivationMutation = useMutationWithAuth({
+    mutationFn: () => mutateCreateProxyActivationLink(session.csrfToken ?? '', id),
+    onSuccess: (result) => {
+      setFormError(undefined);
+      setActivation(result);
+    },
+    onError: (error) => {
+      if (isApiError(error)) {
+        setFormError(error.message);
+      }
+    },
+  });
+
+  const revokeAccessMutation = useMutationWithAuth({
+    mutationFn: () => mutateRevokeAllProxyAccess(session.csrfToken ?? '', id),
+    onSuccess: async () => {
+      setFormError(undefined);
+      setActivation(undefined);
+      await queryClient.invalidateQueries({ queryKey: ['proxy', id] });
+    },
+    onError: (error) => {
+      if (isApiError(error)) {
+        setFormError(error.message);
+      }
+    },
+  });
+
+  const disableAuthMutation = useMutationWithAuth({
+    mutationFn: () => mutateDisableProxyAccessAuth(session.csrfToken ?? '', id),
+    onSuccess: async () => {
+      setFormError(undefined);
+      setActivation(undefined);
+      await queryClient.invalidateQueries({ queryKey: ['proxy', id] });
+    },
+    onError: (error) => {
+      if (isApiError(error)) {
+        setFormError(error.message);
+      }
+    },
+  });
+
+  const saveRouteMutation = useMutationWithAuth({
+    mutationFn: async (input: RouteDraft) => {
+      if (input.id) {
+        return mutateUpdateProxyRoute(session.csrfToken ?? '', {
+          id: input.id,
+          clientId: input.clientId,
+          pathPrefix: input.pathPrefix,
+          stripPrefix: input.stripPrefix,
+          upstreamPathPrefix: input.upstreamPathPrefix || '/',
+          targetHost: input.targetHost,
+          targetPort: Number(input.targetPort),
+          status: input.status,
+        });
+      }
+      return mutateCreateProxyRoute(session.csrfToken ?? '', {
+        proxyId: id,
+        clientId: input.clientId,
+        pathPrefix: input.pathPrefix,
+        stripPrefix: input.stripPrefix,
+        upstreamPathPrefix: input.upstreamPathPrefix || '/',
+        targetHost: input.targetHost,
+        targetPort: Number(input.targetPort),
+      });
+    },
+    onSuccess: async () => {
+      setRouteDialogOpen(false);
+      setRouteError(undefined);
+      await queryClient.invalidateQueries({ queryKey: ['proxy', id] });
+    },
+    onError: (error) => {
+      if (isApiError(error)) {
+        setRouteError(error.message);
+      }
+    },
+  });
+
+  const deleteRouteMutation = useMutationWithAuth({
+    mutationFn: (routeId: string) => mutateDeleteProxyRoute(session.csrfToken ?? '', routeId),
+    onSuccess: async () => {
+      setFormError(undefined);
+      await queryClient.invalidateQueries({ queryKey: ['proxy', id] });
+    },
+    onError: (error) => {
+      if (isApiError(error)) {
+        setFormError(error.message);
+      }
+    },
+  });
+
   const openEdit = () => {
     setDraftNotice(undefined);
     setFieldErrors(undefined);
@@ -258,11 +408,12 @@ export function ProxyDetailPage() {
     setDraftNotice(undefined);
   };
 
-  // handleCreateCertificate：保存当前编辑表单草稿并跳转到证书创建流程，返回 /proxies/<id> 重新打开编辑对话框。
   const handleCreateCertificate = () => {
     const draftId = saveProxyDraft<ProxyEditDraft>({ ...localForm });
     navigate(buildCertificateCreateLink({ returnTo: `/proxies/${id}`, draftId, host: localForm.entryHost || undefined }));
   };
+
+  const clientOptions = useMemo(() => clientsQuery.data?.items ?? [], [clientsQuery.data?.items]);
 
   if (query.isLoading) {
     return <PageLoading label="Loading proxy..." />;
@@ -281,6 +432,7 @@ export function ProxyDetailPage() {
   const usesRouteHost = isRouteProxy(proxy.type);
   const usesCertificates = isHTTPSProxy(proxy.type);
   const hostOptions = hostOptionsWithCurrent(entryOptionsQuery.data?.hosts ?? [{ value: '', label: 'Default listener host', isDefault: true }], localForm.entryBindHost);
+  const routes = proxy.routes ?? [];
 
   return (
     <section className="page-section">
@@ -352,6 +504,111 @@ export function ProxyDetailPage() {
             </dl>
           </article>
         ) : null}
+        {usesRouteHost ? (
+          <article className="panel">
+            <div className="panel__header">
+              <h2>Path routes</h2>
+              <Button
+                type="default"
+                icon={<PlusOutlined aria-hidden="true" />}
+                onClick={() => {
+                  setRouteDraft(emptyRouteDraft(proxy.clientId));
+                  setRouteError(undefined);
+                  setRouteDialogOpen(true);
+                }}
+              >
+                Add route
+              </Button>
+            </div>
+            {routes.length === 0 ? (
+              <p className="muted">No path routes configured. Default backend is used for all paths.</p>
+            ) : (
+              <table className="data-table">
+                <thead>
+                  <tr>
+                    <th>Path</th>
+                    <th>Client</th>
+                    <th>Target</th>
+                    <th>Rewrite</th>
+                    <th>Status</th>
+                    <th />
+                  </tr>
+                </thead>
+                <tbody>
+                  {routes.map((route) => (
+                    <tr key={route.id}>
+                      <td>{route.pathPrefix}</td>
+                      <td>{route.clientId}</td>
+                      <td>
+                        {route.targetHost}:{route.targetPort}
+                      </td>
+                      <td>
+                        {route.stripPrefix ? `strip → ${route.upstreamPathPrefix || '/'}` : 'keep path'}
+                      </td>
+                      <td>
+                        <StatusBadge value={route.status} />
+                      </td>
+                      <td className="table-actions">
+                        <Button
+                          type="link"
+                          onClick={() => {
+                            setRouteDraft(routeDraftFromRoute(route));
+                            setRouteError(undefined);
+                            setRouteDialogOpen(true);
+                          }}
+                        >
+                          Edit
+                        </Button>
+                        <ConfirmButton
+                          label="Delete"
+                          confirmLabel="Delete this path route?"
+                          onConfirm={() => deleteRouteMutation.mutate(route.id)}
+                          disabled={deleteRouteMutation.isPending}
+                        />
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </article>
+        ) : null}
+        {usesCertificates ? (
+          <article className="panel">
+            <h2>Access activation</h2>
+            <dl className="detail-list">
+              <div>
+                <dt>Status</dt>
+                <dd>{proxy.accessAuthEnabled ? 'Enabled' : 'Disabled'}</dd>
+              </div>
+            </dl>
+            <div className="stack">
+              {!proxy.accessAuthEnabled ? (
+                <Button type="primary" onClick={() => enableAuthMutation.mutate(undefined)} disabled={enableAuthMutation.isPending}>
+                  {enableAuthMutation.isPending ? 'Enabling...' : 'Enable auth and create link'}
+                </Button>
+              ) : (
+                <>
+                  <Button type="default" onClick={() => createActivationMutation.mutate(undefined)} disabled={createActivationMutation.isPending}>
+                    {createActivationMutation.isPending ? 'Creating...' : 'Create activation link'}
+                  </Button>
+                  <ConfirmButton
+                    label="Revoke all access"
+                    confirmLabel="Revoke all activation tokens and cookies?"
+                    onConfirm={() => revokeAccessMutation.mutate(undefined)}
+                    disabled={revokeAccessMutation.isPending}
+                  />
+                  <ConfirmButton
+                    label="Disable access auth"
+                    confirmLabel="Disable access authentication and revoke all credentials?"
+                    onConfirm={() => disableAuthMutation.mutate(undefined)}
+                    disabled={disableAuthMutation.isPending}
+                  />
+                </>
+              )}
+            </div>
+          </article>
+        ) : null}
       </div>
 
       <Dialog
@@ -400,6 +657,98 @@ export function ProxyDetailPage() {
           ) : null}
           <TextAreaField label="Description" value={localForm.description} onChange={(event) => setLocalForm((current) => ({ ...current, description: event.target.value }))} />
         </div>
+      </Dialog>
+
+      <Dialog
+        open={routeDialogOpen}
+        title={routeDraft.id ? 'Edit path route' : 'Add path route'}
+        onClose={() => {
+          setRouteDialogOpen(false);
+          setRouteError(undefined);
+        }}
+        footer={
+          <>
+            <Button
+              type="default"
+              onClick={() => {
+                setRouteDialogOpen(false);
+                setRouteError(undefined);
+              }}
+            >
+              Cancel
+            </Button>
+            <Button type="primary" onClick={() => saveRouteMutation.mutate(routeDraft)} disabled={saveRouteMutation.isPending}>
+              {saveRouteMutation.isPending ? 'Saving...' : 'Save route'}
+            </Button>
+          </>
+        }
+      >
+        {routeError ? <div className="banner banner--danger">{routeError}</div> : null}
+        <div className="stack">
+          <TextField label="Path prefix" value={routeDraft.pathPrefix} onChange={(event) => setRouteDraft((current) => ({ ...current, pathPrefix: event.target.value }))} />
+          <SelectField label="Client" value={routeDraft.clientId} onChange={(event) => setRouteDraft((current) => ({ ...current, clientId: event.target.value }))}>
+            <option value="">Select client</option>
+            {clientOptions.map((client) => (
+              <option key={client.id} value={client.id}>
+                {client.name} ({client.id})
+              </option>
+            ))}
+          </SelectField>
+          <TextField label="Target host" value={routeDraft.targetHost} onChange={(event) => setRouteDraft((current) => ({ ...current, targetHost: event.target.value }))} />
+          <TextField label="Target port" value={routeDraft.targetPort} onChange={(event) => setRouteDraft((current) => ({ ...current, targetPort: event.target.value }))} />
+          <label className="field">
+            <span className="field__label">Strip path prefix</span>
+            <Switch checked={routeDraft.stripPrefix} onChange={(checked) => setRouteDraft((current) => ({ ...current, stripPrefix: checked }))} />
+          </label>
+          <TextField
+            label="Upstream path prefix"
+            value={routeDraft.upstreamPathPrefix}
+            onChange={(event) => setRouteDraft((current) => ({ ...current, upstreamPathPrefix: event.target.value }))}
+            hint="Used when strip prefix is enabled. Default is /."
+          />
+          {routeDraft.id ? (
+            <SelectField label="Status" value={routeDraft.status} onChange={(event) => setRouteDraft((current) => ({ ...current, status: event.target.value }))}>
+              <option value="enabled">enabled</option>
+              <option value="disabled">disabled</option>
+            </SelectField>
+          ) : null}
+        </div>
+      </Dialog>
+
+      <Dialog
+        open={Boolean(activation)}
+        title="Activation link"
+        onClose={() => setActivation(undefined)}
+        footer={
+          <Button type="primary" onClick={() => setActivation(undefined)}>
+            Close
+          </Button>
+        }
+      >
+        {activation ? (
+          <div className="stack">
+            <div className="banner banner--warning">This activation URL is shown only once. Copy or scan it before closing.</div>
+            <TextField label="Activation URL" value={activation.url} readOnly />
+            <div className="stack">
+              <Button
+                type="default"
+                onClick={async () => {
+                  try {
+                    await navigator.clipboard.writeText(activation.url);
+                  } catch {
+                    setFormError('Copy to clipboard failed');
+                  }
+                }}
+              >
+                Copy URL
+              </Button>
+              <div className="qr-wrap">
+                <QRCode value={activation.url} size={180} />
+              </div>
+              <p className="muted">Expires: {activation.expiresAt ? new Date(activation.expiresAt).toLocaleString() : 'Unknown'}</p>
+            </div>
+          </div>
+        ) : null}
       </Dialog>
     </section>
   );

@@ -559,7 +559,7 @@ func buildCommand(t *testing.T, root string, binDir string, name string, package
 	output := filepath.Join(binDir, name)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "go", "build", "-o", output, packagePath)
+	cmd := exec.CommandContext(ctx, "go", "build", "-buildvcs=false", "-o", output, packagePath)
 	cmd.Dir = root
 	cmd.Env = append(os.Environ(), "CGO_ENABLED=0")
 	combined, err := cmd.CombinedOutput()

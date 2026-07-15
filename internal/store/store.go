@@ -149,6 +149,49 @@ type ProxyRepository interface {
 	Delete(ctx context.Context, id string) error
 }
 
+type ProxyRouteRepository interface {
+	Create(ctx context.Context, route domain.ProxyRoute) error
+	ByID(ctx context.Context, id string) (domain.ProxyRoute, error)
+	ListByProxyID(ctx context.Context, proxyID string) ([]domain.ProxyRoute, error)
+	ListProxyIDsByClientID(ctx context.Context, clientID string) ([]string, error)
+	Update(ctx context.Context, route domain.ProxyRoute) error
+	Delete(ctx context.Context, id string) error
+}
+
+type ProxyRouteStore interface {
+	ProxyRoutes() ProxyRouteRepository
+}
+
+type ProxyAccessRepository interface {
+	EnableAuthAndCreateActivation(ctx context.Context, proxyID string, authVersion int64, token domain.ProxyActivationToken) error
+	CreateActivationToken(ctx context.Context, token domain.ProxyActivationToken) error
+	ActivationToken(ctx context.Context, proxyID string, tokenHash string, now time.Time) (domain.ProxyActivationToken, error)
+	RedeemActivationToken(ctx context.Context, tokenID string, secretHash string, credential domain.ProxyAccessCredential, now time.Time) error
+	ValidateAccessCredential(ctx context.Context, proxyID string, authVersion int64, secretHash string, now time.Time) error
+	RevokeAllAccess(ctx context.Context, proxyID string, nextVersion int64) error
+	DisableAuth(ctx context.Context, proxyID string, nextVersion int64) error
+}
+
+type ProxyAccessStore interface {
+	ProxyAccess() ProxyAccessRepository
+}
+
+func Routes(s Store) (ProxyRouteRepository, bool) {
+	routeStore, ok := s.(ProxyRouteStore)
+	if !ok {
+		return nil, false
+	}
+	return routeStore.ProxyRoutes(), true
+}
+
+func Access(s Store) (ProxyAccessRepository, bool) {
+	accessStore, ok := s.(ProxyAccessStore)
+	if !ok {
+		return nil, false
+	}
+	return accessStore.ProxyAccess(), true
+}
+
 type CertificateRepository interface {
 	Create(ctx context.Context, certificate domain.ManagedCertificate) error
 	ByID(ctx context.Context, id string) (domain.ManagedCertificate, error)

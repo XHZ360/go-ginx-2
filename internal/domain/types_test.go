@@ -22,6 +22,37 @@ func TestProxyValidateRejectsInvalidTarget(t *testing.T) {
 	}
 }
 
+func TestProxyRouteSelectsLongestPathBoundary(t *testing.T) {
+	routes := []ProxyRoute{
+		{PathPrefix: "/api", Status: ProxyRouteEnabled},
+		{PathPrefix: "/api/v2", Status: ProxyRouteEnabled},
+	}
+	selected, ok := SelectProxyRoute(routes, "/api/v2/users")
+	if !ok || selected.PathPrefix != "/api/v2" {
+		t.Fatalf("expected longest route, got %+v, %v", selected, ok)
+	}
+	if _, ok := SelectProxyRoute(routes, "/apix"); ok {
+		t.Fatal("expected path segment boundary to reject /apix")
+	}
+}
+
+func TestRewriteProxyRoutePath(t *testing.T) {
+	route := ProxyRoute{PathPrefix: "/api", StripPrefix: true, UpstreamPathPrefix: "/v1"}
+	if got := RewriteProxyRoutePath("/api/users", route); got != "/v1/users" {
+		t.Fatalf("unexpected rewritten path: %q", got)
+	}
+	if got := RewriteProxyRoutePath("/api", route); got != "/v1" {
+		t.Fatalf("unexpected prefix-only path: %q", got)
+	}
+}
+
+func TestProxyRouteValidateRejectsReservedPrefix(t *testing.T) {
+	route := ProxyRoute{ID: "r1", ProxyID: "p1", ClientID: "c1", PathPrefix: "/.well-known/goginx/activate", TargetHost: "127.0.0.1", TargetPort: 8080, Status: ProxyRouteEnabled}
+	if err := route.Validate(); err == nil {
+		t.Fatal("expected reserved route prefix error")
+	}
+}
+
 func TestProxyValidateAcceptsHTTPHostRouteWithoutPort(t *testing.T) {
 	proxy := Proxy{ID: "p1", UserID: "u1", ClientID: "c1", Name: "web", Type: ProxyHTTP, Status: ProxyEnabled, EntryHost: "app.example.com", TargetHost: "127.0.0.1", TargetPort: 8080}
 
