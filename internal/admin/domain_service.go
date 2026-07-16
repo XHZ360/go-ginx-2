@@ -105,10 +105,13 @@ func (service Service) UpdateDomain(ctx context.Context, input UpdateDomainInput
 	if input.CertificateIDSet {
 		if input.CertificateID == "" {
 			existing.CertificateID = ""
-		} else if err := service.validateCertificateBinding(ctx, input.CertificateID, existing.Host, existing.ID); err != nil {
-			return domain.Domain{}, err
 		} else {
 			existing.CertificateID = input.CertificateID
+		}
+	}
+	if existing.CertificateID != "" {
+		if err := service.validateCertificateBinding(ctx, existing.CertificateID, existing.Host, existing.ID); err != nil {
+			return domain.Domain{}, err
 		}
 	}
 	if err := existing.Validate(); err != nil {

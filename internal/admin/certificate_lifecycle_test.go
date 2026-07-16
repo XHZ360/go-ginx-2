@@ -336,6 +336,82 @@ func TestServiceBindCertificateRejectsIncompatibleHost(t *testing.T) {
 	}
 }
 
+func TestServiceUpdateDomainRejectsHostOutsideBoundCertificate(t *testing.T) {
+	ctx := context.Background()
+	db := openTestStore(t)
+	certificateDir := t.TempDir()
+	service := Service{Store: db, Certificates: certmanager.Service{Storage: httpsproxy.ManagedCertificateStorage{CertificateDir: certificateDir}, NewID: func() (string, error) { return "cert-update-domain-1", nil }, Now: func() time.Time { return time.Now().UTC() }}, ListenerReconciler: &fakeProxyListenerReconciler{}}
+	user, client := createAdminTestOwnership(ctx, t, service)
+
+	certFile, keyFile := writeManagedCertPair(t, certificateDir, "app.example.com", time.Now().Add(24*time.Hour))
+	certificate, err := service.CreateCertificate(ctx, CreateCertificateInput{Host: "app.example.com", ProviderType: domain.CertificateProviderFile, CertFile: certFile, KeyFile: keyFile, ActorID: "admin-1"})
+	if err != nil {
+		t.Fatalf("create certificate: %v", err)
+	}
+	proxy, err := service.CreateProxy(ctx, CreateProxyInput{ID: "proxy-update-domain-1", UserID: user.ID, ClientID: client.ID, Name: "secure", Type: domain.ProxyHTTPS, EntryHost: "app.example.com", TargetHost: "127.0.0.1", TargetPort: 8080, ActorID: "admin-1"})
+	if err != nil {
+		t.Fatalf("create proxy: %v", err)
+	}
+	proxy, err = db.Proxies().ByID(ctx, proxy.ID)
+	if err != nil {
+		t.Fatalf("reload proxy: %v", err)
+	}
+	if _, err := service.BindDomainCertificate(ctx, proxy.DomainID, certificate.ID, "admin-1"); err != nil {
+		t.Fatalf("bind domain certificate: %v", err)
+	}
+
+	_, err = service.UpdateDomain(ctx, UpdateDomainInput{ID: proxy.DomainID, Host: "other.example.com", ActorID: "admin-1"})
+	var contractError *contracterr.Error
+	if !errors.As(err, &contractError) || contractError.Code != contracterr.CodeCertificateIncompatible {
+		t.Fatalf("expected incompatible host error, got %v", err)
+	}
+	reloaded, err := db.Domains().ByID(ctx, proxy.DomainID)
+	if err != nil {
+		t.Fatalf("reload domain: %v", err)
+	}
+	if reloaded.Host != "app.example.com" || reloaded.CertificateID != certificate.ID {
+		t.Fatalf("expected original domain and certificate to remain, got %+v", reloaded)
+	}
+}
+
+func TestServiceUpdateProxyRejectsHostOutsideBoundCertificate(t *testing.T) {
+	ctx := context.Background()
+	db := openTestStore(t)
+	certificateDir := t.TempDir()
+	service := Service{Store: db, Certificates: certmanager.Service{Storage: httpsproxy.ManagedCertificateStorage{CertificateDir: certificateDir}, NewID: func() (string, error) { return "cert-update-proxy-1", nil }, Now: func() time.Time { return time.Now().UTC() }}, ListenerReconciler: &fakeProxyListenerReconciler{}}
+	user, client := createAdminTestOwnership(ctx, t, service)
+
+	certFile, keyFile := writeManagedCertPair(t, certificateDir, "app.example.com", time.Now().Add(24*time.Hour))
+	certificate, err := service.CreateCertificate(ctx, CreateCertificateInput{Host: "app.example.com", ProviderType: domain.CertificateProviderFile, CertFile: certFile, KeyFile: keyFile, ActorID: "admin-1"})
+	if err != nil {
+		t.Fatalf("create certificate: %v", err)
+	}
+	proxy, err := service.CreateProxy(ctx, CreateProxyInput{ID: "proxy-update-host-1", UserID: user.ID, ClientID: client.ID, Name: "secure", Type: domain.ProxyHTTPS, EntryHost: "app.example.com", TargetHost: "127.0.0.1", TargetPort: 8080, ActorID: "admin-1"})
+	if err != nil {
+		t.Fatalf("create proxy: %v", err)
+	}
+	proxy, err = db.Proxies().ByID(ctx, proxy.ID)
+	if err != nil {
+		t.Fatalf("reload proxy: %v", err)
+	}
+	if _, err := service.BindDomainCertificate(ctx, proxy.DomainID, certificate.ID, "admin-1"); err != nil {
+		t.Fatalf("bind domain certificate: %v", err)
+	}
+
+	_, err = service.UpdateProxy(ctx, UpdateProxyInput{ID: proxy.ID, Type: proxy.Type, Name: proxy.Name, EntryHost: "other.example.com", TargetHost: proxy.TargetHost, TargetPort: proxy.TargetPort, ActorID: "admin-1"})
+	var contractError *contracterr.Error
+	if !errors.As(err, &contractError) || contractError.Code != contracterr.CodeCertificateIncompatible {
+		t.Fatalf("expected incompatible host error, got %v", err)
+	}
+	reloaded, err := db.Domains().ByID(ctx, proxy.DomainID)
+	if err != nil {
+		t.Fatalf("reload domain: %v", err)
+	}
+	if reloaded.Host != "app.example.com" || reloaded.CertificateID != certificate.ID {
+		t.Fatalf("expected original domain and certificate to remain, got %+v", reloaded)
+	}
+}
+
 func TestServiceMigrateLegacyFileCertificatesIsIdempotent(t *testing.T) {
 	ctx := context.Background()
 	db := openTestStore(t)

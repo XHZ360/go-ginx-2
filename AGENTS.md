@@ -10,6 +10,7 @@
 - 当前文档在 `docs/`（入口 [docs/README.md](docs/README.md)）；产品行为以代码、测试和普通 Markdown 文档为准。
 - 文档默认使用简体中文，代码和技术术语可保留英文。
 - 文档按信息类型归档：`project/`、`requirements/`、`architecture/`、`operations/`、`changes/`、`references/`；协作流程见 `docs/project/workflow.md`，Change 生命周期见 `docs/project/change-workflow.md`。
+- 当前线上环境信息见 [docs/operations/production-environment.local.md](docs/operations/production-environment.local.md)；该本地文档可能包含敏感信息，不得提交。
 
 ## 验证
 

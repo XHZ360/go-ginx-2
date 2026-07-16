@@ -885,6 +885,11 @@ func (service Service) UpdateProxy(ctx context.Context, input UpdateProxyInput) 
 			if err := webDomain.Validate(); err != nil {
 				return domain.Proxy{}, contracterr.Validation("validation failed", map[string]string{"entryHost": err.Error()})
 			}
+			if webDomain.CertificateID != "" {
+				if err := service.validateCertificateBinding(ctx, webDomain.CertificateID, webDomain.Host, webDomain.ID); err != nil {
+					return domain.Proxy{}, err
+				}
+			}
 			if err := service.Store.Domains().Update(ctx, webDomain); err != nil {
 				return domain.Proxy{}, err
 			}
