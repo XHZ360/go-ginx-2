@@ -1,6 +1,6 @@
 module github.com/simp-frp/go-ginx-2
 
-go 1.25.0
+go 1.26.0
 
 require (
 	github.com/quic-go/quic-go v0.59.1

@@ -26,7 +26,7 @@
 | 维度 | 约束 |
 | --- | --- |
 | Go 模块 | `github.com/simp-frp/go-ginx-2` |
-| Go 版本 | `1.25.0`（见 `go.mod`） |
+| Go 版本 | `1.26.0`（见 `go.mod`） |
 | CGO | 默认 `CGO_ENABLED=0` |
 | 前端 | React、Vite、TypeScript、Ant Design、`pnpm@10.33.2` |
 | 部署目标 | Linux `systemd` 部署包、Windows 发布包 |

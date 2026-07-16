@@ -20,7 +20,7 @@
 | 维度 | 当前状态 |
 | --- | --- |
 | Go 模块 | `github.com/simp-frp/go-ginx-2` |
-| Go 版本 | `go.mod` 使用 Go `1.25.0` |
+| Go 版本 | `go.mod` 使用 Go `1.26.0` |
 | 运行时基线 | 服务端、客户端、管理 CLI、管理前端、部署包已具备 |
 | 数据存储 | 默认 cgo-free SQLite，路径为 `data/go-ginx.db` |
 | 部署目标 | Linux `systemd` 部署包和 Windows 发布包 |
@@ -70,7 +70,7 @@ docs/              文档入口地图；按 project/requirements/architecture/op
 
 ### 开发与构建环境
 
-- 只有源码开发、测试、发布构建环境需要 Go `1.25` 或与 `go.mod` 匹配的版本。
+- 只有源码开发、测试、发布构建环境需要 Go `1.26` 或与 `go.mod` 匹配的版本。
 - 只有开发或重新构建 `admin-ui/` 时需要 Node.js；前端包管理通过 Corepack 启用 pnpm。
 - 源码测试和发布构建建议禁用 cgo：
 
@@ -274,4 +274,3 @@ Admin UI 开发见 `docs/operations/docker-development.md` 与 `admin-ui/`。
 - [`docs/architecture/reverse-proxy.md`](docs/architecture/reverse-proxy.md)：反向代理运行时。
 - [`docs/operations/daemon-runtime.md`](docs/operations/daemon-runtime.md)：守护进程与部署。
 - [`docs/worklog.md`](docs/worklog.md)：当前进展与下一步。
-
