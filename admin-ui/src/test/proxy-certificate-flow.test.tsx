@@ -358,7 +358,7 @@ describe('CertificateSelectField compatibility filtering', () => {
     expect(optionValues).not.toContain('cert-unservable');
 
     // 过滤原因向管理员解释为何部分匹配证书未列出。
-    expect(screen.getByText(/已绑定到其他 proxy/)).toBeInTheDocument();
+    expect(screen.getByText(/已绑定到其他 Domain\/Proxy/)).toBeInTheDocument();
     expect(screen.getByText(/当前不可服务/)).toBeInTheDocument();
   });
 

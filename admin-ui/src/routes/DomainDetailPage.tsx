@@ -302,10 +302,11 @@ export function DomainDetailPage() {
             <div className="stack">
               <p className="muted">HTTPS entries require a certificate that covers this host. Bind one below or create a new certificate.</p>
               <CertificateSelectField
-                entryHost={domain.host}
+                entryHost={domain.host ?? ''}
+                domainId={domain.id}
                 value={certificateId}
                 onChange={setCertificateId}
-                              />
+              />
               <Button type="primary" disabled={!certificateId} loading={bindCertMutation.isPending} onClick={() => bindCertMutation.mutate(undefined)}>
                 Bind certificate
               </Button>
