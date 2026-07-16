@@ -305,7 +305,7 @@ type DeleteCertificateResult struct {
 	RequiredConfirm  bool
 }
 
-// BindCertificateInput 将证书绑定到代理（一对一）。
+// BindCertificateInput 将证书绑定到代理所属 Domain（证书→Domain 为 1:n）。
 type BindCertificateInput struct {
 	ProxyID       string
 	CertificateID string
@@ -1145,7 +1145,7 @@ func (service Service) DeleteCertificate(ctx context.Context, input DeleteCertif
 	return DeleteCertificateResult{CertificateID: certificateID, AffectedProxyIDs: affected, RequiredConfirm: requireConfirm}, nil
 }
 
-// BindCertificate 将证书绑定到 Web Proxy 所属 Domain（一对一）。
+// BindCertificate 将证书绑定到 Web Proxy 所属 Domain（一证可服务多 Domain）。
 // 兼容输入仍使用 ProxyID，运行时解析 Domain。
 func (service Service) BindCertificate(ctx context.Context, input BindCertificateInput) (domain.Proxy, error) {
 	if service.Store == nil {
@@ -1224,7 +1224,7 @@ func (service Service) MigrateLegacyFileCertificates(ctx context.Context) (int, 
 }
 
 // resolveProxyCertificateSelection 解析代理的证书选择并返回应绑定的 certificateID：
-//   - 显式 certificateID：校验存在/主机覆盖/一对一后返回；
+//   - 显式 certificateID：校验存在/主机覆盖后返回；
 //   - 否则若提供遗留 certFile/keyFile：登记为文件型证书资源并返回其 ID（兼容旧客户端）；
 //   - 否则若是更新且未显式提供 certificateID：保留既有绑定；
 //   - 否则返回空（无绑定/清除绑定）。
@@ -1271,8 +1271,11 @@ func (service Service) resolveProxyCertificateSelection(ctx context.Context, pro
 
 // validateCertificateBinding 校验证书可绑定到指定 Domain：
 //
-//	(a) 证书存在；(b) 主机覆盖；(c) 一对一（未被其他 Domain 绑定）。
+//	(a) 证书存在；(b) 主机覆盖。
+//
+// 证书与 Domain 为 1:n：同一张证书可被多个 Domain 引用（例如通配证书）。
 func (service Service) validateCertificateBinding(ctx context.Context, certificateID string, host string, domainID string) error {
+	_ = domainID
 	certificate, err := service.Store.Certificates().ByID(ctx, certificateID)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
@@ -1286,13 +1289,6 @@ func (service Service) validateCertificateBinding(ctx context.Context, certifica
 	}
 	if !hostnameWithinCertificate(certificate, host) {
 		return contracterr.CertificateIncompatible("certificate does not cover domain host "+host, map[string]string{"host": host, "certificateId": certificateID})
-	}
-	bound, err := service.Store.Domains().ByCertificateID(ctx, certificateID)
-	if err != nil && !errors.Is(err, store.ErrNotFound) {
-		return err
-	}
-	if err == nil && bound.ID != domainID {
-		return contracterr.CertificateIncompatible("certificate is already bound to domain "+bound.ID, map[string]string{"certificateId": certificateID, "domainId": bound.ID})
 	}
 	return nil
 }

@@ -6,7 +6,7 @@ Domain 详情集中管理：
 
 - 主机名
 - HTTP/HTTPS entries（bind/port）
-- 证书绑定（1:1）
+- 证书绑定（1:n，一证可服务多 Domain）
 - 下属路径 Proxy 列表与创建入口
 
 ## 2. 路由

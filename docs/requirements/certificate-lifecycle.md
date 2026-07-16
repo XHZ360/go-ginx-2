@@ -17,7 +17,7 @@
 - 首次创建失败且无可用材料时，不得让坏状态进入运行时。
 - 续期/轮换失败时保留旧的可用 active material。
 
-> 目标模型已改为 Domain 与证书可选一对一绑定，HTTPS 在选择 Proxy 前按 Domain 解析证书。当前 Proxy 绑定语义仍是已实现行为；迁移见 [../changes/active/domain-path-proxy-routing.md](../changes/active/domain-path-proxy-routing.md)。
+> 目标模型：Domain 与证书可选 **1:n** 绑定（一证多 Domain），HTTPS 在选择 Proxy 前按 Domain 解析证书。迁移见 [../changes/active/domain-path-proxy-routing.md](../changes/active/domain-path-proxy-routing.md)。
 
 ## 用户可见状态
 

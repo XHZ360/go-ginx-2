@@ -852,10 +852,17 @@ func TestProxyCertificateBindingRoundTrips(t *testing.T) {
 		t.Fatalf("expected no domain for unknown certificate, got %v", err)
 	}
 
-	// 一证一 Domain：第二个 Domain 绑定同一证书应被部分唯一索引拒绝。
+	// 一证多 Domain：同一证书可绑定第二个 Domain。
 	otherDomain := domain.Domain{ID: "d2", UserID: "u1", Host: "alt.example.com", CertificateID: cert.ID, Status: domain.DomainEnabled}
-	if err := db.Domains().Create(ctx, otherDomain); !errors.Is(err, store.ErrAlreadyExists) {
-		t.Fatalf("expected one cert -> one domain to be enforced, got %v", err)
+	if err := db.Domains().Create(ctx, otherDomain); err != nil {
+		t.Fatalf("expected 1:n certificate sharing across domains, got %v", err)
+	}
+	shared, err := db.Domains().ByCertificateID(ctx, cert.ID)
+	if err != nil {
+		t.Fatalf("lookup domain by shared certificate: %v", err)
+	}
+	if shared.CertificateID != cert.ID {
+		t.Fatalf("expected any domain bound to cert, got %+v", shared)
 	}
 }
 

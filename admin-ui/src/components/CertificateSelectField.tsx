@@ -51,12 +51,12 @@ export function certificateCovers(cert: ManagedCertificate, host: string): boole
   return certificateHostnames(cert).some((name) => hostnameCovers(name, host));
 }
 
-// certificateBindable 判断证书是否可被当前上下文绑定：
-// 未绑定，或已绑定到当前 domain/proxy。
+// certificateBindable 判断证书是否可被当前上下文绑定。
+// Domain 绑定为 1:n（同一证书可服务多个 Domain，例如通配证书），只要 host 覆盖即可。
+// 遗留 Proxy 绑定仍按一对一：未绑定，或已绑定到当前 proxy。
 function certificateBindable(cert: ManagedCertificate, proxyId?: string, domainId?: string): boolean {
-  const boundDomain = cert.boundDomainId ?? '';
-  if (boundDomain) {
-    return Boolean(domainId) && boundDomain === domainId;
+  if (domainId) {
+    return true;
   }
   const boundProxy = cert.boundProxyId ?? '';
   if (boundProxy === '') {
@@ -73,7 +73,7 @@ function describeUnusable(cert: ManagedCertificate, entryHost: string, proxyId?:
     return { kind: 'incompatible', reason: '证书 hostnames 不覆盖该 SNI 域名' };
   }
   if (!certificateBindable(cert, proxyId, domainId)) {
-    return { kind: 'bound-elsewhere', reason: '证书已绑定到其他 Domain/Proxy' };
+    return { kind: 'bound-elsewhere', reason: '证书已绑定到其他 Proxy' };
   }
   if (cert.servable === false) {
     return { kind: 'not-servable', reason: '证书当前不可服务' };
@@ -106,6 +106,8 @@ export type CertificateSelectFieldProps = {
   onChange: (certificateId: string) => void;
   // 「创建证书」跳转回调（保存草稿 + 导航由父表单负责）。
   onCreateCertificate?: () => void;
+  // Domain 绑定允许先挂未可服务证书（签发中/待材料）；HTTPS 选证默认仍要求可服务。
+  requireServable?: boolean;
   error?: string;
 };
 
@@ -118,6 +120,7 @@ export function CertificateSelectField({
   value,
   onChange,
   onCreateCertificate,
+  requireServable = true,
   error,
 }: CertificateSelectFieldProps) {
   const host = (entryHost ?? '').trim();
@@ -134,9 +137,9 @@ export function CertificateSelectField({
         (cert) =>
           certificateCovers(cert, host) &&
           certificateBindable(cert, proxyId, domainId) &&
-          cert.servable !== false,
+          (!requireServable || cert.servable !== false),
       ),
-    [allCertificates, host, proxyId, domainId],
+    [allCertificates, host, proxyId, domainId, requireServable],
   );
 
   // 当前选中的证书（可能已不在可用列表中，例如被其他 proxy 抢绑或失去可服务能力）。
@@ -144,38 +147,50 @@ export function CertificateSelectField({
     () => allCertificates.find((cert) => certificateKey(cert) === value),
     [allCertificates, value],
   );
-  const selectedUnusable = useMemo(
-    () => (selectedCert ? describeUnusable(selectedCert, host, proxyId, domainId) : null),
-    [selectedCert, host, proxyId, domainId],
-  );
+  const selectedUnusable = useMemo(() => {
+    if (!selectedCert) {
+      return null;
+    }
+    const unusable = describeUnusable(selectedCert, host, proxyId, domainId);
+    if (!unusable) {
+      return null;
+    }
+    if (unusable.kind === 'not-servable' && !requireServable) {
+      return { kind: 'not-servable' as const, reason: '证书当前不可服务（可先绑定，签发/材料就绪后 HTTPS 才会放行）' };
+    }
+    return unusable;
+  }, [selectedCert, host, proxyId, domainId, requireServable]);
 
   // 被过滤掉的兼容证书（域名覆盖但绑定/可服务受限），用于解释“为什么没出现在列表里”。
   const filteredReasons = useMemo(() => {
     const reasons: string[] = [];
     let boundElsewhere = 0;
     let notServable = 0;
+    let hostMismatch = 0;
     for (const cert of allCertificates) {
       if (!certificateCovers(cert, host)) {
+        hostMismatch += 1;
         continue;
       }
-      const unusable = describeUnusable(cert, host, proxyId, domainId);
-      if (!unusable) {
-        continue;
-      }
-      if (unusable.kind === 'bound-elsewhere') {
+      if (!certificateBindable(cert, proxyId, domainId)) {
         boundElsewhere += 1;
-      } else if (unusable.kind === 'not-servable') {
+        continue;
+      }
+      if (requireServable && cert.servable === false) {
         notServable += 1;
       }
     }
     if (boundElsewhere > 0) {
-      reasons.push(`${boundElsewhere} 个匹配域名的证书已绑定到其他 Domain/Proxy`);
+      reasons.push(`${boundElsewhere} 个匹配域名的证书已绑定到其他 Proxy`);
     }
     if (notServable > 0) {
       reasons.push(`${notServable} 个匹配域名的证书当前不可服务`);
     }
+    if (usableCertificates.length === 0 && hostMismatch > 0 && boundElsewhere === 0 && notServable === 0) {
+      reasons.push(`${hostMismatch} 张证书的 hostnames 不覆盖 ${host}`);
+    }
     return reasons;
-  }, [allCertificates, host, proxyId, domainId]);
+  }, [allCertificates, host, proxyId, domainId, requireServable, usableCertificates.length]);
 
   const needsDomain = !host;
   const noUsable = !needsDomain && usableCertificates.length === 0;
@@ -223,12 +238,13 @@ export function CertificateSelectField({
 
       {noUsable ? (
         <div className="banner banner--warning">
-          没有覆盖该 SNI 域名且可绑定的证书。
-          {filteredReasons.length > 0 ? `（${filteredReasons.join('；')}）` : null}
-          {onCreateCertificate ? ' 可点击上方「创建证书」新建一张。' : null}
+          没有可绑定到 <span className="mono">{host}</span> 的证书
+          {requireServable ? '（需 hostnames 覆盖且当前可服务）' : '（需 hostnames 覆盖该域名）'}。
+          {filteredReasons.length > 0 ? ` ${filteredReasons.join('；')}。` : ' '}
+          {onCreateCertificate ? '可点击上方「创建证书」为该域名签发/登记一张。' : '请先到 Certificates 页面创建覆盖该域名的证书。'}
         </div>
       ) : filteredReasons.length > 0 ? (
-        <div className="field__hint">部分匹配域名的证书未列出：{filteredReasons.join('；')}。</div>
+        <div className="field__hint">部分证书未列出：{filteredReasons.join('；')}。</div>
       ) : null}
 
       {selectedCert ? <CertificateSummary cert={selectedCert} /> : null}

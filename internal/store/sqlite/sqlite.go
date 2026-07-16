@@ -1914,7 +1914,7 @@ create table if not exists domains (
 );
 
 create unique index if not exists domains_host_unique on domains(lower(host));
-create unique index if not exists domains_certificate_id_unique on domains(certificate_id) where certificate_id <> '';
+create index if not exists domains_certificate_id_idx on domains(certificate_id) where certificate_id <> '';
 
 create table if not exists domain_entries (
     id text primary key,

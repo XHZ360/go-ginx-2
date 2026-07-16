@@ -301,7 +301,14 @@ describe('proxy form domain-first creation', () => {
 
 // --- CertificateSelectField 兼容性过滤单测 ---
 describe('CertificateSelectField compatibility filtering', () => {
-  function renderSelect(props: { entryHost: string; proxyId?: string; value?: string; certificates: ManagedCertificate[] }) {
+  function renderSelect(props: {
+    entryHost: string;
+    proxyId?: string;
+    domainId?: string;
+    value?: string;
+    requireServable?: boolean;
+    certificates: ManagedCertificate[];
+  }) {
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);
       if (url.endsWith('/api/admin/session')) {
@@ -323,7 +330,14 @@ describe('CertificateSelectField compatibility filtering', () => {
       <QueryClientProvider client={queryClient}>
         <SessionProvider>
           <MemoryRouter>
-            <CertificateSelectField entryHost={props.entryHost} proxyId={props.proxyId} value={props.value ?? ''} onChange={() => {}} />
+            <CertificateSelectField
+              entryHost={props.entryHost}
+              proxyId={props.proxyId}
+              domainId={props.domainId}
+              requireServable={props.requireServable}
+              value={props.value ?? ''}
+              onChange={() => {}}
+            />
           </MemoryRouter>
         </SessionProvider>
       </QueryClientProvider>,
@@ -358,8 +372,32 @@ describe('CertificateSelectField compatibility filtering', () => {
     expect(optionValues).not.toContain('cert-unservable');
 
     // 过滤原因向管理员解释为何部分匹配证书未列出。
-    expect(screen.getByText(/已绑定到其他 Domain\/Proxy/)).toBeInTheDocument();
+    expect(screen.getByText(/已绑定到其他 Proxy/)).toBeInTheDocument();
     expect(screen.getByText(/当前不可服务/)).toBeInTheDocument();
+  });
+
+  it('domain bind mode allows a certificate already referenced by another domain', async () => {
+    const certs = [
+      makeCert({
+        certificateId: 'cert-wild',
+        host: '*.example.com',
+        hostnames: ['*.example.com'],
+        boundDomainId: 'domain-other',
+        referenced: true,
+      }),
+    ];
+    renderSelect({
+      entryHost: 'app.example.com',
+      domainId: 'domain-self',
+      requireServable: false,
+      certificates: certs,
+    });
+
+    const select = await screen.findByLabelText('证书');
+    await waitFor(() => {
+      const optionValues = Array.from(select.querySelectorAll('option')).map((o) => o.getAttribute('value'));
+      expect(optionValues).toContain('cert-wild');
+    });
   });
 
   it('allows a certificate already bound to the current proxy in edit context', async () => {
@@ -371,5 +409,37 @@ describe('CertificateSelectField compatibility filtering', () => {
     const select = await screen.findByLabelText('证书');
     const optionValues = Array.from(select.querySelectorAll('option')).map((o) => o.getAttribute('value'));
     expect(optionValues).toContain('cert-self');
+  });
+
+  it('domain bind mode lists covering certificates even when not yet servable', async () => {
+    const certs = [
+      makeCert({
+        certificateId: 'cert-pending',
+        host: 'app.example.com',
+        hostnames: ['app.example.com'],
+        servable: false,
+        servingStatus: 'missing',
+        status: 'pending',
+      }),
+      makeCert({
+        certificateId: 'cert-other-host',
+        host: 'other.example.com',
+        hostnames: ['other.example.com'],
+        servable: true,
+      }),
+    ];
+    renderSelect({
+      entryHost: 'app.example.com',
+      domainId: 'domain-1',
+      requireServable: false,
+      certificates: certs,
+    });
+
+    const select = await screen.findByLabelText('证书');
+    await waitFor(() => {
+      const optionValues = Array.from(select.querySelectorAll('option')).map((o) => o.getAttribute('value'));
+      expect(optionValues).toContain('cert-pending');
+      expect(optionValues).not.toContain('cert-other-host');
+    });
   });
 });

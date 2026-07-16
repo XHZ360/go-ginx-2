@@ -37,7 +37,7 @@
 
 ## 证书
 
-- Domain 与证书可选一对一绑定；启用 HTTPS entry 的 Domain 必须绑定可服务证书（静态文件或托管证书）。
+- Domain 与证书可选 **1:n** 绑定（一证可服务多 Domain；每 Domain 最多一证）；启用 HTTPS entry 的 Domain 必须绑定可服务证书（静态文件或托管证书）。
 - 无可用证书时不得对外提供 HTTPS。
 - 证书生命周期操作集中在证书管理能力，见 [certificate-lifecycle.md](certificate-lifecycle.md)。
 

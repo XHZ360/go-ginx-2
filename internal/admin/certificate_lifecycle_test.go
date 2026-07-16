@@ -261,20 +261,40 @@ func TestServiceBindUnbindCertificateAndOneToOneConflict(t *testing.T) {
 		t.Fatalf("expected domain a bound, got %+v err=%v", webDomainA, err)
 	}
 
-	// 一对一 Domain：第二个 Domain 绑定同一证书 -> CERTIFICATE_INCOMPATIBLE。
+	// 1:n Domain：host 不覆盖时仍失败；覆盖时允许同一证书绑定多个 Domain。
 	_, err = service.BindCertificate(ctx, BindCertificateInput{ProxyID: proxyB.ID, CertificateID: certificate.ID, ActorID: "admin-1"})
 	var contractError *contracterr.Error
 	if !errors.As(err, &contractError) || contractError.Code != contracterr.CodeCertificateIncompatible {
-		t.Fatalf("expected one-to-one binding conflict, got %v", err)
+		t.Fatalf("expected host-incompatible binding failure, got %v", err)
 	}
 
-	// 解绑 Domain A 后 Domain B 仍因 host 不覆盖而失败；重建覆盖 other 的证书再绑。
+	wildCertFile, wildKeyFile := writeManagedCertPair(t, certificateDir, "*.example.com", time.Now().Add(24*time.Hour))
+	wildCert, err := service.CreateCertificate(ctx, CreateCertificateInput{Host: "*.example.com", ProviderType: domain.CertificateProviderFile, CertFile: wildCertFile, KeyFile: wildKeyFile, ActorID: "admin-1"})
+	if err != nil {
+		t.Fatalf("create wildcard certificate: %v", err)
+	}
+	if _, err := service.BindCertificate(ctx, BindCertificateInput{ProxyID: proxyA.ID, CertificateID: wildCert.ID, ActorID: "admin-1"}); err != nil {
+		t.Fatalf("bind wildcard to domain a: %v", err)
+	}
+	if _, err := service.BindCertificate(ctx, BindCertificateInput{ProxyID: proxyB.ID, CertificateID: wildCert.ID, ActorID: "admin-1"}); err != nil {
+		t.Fatalf("expected 1:n cert sharing across domains, got %v", err)
+	}
+	webDomainB, err := db.Domains().ByHost(ctx, "other.example.com")
+	if err != nil || webDomainB.CertificateID != wildCert.ID {
+		t.Fatalf("expected domain b bound to shared cert, got %+v err=%v", webDomainB, err)
+	}
+
+	// 解绑 Domain A 后 Domain B 仍保持绑定。
 	if _, err := service.UnbindCertificate(ctx, UnbindCertificateInput{ProxyID: proxyA.ID, ActorID: "admin-1"}); err != nil {
 		t.Fatalf("unbind certificate: %v", err)
 	}
 	reloadedDomain, err := db.Domains().ByID(ctx, webDomainA.ID)
 	if err != nil || reloadedDomain.CertificateID != "" {
 		t.Fatalf("expected domain a unbound, got %+v err=%v", reloadedDomain, err)
+	}
+	reloadedDomainB, err := db.Domains().ByID(ctx, webDomainB.ID)
+	if err != nil || reloadedDomainB.CertificateID != wildCert.ID {
+		t.Fatalf("expected domain b still bound after unbind a, got %+v err=%v", reloadedDomainB, err)
 	}
 	reloadedA, err := db.Proxies().ByID(ctx, proxyA.ID)
 	if err != nil {

@@ -306,6 +306,12 @@ export function DomainDetailPage() {
                 domainId={domain.id}
                 value={certificateId}
                 onChange={setCertificateId}
+                requireServable={false}
+                onCreateCertificate={() =>
+                  navigate(
+                    `/certificates?create=1&host=${encodeURIComponent(domain.host ?? '')}&returnTo=${encodeURIComponent(`/domains/${domain.id}`)}`,
+                  )
+                }
               />
               <Button type="primary" disabled={!certificateId} loading={bindCertMutation.isPending} onClick={() => bindCertMutation.mutate(undefined)}>
                 Bind certificate

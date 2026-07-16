@@ -13,7 +13,7 @@ const (
 	CodeInternal         = "INTERNAL"
 	// CodeConfirmationRequired 表示高风险操作（如删除正在服务且已绑定的证书）需要调用方提供匹配的强确认（ConfirmHost/ConfirmCertificateID）。
 	CodeConfirmationRequired = "CONFIRMATION_REQUIRED"
-	// CodeCertificateIncompatible 表示证书与代理 SNI 主机不兼容，或绑定违反一对一约束。
+	// CodeCertificateIncompatible 表示证书与 Domain/代理 SNI 主机不兼容。
 	CodeCertificateIncompatible = "CERTIFICATE_INCOMPATIBLE"
 )
 
@@ -73,7 +73,7 @@ func ConfirmationRequired(message string, fields map[string]string) error {
 	return &Error{Code: CodeConfirmationRequired, Message: message, Fields: fields}
 }
 
-// CertificateIncompatible 构造一个表示证书与代理不兼容（主机不覆盖或违反一对一绑定）的可消费错误。
+// CertificateIncompatible 构造一个表示证书与 Domain/代理不兼容（主机不覆盖）的可消费错误。
 func CertificateIncompatible(message string, fields map[string]string) error {
 	if strings.TrimSpace(message) == "" {
 		message = "certificate is incompatible"

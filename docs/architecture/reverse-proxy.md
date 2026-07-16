@@ -42,7 +42,7 @@ HTTP 与终止 TLS 的 HTTPS 使用共享路径映射：
 
 ## HTTPS 证书边界
 
-证书绑定到 Domain（一对一）。HTTPS entry 没有可服务证书时 fail closed；不会把加密 TLS 字节隐式透传到 target。证书缺失、不可读、过期、域名不匹配或 key 不匹配时同样失败关闭。
+证书绑定到 Domain（**1:n**：一证可被多 Domain 引用，每 Domain 最多一证）。HTTPS entry 没有可服务证书时 fail closed；不会把加密 TLS 字节隐式透传到 target。证书缺失、不可读、过期、域名不匹配或 key 不匹配时同样失败关闭。
 
 证书健康检查使用 TLS hostname 语义：`*.example.com` 只覆盖单层子域，不覆盖 apex 或多层子域。托管证书的签发、续期、热加载和失败保留规则见 [../operations/daemon-runtime.md](../operations/daemon-runtime.md)、[../operations/certificate-operations.md](../operations/certificate-operations.md) 与 [engineering-quality-guardrails.md](engineering-quality-guardrails.md)。
 

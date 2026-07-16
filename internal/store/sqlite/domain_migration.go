@@ -103,9 +103,13 @@ func addProxyWebColumns(ctx context.Context, db *sql.DB) error {
 }
 
 func ensureDomainIndexes(ctx context.Context, db *sql.DB) error {
+	// Certificate → Domain is 1:n (one cert may cover many domains). Drop the old 1:1 unique index.
+	if _, err := db.ExecContext(ctx, `drop index if exists domains_certificate_id_unique`); err != nil {
+		return err
+	}
 	statements := []string{
 		`create unique index if not exists domains_host_unique on domains(lower(host))`,
-		`create unique index if not exists domains_certificate_id_unique on domains(certificate_id) where certificate_id <> ''`,
+		`create index if not exists domains_certificate_id_idx on domains(certificate_id) where certificate_id <> ''`,
 		`create unique index if not exists domain_entries_listener_unique on domain_entries(domain_id, protocol, lower(bind_host), port)`,
 		`create index if not exists domain_entries_listener_lookup_idx on domain_entries(protocol, lower(bind_host), port, status)`,
 		`create unique index if not exists proxies_domain_path_unique on proxies(domain_id, path_prefix) where domain_id <> '' and path_prefix <> ''`,
