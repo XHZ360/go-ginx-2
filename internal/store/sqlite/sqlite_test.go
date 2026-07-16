@@ -119,7 +119,7 @@ func TestClientEnrollmentRepositoryStoresReviewableToken(t *testing.T) {
 	}
 }
 
-func TestDuplicateTCPEntryPortIsRejected(t *testing.T) {
+func TestDuplicateTCPEntryPortIsStoredForServiceAdmission(t *testing.T) {
 	ctx := context.Background()
 	db := openTestStore(t)
 	seedUserAndClient(t, ctx, db)
@@ -130,12 +130,26 @@ func TestDuplicateTCPEntryPortIsRejected(t *testing.T) {
 	if err := db.Proxies().Create(ctx, first); err != nil {
 		t.Fatalf("create first proxy: %v", err)
 	}
-	if err := db.Proxies().Create(ctx, second); !errors.Is(err, store.ErrAlreadyExists) {
-		t.Fatalf("expected already exists, got %v", err)
+	if err := db.Proxies().Create(ctx, second); err != nil {
+		t.Fatalf("store duplicate tcp proxy: %v", err)
 	}
 }
 
-func TestDuplicateUDPEntryPortIsRejected(t *testing.T) {
+func TestCertificatesWithSameHostAreStored(t *testing.T) {
+	ctx := context.Background()
+	db := openTestStore(t)
+	first := domain.ManagedCertificate{ID: "cert-1", Host: "app.example.com", Status: domain.CertificatePending}
+	second := domain.ManagedCertificate{ID: "cert-2", Host: "APP.EXAMPLE.COM", Status: domain.CertificatePending}
+
+	if err := db.Certificates().Create(ctx, first); err != nil {
+		t.Fatalf("create first certificate: %v", err)
+	}
+	if err := db.Certificates().Create(ctx, second); err != nil {
+		t.Fatalf("create certificate with same host: %v", err)
+	}
+}
+
+func TestDuplicateUDPEntryPortIsStoredForServiceAdmission(t *testing.T) {
 	ctx := context.Background()
 	db := openTestStore(t)
 	seedUserAndClient(t, ctx, db)
@@ -146,8 +160,8 @@ func TestDuplicateUDPEntryPortIsRejected(t *testing.T) {
 	if err := db.Proxies().Create(ctx, first); err != nil {
 		t.Fatalf("create first proxy: %v", err)
 	}
-	if err := db.Proxies().Create(ctx, second); !errors.Is(err, store.ErrAlreadyExists) {
-		t.Fatalf("expected already exists, got %v", err)
+	if err := db.Proxies().Create(ctx, second); err != nil {
+		t.Fatalf("store duplicate udp proxy: %v", err)
 	}
 	found, err := db.Proxies().ByUDPEntryPort(ctx, 10053)
 	if err != nil {
@@ -158,7 +172,7 @@ func TestDuplicateUDPEntryPortIsRejected(t *testing.T) {
 	}
 }
 
-func TestDuplicateHTTPHostIsRejectedCaseInsensitive(t *testing.T) {
+func TestDuplicateHTTPHostIsStoredForServiceAdmission(t *testing.T) {
 	ctx := context.Background()
 	db := openTestStore(t)
 	seedUserAndClient(t, ctx, db)
@@ -169,9 +183,8 @@ func TestDuplicateHTTPHostIsRejectedCaseInsensitive(t *testing.T) {
 	if err := db.Proxies().Create(ctx, first); err != nil {
 		t.Fatalf("create first proxy: %v", err)
 	}
-	// same host + default path / is unique under Domain model
-	if err := db.Proxies().Create(ctx, second); !errors.Is(err, store.ErrAlreadyExists) {
-		t.Fatalf("expected already exists for duplicate domain path, got %v", err)
+	if err := db.Proxies().Create(ctx, second); err != nil {
+		t.Fatalf("store duplicate domain path: %v", err)
 	}
 	webDomain, err := db.Domains().ByHost(ctx, "app.example.com")
 	if err != nil {
@@ -182,7 +195,7 @@ func TestDuplicateHTTPHostIsRejectedCaseInsensitive(t *testing.T) {
 	}
 }
 
-func TestDuplicateHTTPSHostIsRejectedCaseInsensitive(t *testing.T) {
+func TestDuplicateHTTPSHostIsStoredForServiceAdmission(t *testing.T) {
 	ctx := context.Background()
 	db := openTestStore(t)
 	seedUserAndClient(t, ctx, db)
@@ -193,8 +206,8 @@ func TestDuplicateHTTPSHostIsRejectedCaseInsensitive(t *testing.T) {
 	if err := db.Proxies().Create(ctx, first); err != nil {
 		t.Fatalf("create first proxy: %v", err)
 	}
-	if err := db.Proxies().Create(ctx, second); !errors.Is(err, store.ErrAlreadyExists) {
-		t.Fatalf("expected already exists, got %v", err)
+	if err := db.Proxies().Create(ctx, second); err != nil {
+		t.Fatalf("store duplicate domain path: %v", err)
 	}
 	webDomain, err := db.Domains().ByHost(ctx, "app.example.com")
 	if err != nil {
@@ -233,10 +246,10 @@ func TestProxyEntryBindHostAndRouteQueries(t *testing.T) {
 	if err := db.Proxies().Create(ctx, legacy); err != nil {
 		t.Fatalf("create legacy proxy: %v", err)
 	}
-	// same domain + path rejected
+	// Same domain + path can coexist in storage; service admission owns active-route conflicts.
 	duplicate := domain.Proxy{ID: "p3", UserID: "u1", ClientID: "c1", Name: "web-dup", Type: domain.ProxyWeb, Status: domain.ProxyEnabled, DomainID: webDomain.ID, PathPrefix: "/", UpstreamPathPrefix: "/", TargetHost: "127.0.0.1", TargetPort: 8082}
-	if err := db.Proxies().Create(ctx, duplicate); !errors.Is(err, store.ErrAlreadyExists) {
-		t.Fatalf("expected duplicate domain path to fail, got %v", err)
+	if err := db.Proxies().Create(ctx, duplicate); err != nil {
+		t.Fatalf("store duplicate domain path: %v", err)
 	}
 	foundDomain, foundEntry, err := db.DomainEntries().ByListener(ctx, domain.DomainEntryHTTP, "127.0.0.1", 18080, "app.example.com", false)
 	if err != nil {
@@ -344,8 +357,8 @@ create unique index proxies_https_entry_host_unique on proxies(lower(entry_host)
 	if indexExists(t, ctx, db.db, "proxies_tcp_entry_port_unique") {
 		t.Fatal("legacy tcp entry port index should be dropped")
 	}
-	if !indexExists(t, ctx, db.db, "proxies_tcp_entry_unique") {
-		t.Fatal("new tcp entry index should exist")
+	if indexExists(t, ctx, db.db, "proxies_tcp_entry_unique") {
+		t.Fatal("tcp entry uniqueness must be enforced by service admission")
 	}
 	second := domain.Proxy{ID: "p2", UserID: "u1", ClientID: "c1", Name: "ssh-alt", Type: domain.ProxyTCP, Status: domain.ProxyEnabled, EntryBindHost: "127.0.0.1", EntryPort: 10022, TargetHost: "127.0.0.1", TargetPort: 2222}
 	if err := db.Proxies().Create(ctx, second); err != nil {
@@ -989,8 +1002,8 @@ insert into managed_certificates (id, proxy_id, host, status, provider, cert_fil
 	if indexExists(t, ctx, db.db, "managed_certificates_proxy_unique") {
 		t.Fatal("legacy managed_certificates_proxy_unique index should be dropped")
 	}
-	if !indexExists(t, ctx, db.db, "managed_certificates_host_unique") {
-		t.Fatal("managed_certificates_host_unique index should be preserved")
+	if indexExists(t, ctx, db.db, "managed_certificates_host_unique") {
+		t.Fatal("managed_certificates_host_unique index should be dropped")
 	}
 	// proxies_certificate_id_unique is temporary during proxy-binding migration and
 	// is removed when dropProxyWebLegacyColumns rebuilds proxies without certificate_id.

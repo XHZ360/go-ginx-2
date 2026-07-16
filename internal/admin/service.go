@@ -948,6 +948,9 @@ func (service Service) UpdateProxy(ctx context.Context, input UpdateProxyInput) 
 			return domain.Proxy{}, err
 		}
 	}
+	if err := service.ensureProxyAdmission(ctx, existing, existing.ID); err != nil {
+		return domain.Proxy{}, err
+	}
 	if err := service.Store.Proxies().Update(ctx, existing); err != nil {
 		return domain.Proxy{}, err
 	}
@@ -1725,7 +1728,33 @@ func providerCredentialVerificationError(err error) error {
 }
 
 func (service Service) ensureProxyAdmission(ctx context.Context, proxy domain.Proxy, ignoreProxyID string) error {
-	if !proxyRequiresListenerAdmission(proxy.Type) || proxy.Status != domain.ProxyEnabled {
+	if proxy.Status != domain.ProxyEnabled {
+		return nil
+	}
+	if proxy.Type.IsWeb() {
+		webProxy := proxy
+		if proxy.Type != domain.ProxyWeb {
+			webDomain, err := service.Store.Domains().ByHost(ctx, proxy.EntryHost)
+			if errors.Is(err, store.ErrNotFound) {
+				return nil
+			}
+			if err != nil {
+				return err
+			}
+			webProxy.Type = domain.ProxyWeb
+			webProxy.DomainID = webDomain.ID
+			webProxy.PathPrefix = "/"
+		}
+		conflict, ok, err := service.findActiveWebRouteConflict(ctx, webProxy, ignoreProxyID)
+		if err != nil {
+			return err
+		}
+		if ok {
+			return &contracterr.Error{Code: contracterr.CodeEntryConflict, Message: fmt.Sprintf("domain path %s conflicts with proxy %s", webProxy.PathPrefix, conflict.ID), Err: domain.ErrEntryConflict}
+		}
+		return nil
+	}
+	if !proxyRequiresListenerAdmission(proxy.Type) {
 		return nil
 	}
 	proposedEntry, ok := domain.EffectiveProxyEntry(proxy, service.ProxyEntryDefaults)
@@ -1802,6 +1831,19 @@ func (service Service) findActiveRouteConflict(ctx context.Context, proposed dom
 			continue
 		}
 		if entry.Protocol == proposed.Protocol && entry.Port == proposed.Port && domain.NormalizeBindHost(entry.BindHost) == domain.NormalizeBindHost(proposed.BindHost) && domain.NormalizeRouteHost(entry.RouteHost) == domain.NormalizeRouteHost(proposed.RouteHost) {
+			return proxy, true, nil
+		}
+	}
+	return domain.Proxy{}, false, nil
+}
+
+func (service Service) findActiveWebRouteConflict(ctx context.Context, proposed domain.Proxy, ignoreProxyID string) (domain.Proxy, bool, error) {
+	proxies, err := service.Store.Proxies().EnabledWebByDomainID(ctx, proposed.DomainID)
+	if err != nil {
+		return domain.Proxy{}, false, err
+	}
+	for _, proxy := range proxies {
+		if proxy.ID != ignoreProxyID && proxy.PathPrefix == proposed.PathPrefix {
 			return proxy, true, nil
 		}
 	}

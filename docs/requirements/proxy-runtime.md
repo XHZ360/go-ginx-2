@@ -18,7 +18,7 @@
 ## 路径路由（HTTP/HTTPS）
 
 - Domain 是独立资源，由单一用户拥有；同一 Domain 可以被多个独立 Proxy 使用。
-- 路由模型是 `(Domain, PathPrefix) => Proxy`，HTTP 与 HTTPS 共享同一套映射。
+- 路由模型是 `(Domain, PathPrefix) => Proxy`，HTTP 与 HTTPS 共享同一套映射；同一 Domain+PathPrefix 可保存多个 Proxy，但任一时刻最多一个可启用，禁用 Proxy 不参与冲突校验或运行时路由。
 - 每个 Web Proxy 选择一个 Domain，并直接保存自己的 PathPrefix、Client、target 与改写配置。
 - 最长前缀优先，路径段边界匹配。
 - 支持保留路径或剥离前缀后拼接上游前缀。

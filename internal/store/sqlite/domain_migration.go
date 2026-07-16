@@ -107,12 +107,14 @@ func ensureDomainIndexes(ctx context.Context, db *sql.DB) error {
 	if _, err := db.ExecContext(ctx, `drop index if exists domains_certificate_id_unique`); err != nil {
 		return err
 	}
+	if _, err := db.ExecContext(ctx, `drop index if exists proxies_domain_path_unique`); err != nil {
+		return err
+	}
 	statements := []string{
 		`create unique index if not exists domains_host_unique on domains(lower(host))`,
 		`create index if not exists domains_certificate_id_idx on domains(certificate_id) where certificate_id <> ''`,
 		`create unique index if not exists domain_entries_listener_unique on domain_entries(domain_id, protocol, lower(bind_host), port)`,
 		`create index if not exists domain_entries_listener_lookup_idx on domain_entries(protocol, lower(bind_host), port, status)`,
-		`create unique index if not exists proxies_domain_path_unique on proxies(domain_id, path_prefix) where domain_id <> '' and path_prefix <> ''`,
 		`create index if not exists proxies_domain_status_idx on proxies(domain_id, status) where domain_id <> ''`,
 	}
 	for _, statement := range statements {

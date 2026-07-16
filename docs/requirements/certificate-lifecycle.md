@@ -5,7 +5,7 @@
 | 类型 | 用途 |
 | --- | --- |
 | 控制通道 CA/证书 | 仅服务端与客户端控制面 TLS，非公网 HTTPS |
-| HTTPS 静态证书 | 文件路径绑定到 HTTPS proxy |
+| HTTPS 静态证书 | file-backed 证书资源保存材料路径并绑定到 Domain |
 | 托管证书 ACME DNS-01 | Cloudflare DNS-01 自动签发/续期 |
 | 托管证书 Origin CA | Cloudflare Origin CA 签发/轮换/同步 |
 

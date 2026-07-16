@@ -372,6 +372,9 @@ func (service Service) createWebProxy(ctx context.Context, input CreateProxyInpu
 	if err := proxy.Validate(); err != nil {
 		return domain.Proxy{}, contracterr.Validation("validation failed", map[string]string{"proxy": err.Error()})
 	}
+	if err := service.ensureProxyAdmission(ctx, proxy, ""); err != nil {
+		return domain.Proxy{}, err
+	}
 	if err := service.Store.Proxies().Create(ctx, proxy); err != nil {
 		if errors.Is(err, store.ErrAlreadyExists) {
 			return domain.Proxy{}, contracterr.Conflict("domain path is already used by another proxy", err)

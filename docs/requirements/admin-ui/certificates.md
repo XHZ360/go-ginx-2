@@ -69,7 +69,7 @@ ACME 的运行条件显示服务端启用状态、账户邮箱、条款和 DNS T
 - Certificate（证书 ID + host）
 - Provider（provider 类型、名称、credential ID、Cloudflare certificate ID、Origin CA 部署提示首条）
 - Hostnames
-- Bound proxy（绑定的 proxy ID，未绑定时显示“未绑定”）
+- Bound Domains（引用该证书的 Domain；未引用时显示“未绑定”）
 - Use（是否被引用）
 - Serving / Operation / Provider status（三列分维度状态）
 - Expires（到期时间）
@@ -94,9 +94,9 @@ ACME 的运行条件显示服务端启用状态、账户邮箱、条款和 DNS T
 
 删除前按引用状态和可服务状态计算删除风险：
 
-- **可直接删除（无二次确认）**：无效、失效/过期、缺失 active material、provider status 阻止服务，或未被任何 proxy 绑定的证书。这类删除通过普通删除按钮完成，不要求输入 host 或证书 ID，也不要求额外二次确认。若该证书仍有绑定，删除后会解除绑定并把受影响 proxy 标记为需要重新配置。
-- **需要强确认**：仍被 HTTPS proxy 绑定且当前可服务的证书（`deletionRisk === requires_strong_confirmation`）。删除会弹出强确认对话框，要求管理员手动键入证书主机名或证书 ID 才能删除。UI 不得仅通过预填隐藏字段或单击确认满足强确认语义。
-- 强确认删除成功后，系统解除该 proxy 的证书绑定，把受影响 proxy 标记为证书失效/需要重新配置，并在结果中返回受影响的 proxy ID 列表供页面提示。
+- **可直接删除（无二次确认）**：无效、失效/过期、缺失 active material、provider status 阻止服务，或未被任何 Domain 引用的证书。这类删除通过普通删除按钮完成，不要求输入 host 或证书 ID，也不要求额外二次确认。若该证书仍有绑定，删除后会解除相关 Domain 绑定并使其 HTTPS entry fail closed。
+- **需要强确认**：仍被 Domain 引用且当前可服务的证书（`deletionRisk === requires_strong_confirmation`）。删除会弹出强确认对话框，要求管理员手动键入证书主机名或证书 ID 才能删除。UI 不得仅通过预填隐藏字段或单击确认满足强确认语义。
+- 强确认删除成功后，系统解除相关 Domain 的证书绑定，并在结果中返回受影响的 Proxy ID 列表供页面提示。
 - **防御回退**：若原以为是低风险删除，但后端返回 `CONFIRMATION_REQUIRED`，页面自动切换到强确认对话框并提示键入主机名或证书 ID。
 
 Origin CA 撤销（Revoke）同样属于高风险动作，要求输入 host 或 Cloudflare certificate ID 等强确认材料，撤销后 Cloudflare 到源站 TLS 将中断，直到签发替换证书。

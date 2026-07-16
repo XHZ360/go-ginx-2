@@ -16,6 +16,7 @@ HTTP 与终止 TLS 的 HTTPS 使用共享路径映射：
 
 - Domain 独立资源：Host 全局唯一，持有 HTTP/HTTPS entry 与可选证书绑定。
 - Web Proxy 使用 `(domain_id, path_prefix)`；最长路径段前缀命中（`/api` 匹配 `/api/users`，不匹配 `/apix`）。
+- 同一 `(domain_id, path_prefix)` 可保存多个 Web Proxy，但任一时刻最多一个可启用；禁用 Proxy 不参与冲突校验或请求选择。
 - HTTP 与 HTTPS 对相同 Domain+Path 命中同一 Proxy。
 - `PathPrefix` 必须以 `/` 开头；Query/Fragment 不参与匹配。
 - 系统保留 `/.well-known/goginx/`，用户路由不得占用。

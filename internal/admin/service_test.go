@@ -925,6 +925,40 @@ func TestServiceListenerAdmissionAllowsDisabledProxyEdits(t *testing.T) {
 	}
 }
 
+func TestServiceWebRouteAdmissionUsesEnabledProxies(t *testing.T) {
+	ctx := context.Background()
+	db := openTestStore(t)
+	service := Service{Store: db}
+	user, client := createAdminTestOwnership(ctx, t, service)
+	webDomain, err := service.CreateDomain(ctx, CreateDomainInput{ID: "domain-1", UserID: user.ID, Host: "app.example.com", ActorID: "admin-1"})
+	if err != nil {
+		t.Fatalf("create domain: %v", err)
+	}
+
+	disabled := domain.Proxy{ID: "web-disabled", UserID: user.ID, ClientID: client.ID, Name: "disabled", Type: domain.ProxyWeb, Status: domain.ProxyDisabled, DomainID: webDomain.ID, PathPrefix: "/api", UpstreamPathPrefix: "/", TargetHost: "127.0.0.1", TargetPort: 8080}
+	if err := db.Proxies().Create(ctx, disabled); err != nil {
+		t.Fatalf("seed disabled web proxy: %v", err)
+	}
+	if _, err := service.CreateProxy(ctx, CreateProxyInput{ID: "web-active", UserID: user.ID, ClientID: client.ID, Name: "active", Type: domain.ProxyWeb, DomainID: webDomain.ID, PathPrefix: "/api", TargetHost: "127.0.0.1", TargetPort: 8081, ActorID: "admin-1"}); err != nil {
+		t.Fatalf("disabled web proxy must not block creation: %v", err)
+	}
+	if _, err := service.CreateProxy(ctx, CreateProxyInput{ID: "legacy-conflict", UserID: user.ID, ClientID: client.ID, Name: "legacy", Type: domain.ProxyHTTP, EntryHost: webDomain.Host, TargetHost: "127.0.0.1", TargetPort: 8082, ActorID: "admin-1"}); err != nil {
+		t.Fatalf("different path must not conflict with legacy root route: %v", err)
+	}
+	if _, err := service.CreateProxy(ctx, CreateProxyInput{ID: "legacy-duplicate", UserID: user.ID, ClientID: client.ID, Name: "legacy-duplicate", Type: domain.ProxyHTTP, EntryHost: webDomain.Host, TargetHost: "127.0.0.1", TargetPort: 8083, ActorID: "admin-1"}); !errors.Is(err, domain.ErrEntryConflict) {
+		t.Fatalf("expected legacy root route conflict, got %v", err)
+	}
+	if err := service.EnableProxy(ctx, disabled.ID, "admin-1"); !errors.Is(err, domain.ErrEntryConflict) {
+		t.Fatalf("expected enabled web route conflict, got %v", err)
+	}
+	if err := service.DisableProxy(ctx, "web-active", "admin-1"); err != nil {
+		t.Fatalf("disable active web proxy: %v", err)
+	}
+	if err := service.EnableProxy(ctx, disabled.ID, "admin-1"); err != nil {
+		t.Fatalf("enable web proxy after releasing route: %v", err)
+	}
+}
+
 func TestServiceListenerAdmissionCoversCreateUpdateAndEnable(t *testing.T) {
 	ctx := context.Background()
 	db := openTestStore(t)

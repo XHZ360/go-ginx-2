@@ -65,7 +65,7 @@
 - TCP/UDP 编辑 BindHost、EntryPort、TargetHost、TargetPort
 - HTTP/HTTPS 编辑 BindHost、EntryPort、域名、TargetHost、TargetPort（默认 `/` 后端）
 - HTTP/HTTPS 支持路径路由编辑器：Path Prefix、Client、Target Host/Port、StripPrefix、Upstream Path Prefix
-- 路径前缀须唯一且不得占用 `/.well-known/goginx/`；跨用户 Client 拒绝
+- 路径前缀不得占用 `/.well-known/goginx/`；同一 Domain+PathPrefix 可保存多个代理，但任一时刻最多一个可启用，创建、更新或启用时仅与已启用代理校验冲突；跨用户 Client 拒绝
 - HTTPS 通过证书选择控件改绑证书，不再编辑 CertFile / KeyFile 文件路径
 - 更新或启用后若发生监听冲突或 listener 启动失败，展示 `ENTRY_CONFLICT`
 - 错误需定位到对应字段或操作区
@@ -74,9 +74,9 @@
 
 HTTPS 代理编辑表单通过证书选择控件改绑证书：
 
-- 证书选择器只列出“与该 SNI 域名兼容且可绑定”的证书；可绑定包含未绑定证书，以及当前已绑定到本 proxy 的证书（编辑场景放行）。
+- 证书选择器只列出“与该 Domain Host 兼容且可绑定”的证书；同一证书可绑定多个 Domain，选择器不因证书已被其他 Domain 引用而排除。
 - 选中证书展示证书摘要（provider、hostnames、有效期、服务状态，Origin CA 还展示部署提示）。
-- 当前选中证书若已不在可用列表（例如被其他 proxy 抢绑或失去可服务能力），仍保留展示并提示原因。
+- 当前选中证书若已不在可用列表（例如失去可服务能力），仍保留展示并提示原因。
 - 提交时只传 `certificateId`，不再提交 `certFile` / `keyFile`。
 
 ### 7.2 跳转创建证书与草稿恢复

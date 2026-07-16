@@ -112,9 +112,6 @@ func dropProxyWebLegacyColumns(ctx context.Context, db *sql.DB) error {
 select id, user_id, client_id, name, type, status, ifnull(domain_id,''), ifnull(path_prefix,''), ifnull(strip_prefix,0), ifnull(upstream_path_prefix,'/'), ifnull(entry_bind_host,''), ifnull(entry_port,0), target_host, target_port, ifnull(access_auth_enabled,0), ifnull(access_auth_version,0), ifnull(stats_legacy_aggregate,0), ifnull(description,''), created_at, updated_at from proxies`,
 		`drop table proxies`,
 		`alter table proxies_new rename to proxies`,
-		`create unique index if not exists proxies_tcp_entry_unique on proxies(lower(entry_bind_host), entry_port) where type = 'tcp'`,
-		`create unique index if not exists proxies_udp_entry_unique on proxies(lower(entry_bind_host), entry_port) where type = 'udp'`,
-		`create unique index if not exists proxies_domain_path_unique on proxies(domain_id, path_prefix) where domain_id <> '' and path_prefix <> ''`,
 		`create index if not exists proxies_domain_status_idx on proxies(domain_id, status) where domain_id <> ''`,
 		`create index if not exists proxies_client_id_idx on proxies(client_id)`,
 		`create index if not exists proxies_user_id_idx on proxies(user_id)`,
@@ -243,6 +240,9 @@ func (s *Store) migrate(ctx context.Context) error {
 		return err
 	}
 	if err := migrateManagedCertificateProxyOptional(ctx, s.db); err != nil {
+		return err
+	}
+	if _, err := s.db.ExecContext(ctx, `drop index if exists managed_certificates_host_unique`); err != nil {
 		return err
 	}
 	if err := migrateBindProxyCertificates(ctx, s.db); err != nil {
@@ -1679,28 +1679,13 @@ func migrateProxyEntryIndexes(ctx context.Context, db *sql.DB) error {
 		`drop index if exists proxies_https_entry_host_unique`,
 		`drop index if exists proxies_http_route_unique`,
 		`drop index if exists proxies_https_route_unique`,
-		`create unique index if not exists proxies_tcp_entry_unique on proxies(lower(entry_bind_host), entry_port) where type = 'tcp' and entry_port > 0`,
-		`create unique index if not exists proxies_udp_entry_unique on proxies(lower(entry_bind_host), entry_port) where type = 'udp' and entry_port > 0`,
+		`drop index if exists proxies_tcp_entry_unique`,
+		`drop index if exists proxies_udp_entry_unique`,
+		`drop index if exists proxies_domain_path_unique`,
 	}
 	for _, statement := range statements {
 		if _, err := db.ExecContext(ctx, statement); err != nil {
 			return err
-		}
-	}
-	// Legacy HTTP/HTTPS route uniqueness only while entry_host still exists.
-	hasLegacyHost, err := proxyTableHasColumn(ctx, db, "entry_host")
-	if err != nil {
-		return err
-	}
-	if hasLegacyHost {
-		legacyIndexes := []string{
-			`create unique index if not exists proxies_http_route_unique on proxies(lower(entry_bind_host), entry_port, lower(entry_host)) where type = 'http' and entry_host <> ''`,
-			`create unique index if not exists proxies_https_route_unique on proxies(lower(entry_bind_host), entry_port, lower(entry_host)) where type = 'https' and entry_host <> ''`,
-		}
-		for _, statement := range legacyIndexes {
-			if _, err := db.ExecContext(ctx, statement); err != nil {
-				return err
-			}
 		}
 	}
 	return nil
@@ -1914,9 +1899,7 @@ func migrateManagedCertificateProxyOptional(ctx context.Context, db *sql.DB) err
 select id, proxy_id, host, status, serving_status, operation_status, provider, provider_type, provider_name, credential_id, provider_status, cloudflare_certificate_id, previous_cloudflare_certificate_id, hostnames, request_type, requested_validity, cert_file, key_file, previous_cert_file, previous_key_file, not_after, last_issued_at, last_renewed_at, last_checked_at, last_synced_at, last_attempted_at, next_attempt_at, failure_count, fingerprint, last_error, created_at, updated_at from managed_certificates`,
 		`drop table managed_certificates`,
 		`alter table managed_certificates_new rename to managed_certificates`,
-		// 重建表会丢弃旧索引：恢复 host 唯一索引与生命周期查询索引；
-		// 不再重建 proxy 唯一索引（绑定关系已迁移到代理侧）。
-		`create unique index if not exists managed_certificates_host_unique on managed_certificates(lower(host))`,
+		// 重建表会丢弃旧索引；host 不唯一，证书资源可覆盖相同域名。
 		`create index if not exists managed_certificates_lifecycle_provider_idx on managed_certificates(provider_type, not_after, next_attempt_at)`,
 	}
 	for _, statement := range statements {
@@ -2201,8 +2184,6 @@ create table if not exists managed_certificates (
     created_at timestamp not null,
     updated_at timestamp not null
 );
-
-create unique index if not exists managed_certificates_host_unique on managed_certificates(lower(host));
 
 create table if not exists provider_credentials (
     id text primary key,
