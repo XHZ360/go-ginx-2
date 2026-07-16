@@ -1176,32 +1176,6 @@ func openTestStore(t *testing.T) *Store {
 	return db
 }
 
-func TestProxyRoutesPersistAndOrderByLongestPrefix(t *testing.T) {
-	ctx := context.Background()
-	db := openTestStore(t)
-	seedUserAndClient(t, ctx, db)
-	proxy := domain.Proxy{ID: "p-route", UserID: "u1", ClientID: "c1", Name: "web", Type: domain.ProxyHTTP, Status: domain.ProxyEnabled, EntryHost: "app.example.com", TargetHost: "127.0.0.1", TargetPort: 8080}
-	if err := db.Proxies().Create(ctx, proxy); err != nil {
-		t.Fatalf("create proxy: %v", err)
-	}
-	routes := db.ProxyRoutes()
-	for _, route := range []domain.ProxyRoute{
-		{ID: "r-api", ProxyID: proxy.ID, ClientID: "c1", PathPrefix: "/api/", TargetHost: "127.0.0.1", TargetPort: 8081, Status: domain.ProxyRouteEnabled},
-		{ID: "r-v2", ProxyID: proxy.ID, ClientID: "c1", PathPrefix: "/api/v2", TargetHost: "127.0.0.1", TargetPort: 8082, Status: domain.ProxyRouteEnabled},
-	} {
-		if err := routes.Create(ctx, route); err != nil {
-			t.Fatalf("create route: %v", err)
-		}
-	}
-	stored, err := routes.ListByProxyID(ctx, proxy.ID)
-	if err != nil {
-		t.Fatalf("list routes: %v", err)
-	}
-	if len(stored) != 2 || stored[0].PathPrefix != "/api/v2" || stored[1].PathPrefix != "/api" {
-		t.Fatalf("unexpected route order: %+v", stored)
-	}
-}
-
 func TestProxyAccessTokenRedeemIsSingleUseAndRevocable(t *testing.T) {
 	ctx := context.Background()
 	db := openTestStore(t)

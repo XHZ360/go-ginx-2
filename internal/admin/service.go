@@ -840,7 +840,7 @@ func (service Service) UpdateProxy(ctx context.Context, input UpdateProxyInput) 
 			}
 			existing.UpstreamPathPrefix = upstream
 		}
-		// host rename updates Domain; entry fields are not stored on web proxy
+		// Host rename / cert bind update Domain only; web proxies do not store entry/cert fields.
 		if strings.TrimSpace(input.EntryHost) != "" && strings.TrimSpace(existing.DomainID) != "" {
 			webDomain, domainErr := service.Store.Domains().ByID(ctx, existing.DomainID)
 			if domainErr != nil {
@@ -853,7 +853,6 @@ func (service Service) UpdateProxy(ctx context.Context, input UpdateProxyInput) 
 			if err := service.Store.Domains().Update(ctx, webDomain); err != nil {
 				return domain.Proxy{}, err
 			}
-			existing.EntryHost = webDomain.Host
 		}
 		if input.CertificateIDSet {
 			if strings.TrimSpace(existing.DomainID) != "" {
@@ -871,7 +870,6 @@ func (service Service) UpdateProxy(ctx context.Context, input UpdateProxyInput) 
 				if err := service.Store.Domains().Update(ctx, webDomain); err != nil {
 					return domain.Proxy{}, err
 				}
-				existing.CertificateID = webDomain.CertificateID
 			}
 		}
 		if (domainChanged || pathChanged) && existing.AccessAuthEnabled {

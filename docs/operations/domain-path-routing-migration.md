@@ -85,10 +85,15 @@ cp -a data/certs.pre-domain-path data/certs
 
 ## 清理阶段（确认稳定后）
 
-独立变更执行，不与首次迁移耦合：
+已完成：
 
-- 删除空的 `proxy_routes` 表与相关 API（已在管理面移除 route mutations）
-- 清理 Web Proxy 上遗留 `entry_host` / `certificate_id` 写入路径
+- 删除空的 `proxy_routes` 表（迁移 flag 完成后 `DROP TABLE`）与 `ProxyRouteRepository`
+- Web Proxy 更新路径不再写入 `entry_host` / `certificate_id`（权威在 Domain）
+- 管理面已移除 route mutations / ProxyRoute GraphQL
+
+仍可选：
+
+- 物理删除 `proxies` 上 Web 遗留列（需 SQLite rebuild）
 - 文档与 Admin UI 中移除 legacy HTTP/HTTPS 类型提示
 
 ## 相关文档

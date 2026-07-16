@@ -6,7 +6,7 @@
 
 | 项 | 值 |
 | --- | --- |
-| 最后更新 | 2026-07-15 |
+| 最后更新 | 2026-07-16 |
 | 基线提交 | `02d9aed`（Merge branch `opencode/silent-comet`） |
 | 验证状态 | 本次文档整改未执行全量测试 |
 
@@ -16,7 +16,7 @@
 - 文档按信息类型收敛到 `docs/`（project / requirements / architecture / operations / changes / references）。
 - OpenSpec 已移除；有效内容已并入普通 Markdown。
 - 文档整改已落地：收敛单一事实来源、补齐 requirements 层、收缩根 README 长文。
-- active Change [domain-path-proxy-routing.md](changes/active/domain-path-proxy-routing.md)：Domain 模型、运行时、Admin API/UI 已落地；ProxyRoute GraphQL/API 已移除；operations 迁移文档已补。剩余：稳定后清理 `proxy_routes` 表与遗留列。
+- active Change [domain-path-proxy-routing.md](changes/active/domain-path-proxy-routing.md)：Domain 模型、运行时、Admin API/UI 已落地；ProxyRoute GraphQL/API 与 `proxy_routes` 表/仓储已清理；升级路径仍可读旧表。可选：证书文档收敛、`proxies` 遗留列物理 DROP。
 
 ## 已实现能力（摘要）
 
@@ -36,7 +36,7 @@
 
 ## 下一步
 
-1. 确认 Domain 迁移稳定后清理 `proxy_routes` 表与 Web Proxy 遗留字段写入路径。
+1. 可选：证书生命周期文档继续收敛到 Domain 绑定；`proxies` Web 遗留列物理 DROP。
 2. 生产运维：备份恢复、容量校验。
 3. 有代码变更时同步更新 requirements/architecture，并回写本日志验证结果。
 

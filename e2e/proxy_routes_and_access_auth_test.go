@@ -67,16 +67,18 @@ func TestExternalProcessesHTTPPathRouting(t *testing.T) {
 			TargetHost: defaultHost,
 			TargetPort: defaultPort,
 		},
-		domain.ProxyRoute{
+		domain.Proxy{
 			ID:                 "route-api",
-			ProxyID:            "http-route-1",
+			UserID:             "user-1",
 			ClientID:           "client-1",
+			Name:               "web /api",
+			Type:               domain.ProxyWeb,
+			Status:             domain.ProxyEnabled,
 			PathPrefix:         "/api",
 			StripPrefix:        true,
 			UpstreamPathPrefix: "/",
 			TargetHost:         apiHost,
 			TargetPort:         apiPort,
-			Status:             domain.ProxyRouteEnabled,
 		},
 	)
 	serverConfig := writeJSON(t, filepath.Join(workDir, "server.json"), map[string]any{
@@ -321,7 +323,7 @@ func startPathOrigin(t *testing.T, label string) *httptest.Server {
 	return server
 }
 
-func seedSQLiteWithRoutes(t *testing.T, dbPath string, proxy domain.Proxy, routes ...domain.ProxyRoute) {
+func seedSQLiteWithRoutes(t *testing.T, dbPath string, parent domain.Proxy, pathProxies ...domain.Proxy) {
 	t.Helper()
 	db, err := sqlite.Open(dbPath)
 	if err != nil {
@@ -337,34 +339,28 @@ func seedSQLiteWithRoutes(t *testing.T, dbPath string, proxy domain.Proxy, route
 	if err := db.Clients().Create(ctx, client); err != nil {
 		t.Fatalf("create client: %v", err)
 	}
-	if err := db.Proxies().Create(ctx, proxy); err != nil {
+	if err := db.Proxies().Create(ctx, parent); err != nil {
 		t.Fatalf("create proxy: %v", err)
 	}
-	parent, err := db.Proxies().ByID(ctx, proxy.ID)
+	storedParent, err := db.Proxies().ByID(ctx, parent.ID)
 	if err != nil {
 		t.Fatalf("reload parent proxy: %v", err)
 	}
-	for _, route := range routes {
-		status := domain.ProxyEnabled
-		if route.Status == domain.ProxyRouteDisabled {
-			status = domain.ProxyDisabled
+	for _, pathProxy := range pathProxies {
+		if pathProxy.UserID == "" {
+			pathProxy.UserID = storedParent.UserID
 		}
-		webProxy := domain.Proxy{
-			ID:                 route.ID,
-			UserID:             parent.UserID,
-			ClientID:           route.ClientID,
-			Name:               parent.Name + " " + route.PathPrefix,
-			Type:               domain.ProxyWeb,
-			Status:             status,
-			DomainID:           parent.DomainID,
-			PathPrefix:         route.PathPrefix,
-			StripPrefix:        route.StripPrefix,
-			UpstreamPathPrefix: route.UpstreamPathPrefix,
-			TargetHost:         route.TargetHost,
-			TargetPort:         route.TargetPort,
+		if pathProxy.DomainID == "" {
+			pathProxy.DomainID = storedParent.DomainID
 		}
-		if err := db.Proxies().Create(ctx, webProxy); err != nil {
-			t.Fatalf("create path proxy %s: %v", route.ID, err)
+		if pathProxy.Type == "" {
+			pathProxy.Type = domain.ProxyWeb
+		}
+		if pathProxy.Status == "" {
+			pathProxy.Status = domain.ProxyEnabled
+		}
+		if err := db.Proxies().Create(ctx, pathProxy); err != nil {
+			t.Fatalf("create path proxy %s: %v", pathProxy.ID, err)
 		}
 	}
 }

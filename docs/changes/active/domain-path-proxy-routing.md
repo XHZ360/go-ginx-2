@@ -5,13 +5,13 @@
 | 项 | 值 |
 | --- | --- |
 | 状态 | `active` |
-| 最后更新 | `2026-07-15` |
+| 最后更新 | `2026-07-16` |
 | 相关需求 | [../../requirements/proxy-runtime.md](../../requirements/proxy-runtime.md) |
 | 相关架构 | [../../architecture/reverse-proxy.md](../../architecture/reverse-proxy.md)、[../../architecture/certificate-management.md](../../architecture/certificate-management.md) |
 | 相关决策 | [../../decisions/domain-path-proxy-routing.md](../../decisions/domain-path-proxy-routing.md) |
-| 实现提交 | 进行中（运行时/迁移/Admin 服务已落地；UI 完整 Domain 页待收尾） |
+| 实现提交 | 核心已落地；清理阶段进行中（`proxy_routes` 表/仓储已删除；升级路径仍可读旧表） |
 
-> 本文描述已采纳但尚未完成的目标模型。当前代码仍使用“一个 Domain 对应一个父 Proxy + ProxyRoute 子路由”的旧模型。
+> 目标模型已落地：`Domain + PathPrefix => Proxy`。旧 `proxy_routes` 表在迁移完成后删除；从旧库升级时迁移代码仍可读遗留表。
 
 ## 背景
 
@@ -268,7 +268,7 @@ Web Proxy 应使用协议无关的类型（例如 `web`）；HTTP/HTTPS 由 Doma
 - [x] 迁移或移除 ProxyRoute API、生成代码与 UI
 - [x] 增加单元、SQLite、runtime、Admin、前端与 E2E 测试
 - [x] 同步 requirements、architecture、operations 与 worklog
-- [ ] 确认迁移稳定后清理旧字段、旧表和兼容回退
+- [x] 确认迁移稳定后清理旧字段、旧表和兼容回退（`proxy_routes` 表/仓储已删除；Web Proxy 不再写入 entry/cert 字段；升级路径仍可读旧表）
 
 ## 验收条件
 
@@ -283,7 +283,7 @@ Web Proxy 应使用协议无关的类型（例如 `web`）；HTTP/HTTPS 由 Doma
 - [ ] 迁移可转换无冲突旧数据，并明确拒绝冲突数据。
 - [ ] listener 更新、Proxy 更新和证书失败不会留下部分运行状态。
 - [ ] Admin UI 能独立管理 Domain，并为 Proxy 选择 Domain + Path。
-- [ ] 旧 ProxyRoute API/UI 被移除或明确处于兼容期。
+- [x] 旧 ProxyRoute API/UI 被移除；`proxy_routes` 表迁移后 DROP。
 
 ## 验证记录
 
@@ -317,4 +317,4 @@ pnpm build
 
 ## 结果
 
-核心实现与 Domain 优先 Admin UI 已完成；ProxyRoute 管理 API/GraphQL 已移除。剩余：稳定后删除 `proxy_routes` 表与遗留列写入路径。
+核心实现与 Domain 优先 Admin UI 已完成；ProxyRoute 管理 API/GraphQL 已移除；`proxy_routes` 表与仓储已删除。剩余可选：证书生命周期文档继续收敛到 Domain 绑定；`proxies` 表上 Web 遗留列（`entry_host`/`certificate_id` 等）物理 DROP 可另开变更。

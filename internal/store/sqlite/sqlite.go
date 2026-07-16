@@ -48,8 +48,6 @@ func (s *Store) DomainEntries() store.DomainEntryRepository { return domainEntry
 
 func (s *Store) Proxies() store.ProxyRepository { return proxyRepository{s.db} }
 
-func (s *Store) ProxyRoutes() store.ProxyRouteRepository { return proxyRouteRepository{s.db} }
-
 func (s *Store) ProxyAccess() store.ProxyAccessRepository { return proxyAccessRepository{s.db} }
 
 func (s *Store) Certificates() store.CertificateRepository { return certificateRepository{s.db} }
@@ -109,8 +107,6 @@ func (s *Store) migrate(ctx context.Context) error {
 	}
 	return migrateDomainPathRouting(ctx, s.db)
 }
-
-type proxyRouteRepository struct{ db *sql.DB }
 
 type proxyAccessRepository struct{ db *sql.DB }
 
@@ -225,81 +221,6 @@ func (r proxyAccessRepository) rewriteAccessState(ctx context.Context, proxyID s
 		return err
 	}
 	return tx.Commit()
-}
-
-const proxyRouteSelect = `select id, proxy_id, client_id, path_prefix, strip_prefix, upstream_path_prefix, target_host, target_port, status, created_at, updated_at from proxy_routes`
-
-func (r proxyRouteRepository) Create(ctx context.Context, route domain.ProxyRoute) error {
-	if err := route.Validate(); err != nil {
-		return err
-	}
-	now := time.Now().UTC()
-	if route.CreatedAt.IsZero() {
-		route.CreatedAt = now
-	}
-	if route.UpdatedAt.IsZero() {
-		route.UpdatedAt = now
-	}
-	pathPrefix, _ := domain.NormalizeProxyRoutePrefix(route.PathPrefix)
-	upstreamPrefix, _ := domain.NormalizeProxyUpstreamPathPrefix(route.UpstreamPathPrefix)
-	_, err := r.db.ExecContext(ctx, `insert into proxy_routes (id, proxy_id, client_id, path_prefix, strip_prefix, upstream_path_prefix, target_host, target_port, status, created_at, updated_at) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, route.ID, route.ProxyID, route.ClientID, pathPrefix, route.StripPrefix, upstreamPrefix, route.TargetHost, route.TargetPort, route.Status, route.CreatedAt, route.UpdatedAt)
-	return translateError(err)
-}
-
-func (r proxyRouteRepository) ByID(ctx context.Context, id string) (domain.ProxyRoute, error) {
-	return scanProxyRoute(r.db.QueryRowContext(ctx, proxyRouteSelect+` where id = ?`, id))
-}
-
-func (r proxyRouteRepository) ListByProxyID(ctx context.Context, proxyID string) ([]domain.ProxyRoute, error) {
-	rows, err := r.db.QueryContext(ctx, proxyRouteSelect+` where proxy_id = ? order by length(path_prefix) desc, path_prefix, id`, proxyID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	routes := make([]domain.ProxyRoute, 0)
-	for rows.Next() {
-		route, err := scanProxyRouteRows(rows)
-		if err != nil {
-			return nil, err
-		}
-		routes = append(routes, route)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return routes, nil
-}
-
-func (r proxyRouteRepository) ListProxyIDsByClientID(ctx context.Context, clientID string) ([]string, error) {
-	rows, err := r.db.QueryContext(ctx, `select distinct proxy_id from proxy_routes where client_id = ? and status = ? order by proxy_id`, clientID, domain.ProxyRouteEnabled)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	proxyIDs := make([]string, 0)
-	for rows.Next() {
-		var proxyID string
-		if err := rows.Scan(&proxyID); err != nil {
-			return nil, err
-		}
-		proxyIDs = append(proxyIDs, proxyID)
-	}
-	return proxyIDs, rows.Err()
-}
-
-func (r proxyRouteRepository) Update(ctx context.Context, route domain.ProxyRoute) error {
-	if err := route.Validate(); err != nil {
-		return err
-	}
-	pathPrefix, _ := domain.NormalizeProxyRoutePrefix(route.PathPrefix)
-	upstreamPrefix, _ := domain.NormalizeProxyUpstreamPathPrefix(route.UpstreamPathPrefix)
-	result, err := r.db.ExecContext(ctx, `update proxy_routes set client_id = ?, path_prefix = ?, strip_prefix = ?, upstream_path_prefix = ?, target_host = ?, target_port = ?, status = ?, updated_at = ? where id = ?`, route.ClientID, pathPrefix, route.StripPrefix, upstreamPrefix, route.TargetHost, route.TargetPort, route.Status, time.Now().UTC(), route.ID)
-	return resultError(result, err)
-}
-
-func (r proxyRouteRepository) Delete(ctx context.Context, id string) error {
-	result, err := r.db.ExecContext(ctx, `delete from proxy_routes where id = ?`, id)
-	return resultError(result, err)
 }
 
 type userRepository struct{ db *sql.DB }
@@ -1392,18 +1313,6 @@ func scanProxyRows(rows *sql.Rows) (domain.Proxy, error) {
 	return proxy, err
 }
 
-func scanProxyRoute(row *sql.Row) (domain.ProxyRoute, error) {
-	var route domain.ProxyRoute
-	err := row.Scan(&route.ID, &route.ProxyID, &route.ClientID, &route.PathPrefix, &route.StripPrefix, &route.UpstreamPathPrefix, &route.TargetHost, &route.TargetPort, &route.Status, &route.CreatedAt, &route.UpdatedAt)
-	return route, translateError(err)
-}
-
-func scanProxyRouteRows(rows *sql.Rows) (domain.ProxyRoute, error) {
-	var route domain.ProxyRoute
-	err := rows.Scan(&route.ID, &route.ProxyID, &route.ClientID, &route.PathPrefix, &route.StripPrefix, &route.UpstreamPathPrefix, &route.TargetHost, &route.TargetPort, &route.Status, &route.CreatedAt, &route.UpdatedAt)
-	return route, err
-}
-
 const managedCertificateSelect = `select id, proxy_id, host, status, serving_status, operation_status, provider, provider_type, provider_name, credential_id, provider_status, cloudflare_certificate_id, previous_cloudflare_certificate_id, hostnames, request_type, requested_validity, cert_file, key_file, previous_cert_file, previous_key_file, not_after, last_issued_at, last_renewed_at, last_checked_at, last_synced_at, last_attempted_at, next_attempt_at, failure_count, fingerprint, last_error, created_at, updated_at from managed_certificates`
 
 func scanManagedCertificate(row *sql.Row) (domain.ManagedCertificate, error) {
@@ -2047,23 +1956,6 @@ create table if not exists proxies (
     created_at timestamp not null,
     updated_at timestamp not null
 );
-
-create table if not exists proxy_routes (
-    id text primary key,
-    proxy_id text not null references proxies(id) on delete cascade,
-    client_id text not null references clients(id) on delete cascade,
-    path_prefix text not null,
-    strip_prefix integer not null default 0,
-    upstream_path_prefix text not null default '/',
-    target_host text not null,
-    target_port integer not null,
-    status text not null,
-    created_at timestamp not null,
-    updated_at timestamp not null,
-    unique(proxy_id, path_prefix)
-);
-
-create index if not exists proxy_routes_proxy_status_idx on proxy_routes(proxy_id, status);
 
 create table if not exists schema_flags (
     name text primary key,

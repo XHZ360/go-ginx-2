@@ -34,13 +34,17 @@ func migrateDomainPathRouting(ctx context.Context, db *sql.DB) error {
 	if err != nil {
 		return err
 	}
-	if migrated {
-		return nil
+	if !migrated {
+		if err := convertLegacyWebProxies(ctx, db); err != nil {
+			return err
+		}
+		if _, err = db.ExecContext(ctx, `insert or replace into schema_flags (name, value, updated_at) values ('domain_path_routing_v1', 'done', ?)`, time.Now().UTC()); err != nil {
+			return err
+		}
 	}
-	if err := convertLegacyWebProxies(ctx, db); err != nil {
-		return err
-	}
-	_, err = db.ExecContext(ctx, `insert or replace into schema_flags (name, value, updated_at) values ('domain_path_routing_v1', 'done', ?)`, time.Now().UTC())
+	// Migration complete: drop empty legacy table. Upgrade-from-old-db still reads
+	// proxy_routes inside convertLegacyWebProxies before this point.
+	_, err = db.ExecContext(ctx, `drop table if exists proxy_routes`)
 	return err
 }
 
@@ -313,19 +317,13 @@ func convertLegacyWebProxies(ctx context.Context, db *sql.DB) error {
 			agg.pathOwners["/"] = parentOwner
 		}
 
-		routeRows, err := tx.QueryContext(ctx, `select id, proxy_id, client_id, path_prefix, strip_prefix, upstream_path_prefix, target_host, target_port, status, created_at, updated_at from proxy_routes where proxy_id = ? order by length(path_prefix) desc, path_prefix, id`, proxy.ID)
+		routeRows, err := queryLegacyProxyRoutes(ctx, tx, proxy.ID)
 		if err != nil {
 			return err
 		}
-		for routeRows.Next() {
-			var route legacyRouteRow
-			if err := routeRows.Scan(&route.ID, &route.ProxyID, &route.ClientID, &route.PathPrefix, &route.StripPrefix, &route.UpstreamPathPrefix, &route.TargetHost, &route.TargetPort, &route.Status, &route.CreatedAt, &route.UpdatedAt); err != nil {
-				routeRows.Close()
-				return err
-			}
+		for _, route := range routeRows {
 			pathPrefix, err := domain.NormalizeProxyRoutePrefix(route.PathPrefix)
 			if err != nil {
-				routeRows.Close()
 				return fmt.Errorf("domain path migration conflict: route %s invalid path: %w", route.ID, err)
 			}
 			owner := legacyPathOwner{
@@ -339,18 +337,12 @@ func convertLegacyWebProxies(ctx context.Context, db *sql.DB) error {
 			}
 			if existing, exists := agg.pathOwners[pathPrefix]; exists {
 				if !samePathBackend(existing, owner) {
-					routeRows.Close()
 					return fmt.Errorf("domain path migration conflict: host %s path %s maps to different backends", host, pathPrefix)
 				}
 			} else {
 				agg.pathOwners[pathPrefix] = owner
 			}
 		}
-		if err := routeRows.Err(); err != nil {
-			routeRows.Close()
-			return err
-		}
-		routeRows.Close()
 	}
 
 	// insert domains and entries
@@ -391,24 +383,10 @@ func convertLegacyWebProxies(ctx context.Context, db *sql.DB) error {
 			return err
 		}
 
-		routeRows, err := tx.QueryContext(ctx, `select id, proxy_id, client_id, path_prefix, strip_prefix, upstream_path_prefix, target_host, target_port, status, created_at, updated_at from proxy_routes where proxy_id = ?`, proxy.ID)
+		routes, err := queryLegacyProxyRoutes(ctx, tx, proxy.ID)
 		if err != nil {
 			return err
 		}
-		routes := make([]legacyRouteRow, 0)
-		for routeRows.Next() {
-			var route legacyRouteRow
-			if err := routeRows.Scan(&route.ID, &route.ProxyID, &route.ClientID, &route.PathPrefix, &route.StripPrefix, &route.UpstreamPathPrefix, &route.TargetHost, &route.TargetPort, &route.Status, &route.CreatedAt, &route.UpdatedAt); err != nil {
-				routeRows.Close()
-				return err
-			}
-			routes = append(routes, route)
-		}
-		routeRows.Close()
-		if err := routeRows.Err(); err != nil {
-			return err
-		}
-
 		for _, route := range routes {
 			pathPrefix, err := domain.NormalizeProxyRoutePrefix(route.PathPrefix)
 			if err != nil {
@@ -419,7 +397,7 @@ func convertLegacyWebProxies(ctx context.Context, db *sql.DB) error {
 				return err
 			}
 			status := domain.ProxyEnabled
-			if route.Status == string(domain.ProxyRouteDisabled) || proxy.Status != string(domain.ProxyEnabled) {
+			if route.Status == "disabled" || proxy.Status != string(domain.ProxyEnabled) {
 				status = domain.ProxyDisabled
 			}
 			authEnabled := proxy.AccessAuthEnabled
@@ -434,11 +412,43 @@ func convertLegacyWebProxies(ctx context.Context, db *sql.DB) error {
 			}
 		}
 		if _, err := tx.ExecContext(ctx, `delete from proxy_routes where proxy_id = ?`, proxy.ID); err != nil {
-			return err
+			// Table may already be absent on partially cleaned installs; ignore missing table.
+			if !isMissingTableError(err) {
+				return err
+			}
 		}
 	}
 
 	return tx.Commit()
+}
+
+// queryLegacyProxyRoutes reads pre-Domain path routes. Missing table means no legacy routes.
+func queryLegacyProxyRoutes(ctx context.Context, tx *sql.Tx, proxyID string) ([]legacyRouteRow, error) {
+	rows, err := tx.QueryContext(ctx, `select id, proxy_id, client_id, path_prefix, strip_prefix, upstream_path_prefix, target_host, target_port, status, created_at, updated_at from proxy_routes where proxy_id = ? order by length(path_prefix) desc, path_prefix, id`, proxyID)
+	if err != nil {
+		if isMissingTableError(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	defer rows.Close()
+	routes := make([]legacyRouteRow, 0)
+	for rows.Next() {
+		var route legacyRouteRow
+		if err := rows.Scan(&route.ID, &route.ProxyID, &route.ClientID, &route.PathPrefix, &route.StripPrefix, &route.UpstreamPathPrefix, &route.TargetHost, &route.TargetPort, &route.Status, &route.CreatedAt, &route.UpdatedAt); err != nil {
+			return nil, err
+		}
+		routes = append(routes, route)
+	}
+	return routes, rows.Err()
+}
+
+func isMissingTableError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "no such table") && strings.Contains(message, "proxy_routes")
 }
 
 func samePathBackend(a, b legacyPathOwner) bool {

@@ -23,7 +23,6 @@ import (
 	"github.com/simp-frp/go-ginx-2/internal/domain"
 	"github.com/simp-frp/go-ginx-2/internal/proxy/tunnel"
 	"github.com/simp-frp/go-ginx-2/internal/session"
-	"github.com/simp-frp/go-ginx-2/internal/store"
 )
 
 const ControlALPN = "go-ginx-control/1"
@@ -407,33 +406,6 @@ func (server Server) sendProxySnapshot(ctx context.Context, stream io.Writer, cl
 	proxies, err := proxyRepository.ByClientID(ctx, clientID)
 	if err != nil {
 		return err
-	}
-	if routes, ok := store.Routes(server.Authenticator.Store); ok {
-		routeProxyIDs, routeErr := routes.ListProxyIDsByClientID(ctx, clientID)
-		if routeErr != nil {
-			return routeErr
-		}
-		seen := make(map[string]struct{}, len(proxies)+len(routeProxyIDs))
-		for _, proxy := range proxies {
-			seen[proxy.ID] = struct{}{}
-		}
-		for _, proxyID := range routeProxyIDs {
-			if _, exists := seen[proxyID]; exists {
-				continue
-			}
-			proxy, byIDErr := proxyRepository.ByID(ctx, proxyID)
-			if byIDErr != nil {
-				if errors.Is(byIDErr, store.ErrNotFound) {
-					continue
-				}
-				return byIDErr
-			}
-			if proxy.Status != domain.ProxyEnabled {
-				continue
-			}
-			proxies = append(proxies, proxy)
-			seen[proxy.ID] = struct{}{}
-		}
 	}
 	return WriteMessage(stream, MessageProxySnapshot, ProxySnapshot{Version: version, Proxies: proxies})
 }

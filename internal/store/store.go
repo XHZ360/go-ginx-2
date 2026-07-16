@@ -178,19 +178,6 @@ type ProxyRepository interface {
 	Delete(ctx context.Context, id string) error
 }
 
-type ProxyRouteRepository interface {
-	Create(ctx context.Context, route domain.ProxyRoute) error
-	ByID(ctx context.Context, id string) (domain.ProxyRoute, error)
-	ListByProxyID(ctx context.Context, proxyID string) ([]domain.ProxyRoute, error)
-	ListProxyIDsByClientID(ctx context.Context, clientID string) ([]string, error)
-	Update(ctx context.Context, route domain.ProxyRoute) error
-	Delete(ctx context.Context, id string) error
-}
-
-type ProxyRouteStore interface {
-	ProxyRoutes() ProxyRouteRepository
-}
-
 type ProxyAccessRepository interface {
 	EnableAuthAndCreateActivation(ctx context.Context, proxyID string, authVersion int64, token domain.ProxyActivationToken) error
 	CreateActivationToken(ctx context.Context, token domain.ProxyActivationToken) error
@@ -204,14 +191,6 @@ type ProxyAccessRepository interface {
 
 type ProxyAccessStore interface {
 	ProxyAccess() ProxyAccessRepository
-}
-
-func Routes(s Store) (ProxyRouteRepository, bool) {
-	routeStore, ok := s.(ProxyRouteStore)
-	if !ok {
-		return nil, false
-	}
-	return routeStore.ProxyRoutes(), true
 }
 
 func Access(s Store) (ProxyAccessRepository, bool) {
