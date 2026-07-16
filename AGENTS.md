@@ -30,6 +30,7 @@ pnpm graphql:refresh          # GraphQL schema/operation 改动
 
 ## 项目边界
 
+- 遭遇阻碍时，记录阻碍事项；相同或同类阻碍应合并记录，避免重复。
 - 不提交令牌、凭据、私钥、日志、本地数据或生成目录；重点排除 `.tmp/`、`dist/`、`data/`、`admin-ui/node_modules/`、`admin-ui/dist/`、`*.log`、`*.local*`、`*.private*`。
 - 证书首次创建失败且无可用材料时，不得让坏状态进入运行时；续期或轮换失败时保留旧的可用材料。敏感数据不得进入 API、日志或测试快照。
 - 未经明确要求，不操作远端服务或生产数据；清理生产数据前必须备份。
