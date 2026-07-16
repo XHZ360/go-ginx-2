@@ -12,9 +12,11 @@ import (
 	nethttp "net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/simp-frp/go-ginx-2/internal/control"
 	"github.com/simp-frp/go-ginx-2/internal/domain"
+	"github.com/simp-frp/go-ginx-2/internal/logging"
 	"github.com/simp-frp/go-ginx-2/internal/proxy/tunnel"
 	"github.com/simp-frp/go-ginx-2/internal/session"
 	"github.com/simp-frp/go-ginx-2/internal/stats"
@@ -33,9 +35,10 @@ type Entry struct {
 }
 
 type Server struct {
-	entry  Entry
-	server *nethttp.Server
-	ln     net.Listener
+	entry               Entry
+	server              *nethttp.Server
+	ln                  net.Listener
+	routeMissLogLimiter *logging.RateLimiter
 }
 
 func Listen(entry Entry) (*Server, error) {
@@ -49,7 +52,7 @@ func Listen(entry Entry) (*Server, error) {
 	if err != nil {
 		return nil, err
 	}
-	server := &Server{entry: entry, ln: ln}
+	server := &Server{entry: entry, ln: ln, routeMissLogLimiter: logging.NewRateLimiter(time.Minute)}
 	server.server = &nethttp.Server{Handler: server}
 	return server, nil
 }
@@ -85,7 +88,9 @@ func (server *Server) ServeHTTP(w nethttp.ResponseWriter, r *nethttp.Request) {
 	host := hostWithoutPort(r.Host)
 	webDomain, _, err := server.entry.Store.DomainEntries().ByListener(r.Context(), domain.DomainEntryHTTP, server.entry.EntryBindHost, server.entry.EntryPort, host, server.entry.IncludeDefaultRoutes)
 	if err != nil || webDomain.Status != domain.DomainEnabled {
-		log.Printf("http proxy route failed: bind_host=%s port=%d host=%s category=route_miss", displayBindHost(server.entry.EntryBindHost), server.entry.EntryPort, host)
+		if server.routeMissLogLimiter.Allow() {
+			log.Printf("http proxy route rejected: bind_host=%s port=%d host=%s method=%s remote_ip=%s category=route_miss sample_interval=1m", displayBindHost(server.entry.EntryBindHost), server.entry.EntryPort, host, r.Method, remoteIP(r.RemoteAddr))
+		}
 		nethttp.Error(w, "proxy not found", nethttp.StatusNotFound)
 		return
 	}
@@ -118,26 +123,29 @@ func (server *Server) ServeHTTP(w nethttp.ResponseWriter, r *nethttp.Request) {
 			server.entry.Stats.RecordHTTP(proxy.ID, statusCode, uploadBytes, downloadBytes, failed)
 		}()
 	}
+	requestID, err := server.requestID()
+	if err != nil {
+		log.Printf("http proxy route failed: bind_host=%s port=%d host=%s proxy_id=%s category=request_id_failed error=%v", displayBindHost(server.entry.EntryBindHost), server.entry.EntryPort, host, proxy.ID, err)
+		statusCode = nethttp.StatusInternalServerError
+		nethttp.Error(w, "request id failed", nethttp.StatusInternalServerError)
+		return
+	}
 	latest, ok := server.entry.Sessions.Latest(proxy.ClientID)
 	if !ok || latest.StreamOpener == nil {
-		log.Printf("http proxy route failed: bind_host=%s port=%d host=%s proxy_id=%s category=client_offline", displayBindHost(server.entry.EntryBindHost), server.entry.EntryPort, host, proxy.ID)
+		log.Printf("http proxy route failed: bind_host=%s port=%d host=%s proxy_id=%s request_id=%s category=client_offline", displayBindHost(server.entry.EntryBindHost), server.entry.EntryPort, host, proxy.ID, requestID)
 		statusCode = nethttp.StatusServiceUnavailable
 		nethttp.Error(w, "client offline", nethttp.StatusServiceUnavailable)
 		return
 	}
 	stream, err := latest.StreamOpener.OpenStream(r.Context())
 	if err != nil {
-		log.Printf("http proxy route failed: bind_host=%s port=%d host=%s proxy_id=%s category=open_stream_failed error=%v", displayBindHost(server.entry.EntryBindHost), server.entry.EntryPort, host, proxy.ID, err)
+		log.Printf("http proxy route failed: bind_host=%s port=%d host=%s proxy_id=%s request_id=%s category=open_stream_failed error=%v", displayBindHost(server.entry.EntryBindHost), server.entry.EntryPort, host, proxy.ID, requestID, err)
 		nethttp.Error(w, "open proxy stream failed", nethttp.StatusBadGateway)
 		return
 	}
 	defer stream.Close()
-	requestID, err := server.requestID()
-	if err != nil {
-		nethttp.Error(w, "request id failed", nethttp.StatusInternalServerError)
-		return
-	}
 	if err := control.WriteMessage(stream, control.MessageOpenStream, control.OpenStream{Kind: "http", ProxyID: proxy.ID, ConnectionID: requestID, TargetHost: proxy.TargetHost, TargetPort: proxy.TargetPort}); err != nil {
+		log.Printf("http proxy route failed: bind_host=%s port=%d host=%s proxy_id=%s request_id=%s category=write_open_stream_failed error=%v", displayBindHost(server.entry.EntryBindHost), server.entry.EntryPort, host, proxy.ID, requestID, err)
 		nethttp.Error(w, "write proxy stream failed", nethttp.StatusBadGateway)
 		return
 	}
@@ -145,12 +153,14 @@ func (server *Server) ServeHTTP(w nethttp.ResponseWriter, r *nethttp.Request) {
 		r.Body = &countingReadCloser{ReadCloser: r.Body, count: &uploadBytes}
 	}
 	if err := r.Write(stream); err != nil {
+		log.Printf("http proxy route failed: bind_host=%s port=%d host=%s proxy_id=%s request_id=%s category=write_request_failed error=%v", displayBindHost(server.entry.EntryBindHost), server.entry.EntryPort, host, proxy.ID, requestID, err)
 		nethttp.Error(w, "write proxy request failed", nethttp.StatusBadGateway)
 		return
 	}
 	responseReader := bufio.NewReader(stream)
 	response, err := nethttp.ReadResponse(responseReader, r)
 	if err != nil {
+		log.Printf("http proxy route failed: bind_host=%s port=%d host=%s proxy_id=%s request_id=%s category=read_response_failed error=%v", displayBindHost(server.entry.EntryBindHost), server.entry.EntryPort, host, proxy.ID, requestID, err)
 		nethttp.Error(w, "read proxy response failed", nethttp.StatusBadGateway)
 		return
 	}
@@ -266,6 +276,14 @@ func displayBindHost(host string) string {
 		return "*"
 	}
 	return host
+}
+
+func remoteIP(address string) string {
+	host, _, err := net.SplitHostPort(address)
+	if err == nil {
+		return host
+	}
+	return address
 }
 
 func (server *Server) requestID() (string, error) {

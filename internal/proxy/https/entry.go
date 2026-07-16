@@ -19,6 +19,7 @@ import (
 
 	"github.com/simp-frp/go-ginx-2/internal/control"
 	"github.com/simp-frp/go-ginx-2/internal/domain"
+	"github.com/simp-frp/go-ginx-2/internal/logging"
 	"github.com/simp-frp/go-ginx-2/internal/proxy/tunnel"
 	"github.com/simp-frp/go-ginx-2/internal/session"
 	"github.com/simp-frp/go-ginx-2/internal/store"
@@ -47,9 +48,10 @@ type Entry struct {
 }
 
 type Listener struct {
-	entry    Entry
-	listener net.Listener
-	resolver *CertificateResolver
+	entry               Entry
+	listener            net.Listener
+	resolver            *CertificateResolver
+	routeMissLogLimiter *logging.RateLimiter
 }
 
 func Listen(entry Entry) (*Listener, error) {
@@ -63,7 +65,7 @@ func Listen(entry Entry) (*Listener, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Listener{entry: entry, listener: listener, resolver: NewCertificateResolver(entry.Store, entry.CertificateDir)}, nil
+	return &Listener{entry: entry, listener: listener, resolver: NewCertificateResolver(entry.Store, entry.CertificateDir), routeMissLogLimiter: logging.NewRateLimiter(time.Minute)}, nil
 }
 
 func (listener *Listener) Addr() net.Addr {
@@ -100,7 +102,9 @@ func (listener *Listener) handleConn(ctx context.Context, conn net.Conn) {
 	}
 	webDomain, _, err := listener.entry.Store.DomainEntries().ByListener(ctx, domain.DomainEntryHTTPS, listener.entry.EntryBindHost, listener.entry.EntryPort, serverName, listener.entry.IncludeDefaultRoutes)
 	if err != nil || webDomain.Status != domain.DomainEnabled {
-		log.Printf("https proxy route failed: bind_host=%s port=%d sni=%s category=route_miss", displayBindHost(listener.entry.EntryBindHost), listener.entry.EntryPort, serverName)
+		if listener.routeMissLogLimiter.Allow() {
+			log.Printf("https proxy route rejected: bind_host=%s port=%d sni=%s remote_ip=%s category=route_miss sample_interval=1m", displayBindHost(listener.entry.EntryBindHost), listener.entry.EntryPort, serverName, remoteIP(conn.RemoteAddr().String()))
+		}
 		return
 	}
 	certificate, err := listener.resolver.CertificateForDomain(ctx, serverName, webDomain)
@@ -153,26 +157,28 @@ func (listener *Listener) handleTerminatedConn(ctx context.Context, conn net.Con
 	}
 	request.URL.Path = domain.RewriteWebProxyPath(request.URL.Path, proxy.PathPrefix, proxy.StripPrefix, proxy.UpstreamPathPrefix)
 	request.URL.RawPath = ""
+	connectionID, err := listener.connectionID()
+	if err != nil {
+		log.Printf("https proxy route failed: bind_host=%s port=%d sni=%s proxy_id=%s category=connection_id_failed error=%v", displayBindHost(listener.entry.EntryBindHost), listener.entry.EntryPort, webDomain.Host, proxy.ID, err)
+		_ = writeSimpleResponse(tlsConn, http.StatusInternalServerError, "request id failed\n")
+		return
+	}
 
 	latest, ok := listener.entry.Sessions.Latest(proxy.ClientID)
 	if !ok || latest.StreamOpener == nil {
-		log.Printf("https proxy route failed: bind_host=%s port=%d sni=%s proxy_id=%s category=client_offline", displayBindHost(listener.entry.EntryBindHost), listener.entry.EntryPort, webDomain.Host, proxy.ID)
+		log.Printf("https proxy route failed: bind_host=%s port=%d sni=%s proxy_id=%s connection_id=%s category=client_offline", displayBindHost(listener.entry.EntryBindHost), listener.entry.EntryPort, webDomain.Host, proxy.ID, connectionID)
 		_ = writeSimpleResponse(tlsConn, http.StatusServiceUnavailable, "client offline\n")
 		return
 	}
 	stream, err := latest.StreamOpener.OpenStream(ctx)
 	if err != nil {
-		log.Printf("https proxy route failed: bind_host=%s port=%d sni=%s proxy_id=%s category=open_stream_failed error=%v", displayBindHost(listener.entry.EntryBindHost), listener.entry.EntryPort, webDomain.Host, proxy.ID, err)
+		log.Printf("https proxy route failed: bind_host=%s port=%d sni=%s proxy_id=%s connection_id=%s category=open_stream_failed error=%v", displayBindHost(listener.entry.EntryBindHost), listener.entry.EntryPort, webDomain.Host, proxy.ID, connectionID, err)
 		_ = writeSimpleResponse(tlsConn, http.StatusBadGateway, "open proxy stream failed\n")
 		return
 	}
 	defer stream.Close()
-	connectionID, err := listener.connectionID()
-	if err != nil {
-		_ = writeSimpleResponse(tlsConn, http.StatusInternalServerError, "request id failed\n")
-		return
-	}
 	if err := control.WriteMessage(stream, control.MessageOpenStream, control.OpenStream{Kind: "http", ProxyID: proxy.ID, ConnectionID: connectionID, TargetHost: proxy.TargetHost, TargetPort: proxy.TargetPort}); err != nil {
+		log.Printf("https proxy route failed: bind_host=%s port=%d sni=%s proxy_id=%s connection_id=%s category=write_open_stream_failed error=%v", displayBindHost(listener.entry.EntryBindHost), listener.entry.EntryPort, webDomain.Host, proxy.ID, connectionID, err)
 		_ = writeSimpleResponse(tlsConn, http.StatusBadGateway, "write proxy stream failed\n")
 		return
 	}
@@ -180,11 +186,13 @@ func (listener *Listener) handleTerminatedConn(ctx context.Context, conn net.Con
 		_ = writeSimpleResponse(tlsConn, http.StatusRequestEntityTooLarge, "request body too large\n")
 		return
 	} else if err != nil {
+		log.Printf("https proxy route failed: bind_host=%s port=%d sni=%s proxy_id=%s connection_id=%s category=write_request_failed error=%v", displayBindHost(listener.entry.EntryBindHost), listener.entry.EntryPort, webDomain.Host, proxy.ID, connectionID, err)
 		_ = writeSimpleResponse(tlsConn, http.StatusBadGateway, "write proxy request failed\n")
 		return
 	}
 	response, responseReader, err := readResponseWithTimeout(stream, request, httpsReadTimeout)
 	if err != nil {
+		log.Printf("https proxy route failed: bind_host=%s port=%d sni=%s proxy_id=%s connection_id=%s category=read_response_failed error=%v", displayBindHost(listener.entry.EntryBindHost), listener.entry.EntryPort, webDomain.Host, proxy.ID, connectionID, err)
 		_ = writeSimpleResponse(tlsConn, http.StatusBadGateway, "read proxy response failed\n")
 		return
 	}
@@ -493,6 +501,14 @@ func displayBindHost(host string) string {
 		return "*"
 	}
 	return host
+}
+
+func remoteIP(address string) string {
+	host, _, err := net.SplitHostPort(address)
+	if err == nil {
+		return host
+	}
+	return address
 }
 
 func (listener *Listener) connectionID() (string, error) {

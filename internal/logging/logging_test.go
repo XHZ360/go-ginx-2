@@ -193,6 +193,16 @@ func TestSetupLoggerWritesStderrAndRotatingFile(t *testing.T) {
 	}
 }
 
+func TestRateLimiterLimitsEventsWithinInterval(t *testing.T) {
+	limiter := NewRateLimiter(time.Hour)
+	if !limiter.Allow() {
+		t.Fatal("expected first event to be allowed")
+	}
+	if limiter.Allow() {
+		t.Fatal("expected second event to be limited")
+	}
+}
+
 func nowFunc(now time.Time) func() time.Time {
 	return func() time.Time { return now }
 }
