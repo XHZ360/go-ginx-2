@@ -348,7 +348,18 @@ export function ProxyDetailPage() {
                 <dt>Status</dt>
                 <dd>{proxy.accessAuthEnabled ? 'Enabled' : 'Disabled'}</dd>
               </div>
+              {proxy.accessAuthEnabled ? (
+                <div>
+                  <dt>Auth version</dt>
+                  <dd className="mono">{proxy.accessAuthVersion ?? 0}</dd>
+                </div>
+              ) : null}
             </dl>
+            {proxy.accessAuthEnabled && (proxy.accessAuthVersion ?? 0) > 0 ? (
+              <p className="banner banner--warning">
+                Domain/Path changes revoke existing cookies and activation links. Create a new activation link after identity changes.
+              </p>
+            ) : null}
             <div className="inline-actions">
               {!proxy.accessAuthEnabled ? (
                 <Button type="primary" loading={enableAuthMutation.isPending} onClick={() => enableAuthMutation.mutate(undefined)}>

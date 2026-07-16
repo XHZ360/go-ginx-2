@@ -319,6 +319,7 @@ type ProxyListItem struct {
 	UDPErrorCount        int64
 	HTTPErrorCount       int64
 	AccessAuthEnabled    bool
+	AccessAuthVersion    int64
 	Config               ProxyTypeConfig
 	Certificate          *ManagedCertificateSummary
 	CreatedAt            time.Time
@@ -341,6 +342,7 @@ type ProxyDetail struct {
 	UDPErrorCount        int64
 	HTTPErrorCount       int64
 	AccessAuthEnabled    bool
+	AccessAuthVersion    int64
 	Config               ProxyTypeConfig
 	Certificate          *ManagedCertificateSummary
 	CreatedAt            time.Time
@@ -553,7 +555,7 @@ func (service Service) ProxyDetail(ctx context.Context, proxyID string) (ProxyDe
 			}
 		}
 	}
-	return ProxyDetail{ID: item.ID, UserID: item.UserID, ClientID: item.ClientID, Name: item.Name, Type: item.Type, Status: item.Status, Description: item.Description, RuntimeStatus: item.RuntimeStatus, ActiveTCPConnections: item.ActiveTCPConnections, UploadBytes: item.UploadBytes, DownloadBytes: item.DownloadBytes, TCPErrorCount: item.TCPErrorCount, UDPErrorCount: item.UDPErrorCount, HTTPErrorCount: item.HTTPErrorCount, AccessAuthEnabled: item.AccessAuthEnabled, Config: item.Config, Certificate: item.Certificate, CreatedAt: proxy.CreatedAt, UpdatedAt: proxy.UpdatedAt}, nil
+	return ProxyDetail{ID: item.ID, UserID: item.UserID, ClientID: item.ClientID, Name: item.Name, Type: item.Type, Status: item.Status, Description: item.Description, RuntimeStatus: item.RuntimeStatus, ActiveTCPConnections: item.ActiveTCPConnections, UploadBytes: item.UploadBytes, DownloadBytes: item.DownloadBytes, TCPErrorCount: item.TCPErrorCount, UDPErrorCount: item.UDPErrorCount, HTTPErrorCount: item.HTTPErrorCount, AccessAuthEnabled: item.AccessAuthEnabled, AccessAuthVersion: item.AccessAuthVersion, Config: item.Config, Certificate: item.Certificate, CreatedAt: proxy.CreatedAt, UpdatedAt: proxy.UpdatedAt}, nil
 }
 
 func (service Service) ListManagedCertificates(ctx context.Context, input CertificateListInput) (ManagedCertificatePage, error) {
@@ -820,17 +822,17 @@ func proxyListItemFromDomain(proxy domain.Proxy, runtimeSession session.Session,
 			runtimeStatus = domain.ProxyOnline
 		}
 	}
-	certificateID := proxy.CertificateID
+	certificateID := ""
 	if certificate != nil {
 		certificateID = certificate.CertificateID
 	}
-	return ProxyListItem{ID: proxy.ID, UserID: proxy.UserID, ClientID: proxy.ClientID, Name: proxy.Name, Type: proxy.Type, Status: proxy.Status, Description: proxy.Description, RuntimeStatus: runtimeStatus, ActiveTCPConnections: proxyStats.TCPCurrentConnections, UploadBytes: proxyStats.TCPUploadBytes + proxyStats.UDPUploadBytes + proxyStats.HTTPUploadBytes, DownloadBytes: proxyStats.TCPDownloadBytes + proxyStats.UDPDownloadBytes + proxyStats.HTTPDownloadBytes, TCPErrorCount: proxyStats.TCPErrors, UDPErrorCount: proxyStats.UDPErrors, HTTPErrorCount: proxyStats.HTTPErrors, AccessAuthEnabled: proxy.AccessAuthEnabled, Config: ProxyTypeConfig{DomainID: proxy.DomainID, PathPrefix: proxy.PathPrefix, StripPrefix: proxy.StripPrefix, UpstreamPathPrefix: proxy.UpstreamPathPrefix, EntryBindHost: proxy.EntryBindHost, EntryHost: proxy.EntryHost, EntryPort: proxy.EntryPort, TargetHost: proxy.TargetHost, TargetPort: proxy.TargetPort, CertFile: proxy.CertFile, KeyFile: proxy.KeyFile, CertificateID: certificateID}, Certificate: certificate, CreatedAt: proxy.CreatedAt, UpdatedAt: proxy.UpdatedAt}
+	return ProxyListItem{ID: proxy.ID, UserID: proxy.UserID, ClientID: proxy.ClientID, Name: proxy.Name, Type: proxy.Type, Status: proxy.Status, Description: proxy.Description, RuntimeStatus: runtimeStatus, ActiveTCPConnections: proxyStats.TCPCurrentConnections, UploadBytes: proxyStats.TCPUploadBytes + proxyStats.UDPUploadBytes + proxyStats.HTTPUploadBytes, DownloadBytes: proxyStats.TCPDownloadBytes + proxyStats.UDPDownloadBytes + proxyStats.HTTPDownloadBytes, TCPErrorCount: proxyStats.TCPErrors, UDPErrorCount: proxyStats.UDPErrors, HTTPErrorCount: proxyStats.HTTPErrors, AccessAuthEnabled: proxy.AccessAuthEnabled, AccessAuthVersion: proxy.AccessAuthVersion, Config: ProxyTypeConfig{DomainID: proxy.DomainID, PathPrefix: proxy.PathPrefix, StripPrefix: proxy.StripPrefix, UpstreamPathPrefix: proxy.UpstreamPathPrefix, EntryBindHost: proxy.EntryBindHost, EntryHost: proxy.EntryHost, EntryPort: proxy.EntryPort, TargetHost: proxy.TargetHost, TargetPort: proxy.TargetPort, CertificateID: certificateID}, Certificate: certificate, CreatedAt: proxy.CreatedAt, UpdatedAt: proxy.UpdatedAt}
 }
 
 func proxySummaryFromDomain(proxy domain.Proxy, runtimeSession session.Session, proxyStats stats.ProxyStats, certificate *ManagedCertificateSummary) ProxySummary {
 	runtimeStatus := proxy.Status
 	if proxy.Status == domain.ProxyEnabled {
-		if proxy.Type == domain.ProxyHTTPS && certificateInvalid(certificate) {
+		if proxy.Type.IsWeb() && certificateInvalid(certificate) {
 			runtimeStatus = domain.ProxyNeedsConf
 		} else if runtimeSession.ID == "" {
 			runtimeStatus = domain.ProxyOffline
@@ -850,11 +852,8 @@ func certificateInvalid(certificate *ManagedCertificateSummary) bool {
 }
 
 func (service Service) certificateSummaryForProxy(ctx context.Context, proxy domain.Proxy, managed *ManagedCertificateSummary) *ManagedCertificateSummary {
-	if proxy.Type != domain.ProxyHTTPS {
+	if !proxy.Type.IsWeb() {
 		return managed
-	}
-	if proxy.CertFile != "" || proxy.KeyFile != "" {
-		return service.staticCertificateSummary(proxy)
 	}
 	if managed != nil {
 		summary := *managed
@@ -866,26 +865,7 @@ func (service Service) certificateSummaryForProxy(ctx context.Context, proxy dom
 		}
 		return &summary
 	}
-	now := time.Now().UTC()
-	return &ManagedCertificateSummary{ProxyID: proxy.ID, Host: proxy.EntryHost, Status: domain.CertificatePending, ServingStatus: domain.CertificateServingMissing, OperationStatus: domain.CertificateOperationIdle, LastCheckedAt: &now, LastError: "certificate active material is missing", CreatedAt: proxy.CreatedAt, UpdatedAt: proxy.UpdatedAt}
-}
-
-func (service Service) staticCertificateSummary(proxy domain.Proxy) *ManagedCertificateSummary {
-	now := time.Now().UTC()
-	summary := &ManagedCertificateSummary{ProxyID: proxy.ID, Host: proxy.EntryHost, OperationStatus: domain.CertificateOperationIdle, CreatedAt: proxy.CreatedAt, UpdatedAt: proxy.UpdatedAt, LastCheckedAt: &now}
-	if proxy.CertFile == "" || proxy.KeyFile == "" {
-		summary.Status = domain.CertificatePending
-		summary.ServingStatus = domain.CertificateServingMissing
-		summary.LastError = "static certificate and key files must both be configured"
-		return summary
-	}
-	health := httpsproxy.CheckCertificateFiles(proxy.EntryHost, proxy.CertFile, proxy.KeyFile, service.CertificateDir, service.RenewalWindow, now)
-	summary.ServingStatus = health.ServingStatus
-	summary.Status = certificateStatusFromServing(health.ServingStatus)
-	summary.NotAfter = health.NotAfter
-	summary.Fingerprint = health.Fingerprint
-	summary.LastError = health.ErrorSummary
-	return summary
+	return managed
 }
 
 func (service Service) managedCertificateSummary(certificate domain.ManagedCertificate) ManagedCertificateSummary {

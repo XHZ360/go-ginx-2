@@ -91,10 +91,11 @@ cp -a data/certs.pre-domain-path data/certs
 - Web Proxy 更新路径不再写入 `entry_host` / `certificate_id`（权威在 Domain）
 - 管理面已移除 route mutations / ProxyRoute GraphQL
 
-仍可选：
+已完成后续清理：
 
-- 物理删除 `proxies` 上 Web 遗留列（需 SQLite rebuild）
-- 文档与 Admin UI 中移除 legacy HTTP/HTTPS 类型提示
+- 物理删除 `proxies` 上 Web 遗留列（`entry_host` / `cert_file` / `key_file` / `certificate_id`；TCP/UDP 保留 `entry_bind_host` / `entry_port`）
+- Admin UI 移除 legacy HTTP/HTTPS 类型筛选；运行时 `web` 流类型映射为 `http`
+- Domain Host / DomainID / PathPrefix 变更时撤销 Access activation
 
 ## 相关文档
 

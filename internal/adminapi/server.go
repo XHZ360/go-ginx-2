@@ -871,6 +871,7 @@ func (server *Server) buildSchema() (graphql.Schema, error) {
 		"udpErrorCount":        &graphql.Field{Type: graphql.Int},
 		"httpErrorCount":       &graphql.Field{Type: graphql.Int},
 		"accessAuthEnabled":    &graphql.Field{Type: graphql.Boolean},
+		"accessAuthVersion":    &graphql.Field{Type: graphql.Int},
 		"config":               &graphql.Field{Type: proxyConfigType},
 		"certificate":          &graphql.Field{Type: managedCertificateType},
 		"createdAt":            &graphql.Field{Type: graphql.String, Resolve: proxyCreatedAtResolve()},

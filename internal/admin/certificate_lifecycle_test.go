@@ -351,8 +351,8 @@ func TestServiceMigrateLegacyFileCertificatesIsIdempotent(t *testing.T) {
 		t.Fatalf("create client: %v", err)
 	}
 	certFile, keyFile := writeManagedCertPair(t, certificateDir, "legacy.example.com", time.Now().Add(24*time.Hour))
-	// Create via store auto-converts https -> web/domain and registers static cert on domain when present.
-	// Simulate pre-migration by creating domain+proxy without certificate first, then attaching static paths.
+	// Fresh schema no longer stores proxy cert_file/key_file. Create file cert + Domain bind directly
+	// (same end state as the old MigrateLegacyFileCertificates path).
 	legacy := domain.Proxy{ID: "proxy-legacy", UserID: user.ID, ClientID: client.ID, Name: "legacy", Type: domain.ProxyHTTPS, Status: domain.ProxyEnabled, EntryHost: "legacy.example.com", TargetHost: "127.0.0.1", TargetPort: 8080}
 	if err := db.Proxies().Create(ctx, legacy); err != nil {
 		t.Fatalf("create legacy proxy: %v", err)
@@ -361,47 +361,28 @@ func TestServiceMigrateLegacyFileCertificatesIsIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reload proxy: %v", err)
 	}
+	certificate, err := service.CreateCertificate(ctx, CreateCertificateInput{Host: "legacy.example.com", ProviderType: domain.CertificateProviderFile, CertFile: certFile, KeyFile: keyFile, ActorID: "admin-1"})
+	if err != nil {
+		t.Fatalf("create file certificate: %v", err)
+	}
+	if _, err := service.BindDomainCertificate(ctx, bound.DomainID, certificate.ID, "admin-1"); err != nil {
+		t.Fatalf("bind domain certificate: %v", err)
+	}
 	webDomain, err := db.Domains().ByID(ctx, bound.DomainID)
 	if err != nil {
-		t.Fatalf("reload domain: %v", err)
+		t.Fatalf("reload domain after bind: %v", err)
 	}
-	// clear any auto-registered cert and attach static paths on proxy for migration input
-	if webDomain.CertificateID != "" {
-		_ = db.Certificates().Delete(ctx, webDomain.CertificateID)
-		webDomain.CertificateID = ""
-		if err := db.Domains().Update(ctx, webDomain); err != nil {
-			t.Fatalf("clear domain cert: %v", err)
-		}
+	if webDomain.CertificateID != certificate.ID {
+		t.Fatalf("expected domain bound to certificate, got %+v", webDomain)
 	}
-	bound.CertFile = certFile
-	bound.KeyFile = keyFile
-	if err := db.Proxies().Update(ctx, bound); err != nil {
-		t.Fatalf("attach static cert paths: %v", err)
-	}
-
+	// MigrateLegacyFileCertificates is a no-op once proxy-level cert paths are gone.
 	migrated, err := service.MigrateLegacyFileCertificates(ctx)
 	if err != nil {
 		t.Fatalf("migrate legacy file certificates: %v", err)
 	}
-	if migrated != 1 {
-		t.Fatalf("expected one migrated certificate, got %d", migrated)
+	if migrated != 0 {
+		t.Fatalf("expected no proxy-level file certs to migrate, got %d", migrated)
 	}
-	webDomain, err = db.Domains().ByID(ctx, bound.DomainID)
-	if err != nil {
-		t.Fatalf("reload domain after migrate: %v", err)
-	}
-	if webDomain.CertificateID == "" {
-		t.Fatalf("expected domain bound to migrated certificate, got %+v", webDomain)
-	}
-	certificate, err := db.Certificates().ByID(ctx, webDomain.CertificateID)
-	if err != nil {
-		t.Fatalf("reload migrated certificate: %v", err)
-	}
-	if certificate.ProviderType != domain.CertificateProviderFile || certificate.CertFile != certFile || certificate.Host != "legacy.example.com" {
-		t.Fatalf("unexpected migrated certificate: %+v", certificate)
-	}
-
-	// 幂等：再次运行不应迁移更多。
 	again, err := service.MigrateLegacyFileCertificates(ctx)
 	if err != nil {
 		t.Fatalf("re-run migration: %v", err)
@@ -446,45 +427,15 @@ func TestServiceMigrateLegacyFileCertificatesStoresOnlyPathsNotPrivateKeyBytes(t
 	if err != nil {
 		t.Fatalf("reload proxy: %v", err)
 	}
-	webDomainSeed, err := db.Domains().ByID(ctx, boundSeed.DomainID)
+	certificate, err := service.CreateCertificate(ctx, CreateCertificateInput{Host: "legacy.example.com", ProviderType: domain.CertificateProviderFile, CertFile: certFile, KeyFile: keyFile, ActorID: "admin-1"})
 	if err != nil {
-		t.Fatalf("reload domain: %v", err)
+		t.Fatalf("create file certificate: %v", err)
 	}
-	if webDomainSeed.CertificateID != "" {
-		_ = db.Certificates().Delete(ctx, webDomainSeed.CertificateID)
-		webDomainSeed.CertificateID = ""
-		_ = db.Domains().Update(ctx, webDomainSeed)
-	}
-	boundSeed.CertFile = certFile
-	boundSeed.KeyFile = keyFile
-	if err := db.Proxies().Update(ctx, boundSeed); err != nil {
-		t.Fatalf("attach static cert paths: %v", err)
+	if _, err := service.BindDomainCertificate(ctx, boundSeed.DomainID, certificate.ID, "admin-1"); err != nil {
+		t.Fatalf("bind domain certificate: %v", err)
 	}
 
-	migrated, err := service.MigrateLegacyFileCertificates(ctx)
-	if err != nil {
-		t.Fatalf("migrate legacy file certificates: %v", err)
-	}
-	if migrated != 1 {
-		t.Fatalf("expected one migrated certificate, got %d", migrated)
-	}
-
-	webDomain, err := db.Domains().ByID(ctx, boundSeed.DomainID)
-	if err != nil {
-		t.Fatalf("reload domain: %v", err)
-	}
-	if webDomain.CertificateID == "" {
-		t.Fatalf("expected domain bound to migrated certificate, got %+v", webDomain)
-	}
-	certificate, err := db.Certificates().ByID(ctx, webDomain.CertificateID)
-	if err != nil {
-		t.Fatalf("reload migrated certificate: %v", err)
-	}
-	if certificate.ProviderType != domain.CertificateProviderFile || certificate.CertFile != certFile {
-		t.Fatalf("unexpected migrated certificate: %+v", certificate)
-	}
-
-	// 安全不变量：SQLite 原始字节中不得出现私钥 PEM 内容。
+	// 安全不变量：SQLite 只登记路径，不出现私钥 PEM 内容。
 	raw, err := os.ReadFile(dbPath)
 	if err != nil {
 		t.Fatalf("read sqlite file: %v", err)

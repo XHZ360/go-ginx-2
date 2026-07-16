@@ -992,9 +992,8 @@ insert into managed_certificates (id, proxy_id, host, status, provider, cert_fil
 	if !indexExists(t, ctx, db.db, "managed_certificates_host_unique") {
 		t.Fatal("managed_certificates_host_unique index should be preserved")
 	}
-	if !indexExists(t, ctx, db.db, "proxies_certificate_id_unique") {
-		t.Fatal("proxies_certificate_id_unique index should exist after migration")
-	}
+	// proxies_certificate_id_unique is temporary during proxy-binding migration and
+	// is removed when dropProxyWebLegacyColumns rebuilds proxies without certificate_id.
 	// 幂等性：再次打开同一数据库不应失败（重建无操作）。
 	if err := db.Close(); err != nil {
 		t.Fatalf("close store: %v", err)

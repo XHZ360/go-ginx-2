@@ -589,9 +589,10 @@ func (server Server) handleSDKStream(ctx context.Context, stream io.ReadWriteClo
 }
 
 func proxyTypeToStreamKind(proxyType domain.ProxyType) string {
-	switch proxyType {
-	case domain.ProxyHTTP:
+	if proxyType.IsWeb() {
 		return "http"
+	}
+	switch proxyType {
 	case domain.ProxyUDP:
 		return "udp"
 	default:

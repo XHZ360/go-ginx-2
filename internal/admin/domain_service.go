@@ -96,8 +96,11 @@ func (service Service) UpdateDomain(ctx context.Context, input UpdateDomainInput
 		return domain.Domain{}, err
 	}
 	previous := existing
+	hostChanged := false
 	if strings.TrimSpace(input.Host) != "" {
-		existing.Host = domain.NormalizeRouteHost(input.Host)
+		nextHost := domain.NormalizeRouteHost(input.Host)
+		hostChanged = nextHost != existing.Host
+		existing.Host = nextHost
 	}
 	if input.CertificateIDSet {
 		if input.CertificateID == "" {
@@ -113,6 +116,12 @@ func (service Service) UpdateDomain(ctx context.Context, input UpdateDomainInput
 	}
 	if err := service.Store.Domains().Update(ctx, existing); err != nil {
 		return domain.Domain{}, err
+	}
+	if hostChanged {
+		if err := service.revokeAccessForDomainProxies(ctx, existing.ID); err != nil {
+			_ = service.Store.Domains().Update(ctx, previous)
+			return domain.Domain{}, err
+		}
 	}
 	if err := service.reconcileProxyListeners(ctx); err != nil {
 		_ = service.Store.Domains().Update(ctx, previous)

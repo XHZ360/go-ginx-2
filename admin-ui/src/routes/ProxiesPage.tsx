@@ -356,8 +356,6 @@ export function ProxiesPage() {
           <option value="web">Web path</option>
           <option value="tcp">TCP</option>
           <option value="udp">UDP</option>
-          <option value="http">HTTP (legacy)</option>
-          <option value="https">HTTPS (legacy)</option>
         </SelectField>
         <SelectField label="Status" value={filter.status ?? ''} onChange={(event) => setFilter((current) => ({ ...current, status: event.target.value }))}>
           <option value="">All</option>

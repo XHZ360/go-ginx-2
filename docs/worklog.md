@@ -30,13 +30,12 @@
 - 配额、限速、普通用户自助、备份恢复、完整指标/告警。
 - 正向代理；HTTPS 访问激活不支持逐设备撤销。
 - 原生安装器与包管理器分发。
-- 可选清理：`proxies` 上 Web 遗留列物理 DROP、legacy HTTP/HTTPS 类型提示。
 - 详见 [requirements/limits.md](requirements/limits.md)。
 
 ## 下一步
 
 1. 生产运维：备份恢复、容量校验。
-2. 可选：`proxies` Web 遗留列物理 DROP；证书/UI 文案继续去 legacy。
+2. 部署含 Access activation 身份变更撤销、`proxies` 遗留列 DROP、`web` 流类型修复的版本。
 3. 有代码变更时同步更新 requirements/architecture，并回写本日志验证结果。
 
 ## 最近验证

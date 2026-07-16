@@ -2,12 +2,11 @@
 
 ## 支持类型
 
-- TCP：入口连接通过控制通道流转发到客户端 TCP target。
-- UDP：按外部源地址维护会话，并在空闲后清理。
-- HTTP：按 listener 和 `Host` 路由，转发前按 target 改写可解析的 `Host`/`Origin`。
-- HTTPS：按 listener 和 TLS SNI 路由，要求静态或健康的托管证书后终止 TLS，再转发解密后的 HTTP。
+- TCP：入口连接通过控制通道流转发到客户端 TCP target（Proxy 保存 bind host + port）。
+- UDP：按外部源地址维护会话，并在空闲后清理（Proxy 保存 bind host + port）。
+- Web：协议无关路径后端；公网 HTTP/HTTPS 由 DomainEntry 暴露，Proxy 保存 DomainID + PathPrefix + Client/target。
 
-HTTP/HTTPS 支持 HTTP/1.1 WebSocket Upgrade，并在升级后进入双向隧道。每类代理都可以指定入口 bind host、port；空值回退到全局入口配置。启用、禁用、更新或删除代理后，服务端会协调所需 listener，冲突或绑定失败作为管理操作错误返回。
+Web 支持 HTTP/1.1 WebSocket Upgrade，并在升级后进入双向隧道。启用、禁用、更新或删除后，服务端协调 listener（TCP/UDP 来自 Proxy entry，HTTP/HTTPS 来自 DomainEntry）；冲突或绑定失败作为管理操作错误返回。
 
 ## 路径路由
 

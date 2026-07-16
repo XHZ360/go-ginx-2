@@ -60,6 +60,158 @@ func (s *Store) Stats() store.StatsRepository { return statsRepository{s.db} }
 
 func (s *Store) AuditEvents() store.AuditRepository { return auditRepository{s.db} }
 
+// dropProxyWebLegacyColumns rebuilds proxies without entry_host/cert_file/key_file/certificate_id.
+// TCP/UDP keep entry_bind_host + entry_port; Web authority lives on domains.
+func dropProxyWebLegacyColumns(ctx context.Context, db *sql.DB) error {
+	hasLegacy, err := proxyTableHasColumn(ctx, db, "entry_host")
+	if err != nil {
+		return err
+	}
+	if !hasLegacy {
+		return nil
+	}
+	// Promote any remaining proxy-level static cert paths to Domain bindings before the columns disappear.
+	if err := promoteLegacyProxyFileCertificates(ctx, db); err != nil {
+		return err
+	}
+	if _, err := db.ExecContext(ctx, `pragma foreign_keys=off`); err != nil {
+		return err
+	}
+	defer func() { _, _ = db.ExecContext(ctx, `pragma foreign_keys=on`) }()
+
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	statements := []string{
+		`create table proxies_new (
+    id text primary key,
+    user_id text not null references users(id) on delete cascade,
+    client_id text not null references clients(id) on delete cascade,
+    name text not null,
+    type text not null,
+    status text not null,
+    domain_id text not null default '',
+    path_prefix text not null default '',
+    strip_prefix integer not null default 0,
+    upstream_path_prefix text not null default '/',
+    entry_bind_host text not null default '',
+    entry_port integer not null default 0,
+    target_host text not null,
+    target_port integer not null,
+    access_auth_enabled integer not null default 0,
+    access_auth_version integer not null default 0,
+    stats_legacy_aggregate integer not null default 0,
+    description text not null default '',
+    created_at timestamp not null,
+    updated_at timestamp not null
+)`,
+		`insert into proxies_new (id, user_id, client_id, name, type, status, domain_id, path_prefix, strip_prefix, upstream_path_prefix, entry_bind_host, entry_port, target_host, target_port, access_auth_enabled, access_auth_version, stats_legacy_aggregate, description, created_at, updated_at)
+select id, user_id, client_id, name, type, status, ifnull(domain_id,''), ifnull(path_prefix,''), ifnull(strip_prefix,0), ifnull(upstream_path_prefix,'/'), ifnull(entry_bind_host,''), ifnull(entry_port,0), target_host, target_port, ifnull(access_auth_enabled,0), ifnull(access_auth_version,0), ifnull(stats_legacy_aggregate,0), ifnull(description,''), created_at, updated_at from proxies`,
+		`drop table proxies`,
+		`alter table proxies_new rename to proxies`,
+		`create unique index if not exists proxies_tcp_entry_unique on proxies(lower(entry_bind_host), entry_port) where type = 'tcp'`,
+		`create unique index if not exists proxies_udp_entry_unique on proxies(lower(entry_bind_host), entry_port) where type = 'udp'`,
+		`create unique index if not exists proxies_domain_path_unique on proxies(domain_id, path_prefix) where domain_id <> '' and path_prefix <> ''`,
+		`create index if not exists proxies_domain_status_idx on proxies(domain_id, status) where domain_id <> ''`,
+		`create index if not exists proxies_client_id_idx on proxies(client_id)`,
+		`create index if not exists proxies_user_id_idx on proxies(user_id)`,
+	}
+	for _, statement := range statements {
+		if _, err := tx.ExecContext(ctx, statement); err != nil {
+			return err
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `pragma foreign_key_check`); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
+
+func proxyTableHasColumn(ctx context.Context, db *sql.DB, column string) (bool, error) {
+	rows, err := db.QueryContext(ctx, `pragma table_info(proxies)`)
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid int
+		var name, ctype string
+		var notnull, pk int
+		var dflt sql.NullString
+		if err := rows.Scan(&cid, &name, &ctype, &notnull, &dflt, &pk); err != nil {
+			return false, err
+		}
+		if name == column {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
+}
+
+// promoteLegacyProxyFileCertificates moves proxy.cert_file/key_file onto Domain.CertificateID
+// before those columns are dropped. Idempotent when Domain already has a certificate.
+func promoteLegacyProxyFileCertificates(ctx context.Context, db *sql.DB) error {
+	hasCertFile, err := proxyTableHasColumn(ctx, db, "cert_file")
+	if err != nil || !hasCertFile {
+		return err
+	}
+	rows, err := db.QueryContext(ctx, `select id, domain_id, entry_host, cert_file, key_file from proxies where ifnull(cert_file,'') <> '' and ifnull(key_file,'') <> ''`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	type legacyFileProxy struct {
+		ID, DomainID, EntryHost, CertFile, KeyFile string
+	}
+	items := make([]legacyFileProxy, 0)
+	for rows.Next() {
+		var item legacyFileProxy
+		if err := rows.Scan(&item.ID, &item.DomainID, &item.EntryHost, &item.CertFile, &item.KeyFile); err != nil {
+			return err
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	now := time.Now().UTC()
+	for _, item := range items {
+		host := domain.NormalizeRouteHost(item.EntryHost)
+		domainID := item.DomainID
+		if domainID == "" && host != "" {
+			_ = db.QueryRowContext(ctx, `select id from domains where lower(host) = lower(?)`, host).Scan(&domainID)
+		}
+		if domainID != "" {
+			var bound string
+			_ = db.QueryRowContext(ctx, `select certificate_id from domains where id = ?`, domainID).Scan(&bound)
+			if strings.TrimSpace(bound) != "" {
+				continue
+			}
+			if host == "" {
+				_ = db.QueryRowContext(ctx, `select host from domains where id = ?`, domainID).Scan(&host)
+				host = domain.NormalizeRouteHost(host)
+			}
+		}
+		if host == "" {
+			continue
+		}
+		certID := newMigrationID("cert")
+		if _, err := db.ExecContext(ctx, `insert into managed_certificates (id, proxy_id, host, status, serving_status, operation_status, provider, provider_type, provider_name, credential_id, provider_status, cloudflare_certificate_id, previous_cloudflare_certificate_id, hostnames, request_type, requested_validity, cert_file, key_file, previous_cert_file, previous_key_file, failure_count, fingerprint, last_error, created_at, updated_at) values (?, '', ?, ?, ?, '', 'file', 'file', 'static', '', '', '', '', '[]', '', 0, ?, ?, '', '', 0, '', '', ?, ?)`,
+			certID, host, domain.CertificateValid, domain.CertificateServingUsable, item.CertFile, item.KeyFile, now, now); err != nil {
+			return translateError(err)
+		}
+		if domainID != "" {
+			if _, err := db.ExecContext(ctx, `update domains set certificate_id = ?, updated_at = ? where id = ? and ifnull(certificate_id,'') = ''`, certID, now, domainID); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 func (s *Store) migrate(ctx context.Context) error {
 	if _, err := s.db.ExecContext(ctx, schema); err != nil {
 		return err
@@ -105,7 +257,10 @@ func (s *Store) migrate(ctx context.Context) error {
 	if err := addProxyAccessAuthColumns(ctx, s.db); err != nil {
 		return err
 	}
-	return migrateDomainPathRouting(ctx, s.db)
+	if err := migrateDomainPathRouting(ctx, s.db); err != nil {
+		return err
+	}
+	return dropProxyWebLegacyColumns(ctx, s.db)
 }
 
 type proxyAccessRepository struct{ db *sql.DB }
@@ -391,7 +546,7 @@ func (r clientEnrollmentRepository) MarkUsed(ctx context.Context, id string, use
 
 type proxyRepository struct{ db *sql.DB }
 
-const proxySelectColumns = `id, user_id, client_id, name, type, status, domain_id, path_prefix, strip_prefix, upstream_path_prefix, entry_bind_host, entry_host, entry_port, target_host, target_port, cert_file, key_file, certificate_id, access_auth_enabled, access_auth_version, stats_legacy_aggregate, description, created_at, updated_at`
+const proxySelectColumns = `id, user_id, client_id, name, type, status, domain_id, path_prefix, strip_prefix, upstream_path_prefix, entry_bind_host, entry_port, target_host, target_port, access_auth_enabled, access_auth_version, stats_legacy_aggregate, description, created_at, updated_at`
 
 func (r proxyRepository) Create(ctx context.Context, proxy domain.Proxy) error {
 	if err := ensureLegacyWebProxyDomain(ctx, r.db, &proxy); err != nil {
@@ -410,7 +565,7 @@ func (r proxyRepository) Create(ctx context.Context, proxy domain.Proxy) error {
 	if proxy.UpdatedAt.IsZero() {
 		proxy.UpdatedAt = now
 	}
-	_, err := r.db.ExecContext(ctx, `insert into proxies (id, user_id, client_id, name, type, status, domain_id, path_prefix, strip_prefix, upstream_path_prefix, entry_bind_host, entry_host, entry_port, target_host, target_port, cert_file, key_file, certificate_id, access_auth_enabled, access_auth_version, stats_legacy_aggregate, description, created_at, updated_at) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, proxy.ID, proxy.UserID, proxy.ClientID, proxy.Name, proxy.Type, proxy.Status, proxy.DomainID, proxy.PathPrefix, proxy.StripPrefix, proxy.UpstreamPathPrefix, domain.NormalizeBindHost(proxy.EntryBindHost), proxy.EntryHost, proxy.EntryPort, proxy.TargetHost, proxy.TargetPort, proxy.CertFile, proxy.KeyFile, proxy.CertificateID, proxy.AccessAuthEnabled, proxy.AccessAuthVersion, proxy.StatsLegacyAggregate, proxy.Description, proxy.CreatedAt, proxy.UpdatedAt)
+	_, err := r.db.ExecContext(ctx, `insert into proxies (id, user_id, client_id, name, type, status, domain_id, path_prefix, strip_prefix, upstream_path_prefix, entry_bind_host, entry_port, target_host, target_port, access_auth_enabled, access_auth_version, stats_legacy_aggregate, description, created_at, updated_at) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, proxy.ID, proxy.UserID, proxy.ClientID, proxy.Name, proxy.Type, proxy.Status, proxy.DomainID, proxy.PathPrefix, proxy.StripPrefix, proxy.UpstreamPathPrefix, domain.NormalizeBindHost(proxy.EntryBindHost), proxy.EntryPort, proxy.TargetHost, proxy.TargetPort, proxy.AccessAuthEnabled, proxy.AccessAuthVersion, proxy.StatsLegacyAggregate, proxy.Description, proxy.CreatedAt, proxy.UpdatedAt)
 	return translateError(err)
 }
 
@@ -514,14 +669,18 @@ func normalizeProxyForStore(proxy *domain.Proxy) error {
 		proxy.EntryHost = ""
 		proxy.EntryPort = 0
 		proxy.CertificateID = ""
-		// CertFile/KeyFile may remain temporarily for legacy static-file migration.
+		proxy.CertFile = ""
+		proxy.KeyFile = ""
 	case domain.ProxyTCP, domain.ProxyUDP, domain.ProxyForward:
 		proxy.DomainID = ""
 		proxy.PathPrefix = ""
 		proxy.StripPrefix = false
 		proxy.UpstreamPathPrefix = ""
+		proxy.EntryHost = ""
+		proxy.CertificateID = ""
+		proxy.CertFile = ""
+		proxy.KeyFile = ""
 	}
-	// legacy ProxyHTTP/ProxyHTTPS keep entry fields for migration fixtures
 	return nil
 }
 
@@ -675,65 +834,60 @@ func (r proxyRepository) ByUDPEntryPort(ctx context.Context, port int) (domain.P
 }
 
 func (r proxyRepository) ByHTTPRoute(ctx context.Context, bindHost string, port int, host string, includeDefault bool) (domain.Proxy, error) {
-	return r.byEntry(ctx, domain.ProxyHTTP, domain.NormalizeBindHost(bindHost), port, domain.NormalizeRouteHost(host), includeDefault)
+	return r.byDomainRoute(ctx, domain.DomainEntryHTTP, domain.NormalizeBindHost(bindHost), port, domain.NormalizeRouteHost(host), includeDefault)
 }
 
 func (r proxyRepository) ByHTTPSRoute(ctx context.Context, bindHost string, port int, host string, includeDefault bool) (domain.Proxy, error) {
-	return r.byEntry(ctx, domain.ProxyHTTPS, domain.NormalizeBindHost(bindHost), port, domain.NormalizeRouteHost(host), includeDefault)
+	return r.byDomainRoute(ctx, domain.DomainEntryHTTPS, domain.NormalizeBindHost(bindHost), port, domain.NormalizeRouteHost(host), includeDefault)
+}
+
+func (r proxyRepository) byDomainRoute(ctx context.Context, protocol domain.DomainEntryProtocol, bindHost string, port int, host string, includeDefault bool) (domain.Proxy, error) {
+	webDomain, _, err := domainEntryRepository{r.db}.ByListener(ctx, protocol, bindHost, port, host, includeDefault)
+	if err != nil {
+		return domain.Proxy{}, err
+	}
+	return r.ByDomainAndPath(ctx, webDomain.ID, "/")
 }
 
 func (r proxyRepository) ByHTTPHost(ctx context.Context, host string) (domain.Proxy, error) {
-	// Prefer Domain-based web root proxy; fall back to legacy http row.
 	var domainID string
 	err := r.db.QueryRowContext(ctx, `select id from domains where lower(host) = lower(?)`, domain.NormalizeRouteHost(host)).Scan(&domainID)
-	if err == nil {
-		proxy, pathErr := r.ByDomainAndPath(ctx, domainID, "/")
-		if pathErr == nil {
-			return proxy, nil
-		}
+	if err != nil {
+		return domain.Proxy{}, translateError(err)
 	}
-	return scanProxy(r.db.QueryRowContext(ctx, `select `+proxySelectColumns+` from proxies where type = ? and lower(entry_host) = lower(?) order by entry_bind_host <> '', entry_port <> 0 limit 1`, domain.ProxyHTTP, host))
+	return r.ByDomainAndPath(ctx, domainID, "/")
 }
 
 func (r proxyRepository) ByHTTPSHost(ctx context.Context, host string) (domain.Proxy, error) {
-	var domainID string
-	err := r.db.QueryRowContext(ctx, `select id from domains where lower(host) = lower(?)`, domain.NormalizeRouteHost(host)).Scan(&domainID)
-	if err == nil {
-		proxy, pathErr := r.ByDomainAndPath(ctx, domainID, "/")
-		if pathErr == nil {
-			return proxy, nil
-		}
-	}
-	return scanProxy(r.db.QueryRowContext(ctx, `select `+proxySelectColumns+` from proxies where type = ? and lower(entry_host) = lower(?) order by entry_bind_host <> '', entry_port <> 0 limit 1`, domain.ProxyHTTPS, host))
+	return r.ByHTTPHost(ctx, host)
 }
 
-// ByCertificateID 返回绑定到指定证书资源的代理；若无绑定则返回 store.ErrNotFound。
+// ByCertificateID 返回绑定到指定证书资源的 Domain 下任一 Web Proxy；若无绑定则返回 store.ErrNotFound。
 func (r proxyRepository) ByCertificateID(ctx context.Context, certificateID string) (domain.Proxy, error) {
-	return scanProxy(r.db.QueryRowContext(ctx, `select `+proxySelectColumns+` from proxies where certificate_id = ?`, certificateID))
+	var domainID string
+	err := r.db.QueryRowContext(ctx, `select id from domains where certificate_id = ? limit 1`, certificateID).Scan(&domainID)
+	if err != nil {
+		return domain.Proxy{}, translateError(err)
+	}
+	proxies, err := r.ByDomainID(ctx, domainID)
+	if err != nil {
+		return domain.Proxy{}, err
+	}
+	if len(proxies) == 0 {
+		return domain.Proxy{}, store.ErrNotFound
+	}
+	return proxies[0], nil
 }
 
-func (r proxyRepository) byEntry(ctx context.Context, proxyType domain.ProxyType, bindHost string, port int, routeHost string, includeDefault bool) (domain.Proxy, error) {
+func (r proxyRepository) byEntry(ctx context.Context, proxyType domain.ProxyType, bindHost string, port int, _ string, includeDefault bool) (domain.Proxy, error) {
 	args := []any{proxyType, domain.NormalizeBindHost(bindHost), port}
-	routeClause := ""
-	if proxyType == domain.ProxyHTTP || proxyType == domain.ProxyHTTPS {
-		routeClause = " and lower(entry_host) = lower(?)"
-		args = append(args, routeHost)
-	}
 	defaultClause := ""
 	if includeDefault {
-		if proxyType == domain.ProxyHTTP || proxyType == domain.ProxyHTTPS {
-			defaultClause = " or (entry_bind_host = '' and (entry_port = 0 or entry_port = ?)"
-		} else {
-			defaultClause = " or (entry_bind_host = '' and entry_port = ?"
-		}
+		defaultClause = " or (entry_bind_host = '' and entry_port = ?"
 		args = append(args, port)
-		if routeClause != "" {
-			defaultClause += " and lower(entry_host) = lower(?)"
-			args = append(args, routeHost)
-		}
 		defaultClause += ")"
 	}
-	query := `select ` + proxySelectColumns + ` from proxies where type = ? and ((lower(entry_bind_host) = lower(?) and entry_port = ?` + routeClause + `)` + defaultClause + `) order by case when lower(entry_bind_host) = lower(?) and entry_port = ? then 0 else 1 end limit 1`
+	query := `select ` + proxySelectColumns + ` from proxies where type = ? and ((lower(entry_bind_host) = lower(?) and entry_port = ?)` + defaultClause + `) order by case when lower(entry_bind_host) = lower(?) and entry_port = ? then 0 else 1 end limit 1`
 	args = append(args, bindHost, port)
 	return scanProxy(r.db.QueryRowContext(ctx, query, args...))
 }
@@ -750,7 +904,7 @@ func (r proxyRepository) Update(ctx context.Context, proxy domain.Proxy) error {
 	if err := proxy.Validate(); err != nil {
 		return err
 	}
-	result, err := r.db.ExecContext(ctx, `update proxies set name = ?, status = ?, domain_id = ?, path_prefix = ?, strip_prefix = ?, upstream_path_prefix = ?, entry_bind_host = ?, entry_host = ?, entry_port = ?, target_host = ?, target_port = ?, cert_file = ?, key_file = ?, certificate_id = ?, access_auth_enabled = ?, access_auth_version = ?, stats_legacy_aggregate = ?, description = ?, updated_at = ? where id = ?`, proxy.Name, proxy.Status, proxy.DomainID, proxy.PathPrefix, proxy.StripPrefix, proxy.UpstreamPathPrefix, domain.NormalizeBindHost(proxy.EntryBindHost), proxy.EntryHost, proxy.EntryPort, proxy.TargetHost, proxy.TargetPort, proxy.CertFile, proxy.KeyFile, proxy.CertificateID, proxy.AccessAuthEnabled, proxy.AccessAuthVersion, proxy.StatsLegacyAggregate, proxy.Description, time.Now().UTC(), proxy.ID)
+	result, err := r.db.ExecContext(ctx, `update proxies set name = ?, status = ?, domain_id = ?, path_prefix = ?, strip_prefix = ?, upstream_path_prefix = ?, entry_bind_host = ?, entry_port = ?, target_host = ?, target_port = ?, access_auth_enabled = ?, access_auth_version = ?, stats_legacy_aggregate = ?, description = ?, updated_at = ? where id = ?`, proxy.Name, proxy.Status, proxy.DomainID, proxy.PathPrefix, proxy.StripPrefix, proxy.UpstreamPathPrefix, domain.NormalizeBindHost(proxy.EntryBindHost), proxy.EntryPort, proxy.TargetHost, proxy.TargetPort, proxy.AccessAuthEnabled, proxy.AccessAuthVersion, proxy.StatsLegacyAggregate, proxy.Description, time.Now().UTC(), proxy.ID)
 	return resultError(result, err)
 }
 
@@ -1303,13 +1457,13 @@ func scanClientEnrollment(row *sql.Row) (domain.ClientEnrollment, error) {
 
 func scanProxy(row *sql.Row) (domain.Proxy, error) {
 	var proxy domain.Proxy
-	err := row.Scan(&proxy.ID, &proxy.UserID, &proxy.ClientID, &proxy.Name, &proxy.Type, &proxy.Status, &proxy.DomainID, &proxy.PathPrefix, &proxy.StripPrefix, &proxy.UpstreamPathPrefix, &proxy.EntryBindHost, &proxy.EntryHost, &proxy.EntryPort, &proxy.TargetHost, &proxy.TargetPort, &proxy.CertFile, &proxy.KeyFile, &proxy.CertificateID, &proxy.AccessAuthEnabled, &proxy.AccessAuthVersion, &proxy.StatsLegacyAggregate, &proxy.Description, &proxy.CreatedAt, &proxy.UpdatedAt)
+	err := row.Scan(&proxy.ID, &proxy.UserID, &proxy.ClientID, &proxy.Name, &proxy.Type, &proxy.Status, &proxy.DomainID, &proxy.PathPrefix, &proxy.StripPrefix, &proxy.UpstreamPathPrefix, &proxy.EntryBindHost, &proxy.EntryPort, &proxy.TargetHost, &proxy.TargetPort, &proxy.AccessAuthEnabled, &proxy.AccessAuthVersion, &proxy.StatsLegacyAggregate, &proxy.Description, &proxy.CreatedAt, &proxy.UpdatedAt)
 	return proxy, translateError(err)
 }
 
 func scanProxyRows(rows *sql.Rows) (domain.Proxy, error) {
 	var proxy domain.Proxy
-	err := rows.Scan(&proxy.ID, &proxy.UserID, &proxy.ClientID, &proxy.Name, &proxy.Type, &proxy.Status, &proxy.DomainID, &proxy.PathPrefix, &proxy.StripPrefix, &proxy.UpstreamPathPrefix, &proxy.EntryBindHost, &proxy.EntryHost, &proxy.EntryPort, &proxy.TargetHost, &proxy.TargetPort, &proxy.CertFile, &proxy.KeyFile, &proxy.CertificateID, &proxy.AccessAuthEnabled, &proxy.AccessAuthVersion, &proxy.StatsLegacyAggregate, &proxy.Description, &proxy.CreatedAt, &proxy.UpdatedAt)
+	err := rows.Scan(&proxy.ID, &proxy.UserID, &proxy.ClientID, &proxy.Name, &proxy.Type, &proxy.Status, &proxy.DomainID, &proxy.PathPrefix, &proxy.StripPrefix, &proxy.UpstreamPathPrefix, &proxy.EntryBindHost, &proxy.EntryPort, &proxy.TargetHost, &proxy.TargetPort, &proxy.AccessAuthEnabled, &proxy.AccessAuthVersion, &proxy.StatsLegacyAggregate, &proxy.Description, &proxy.CreatedAt, &proxy.UpdatedAt)
 	return proxy, err
 }
 
@@ -1501,6 +1655,12 @@ func decodeStringList(value string) ([]string, error) {
 }
 
 func addProxyCertificateColumns(ctx context.Context, db *sql.DB) error {
+	// Only needed for pre-Domain DBs that still carry proxy-level cert paths.
+	// Fresh schema already omits these columns; dropProxyWebLegacyColumns removes them later.
+	hasLegacyHost, err := proxyTableHasColumn(ctx, db, "entry_host")
+	if err != nil || !hasLegacyHost {
+		return err
+	}
 	if err := addColumnIfMissing(ctx, db, "proxies", "cert_file", "text not null default ''"); err != nil {
 		return err
 	}
@@ -1517,14 +1677,30 @@ func migrateProxyEntryIndexes(ctx context.Context, db *sql.DB) error {
 		`drop index if exists proxies_udp_entry_port_unique`,
 		`drop index if exists proxies_http_entry_host_unique`,
 		`drop index if exists proxies_https_entry_host_unique`,
+		`drop index if exists proxies_http_route_unique`,
+		`drop index if exists proxies_https_route_unique`,
 		`create unique index if not exists proxies_tcp_entry_unique on proxies(lower(entry_bind_host), entry_port) where type = 'tcp' and entry_port > 0`,
 		`create unique index if not exists proxies_udp_entry_unique on proxies(lower(entry_bind_host), entry_port) where type = 'udp' and entry_port > 0`,
-		`create unique index if not exists proxies_http_route_unique on proxies(lower(entry_bind_host), entry_port, lower(entry_host)) where type = 'http' and entry_host <> ''`,
-		`create unique index if not exists proxies_https_route_unique on proxies(lower(entry_bind_host), entry_port, lower(entry_host)) where type = 'https' and entry_host <> ''`,
 	}
 	for _, statement := range statements {
 		if _, err := db.ExecContext(ctx, statement); err != nil {
 			return err
+		}
+	}
+	// Legacy HTTP/HTTPS route uniqueness only while entry_host still exists.
+	hasLegacyHost, err := proxyTableHasColumn(ctx, db, "entry_host")
+	if err != nil {
+		return err
+	}
+	if hasLegacyHost {
+		legacyIndexes := []string{
+			`create unique index if not exists proxies_http_route_unique on proxies(lower(entry_bind_host), entry_port, lower(entry_host)) where type = 'http' and entry_host <> ''`,
+			`create unique index if not exists proxies_https_route_unique on proxies(lower(entry_bind_host), entry_port, lower(entry_host)) where type = 'https' and entry_host <> ''`,
+		}
+		for _, statement := range legacyIndexes {
+			if _, err := db.ExecContext(ctx, statement); err != nil {
+				return err
+			}
 		}
 	}
 	return nil
@@ -1654,9 +1830,13 @@ func addCertificateQueryIndexes(ctx context.Context, db *sql.DB) error {
 	return nil
 }
 
-// migrateProxyCertificateBinding 为已有数据库的 proxies 表补充 certificate_id 列，
-// 并建立“一证一代理”的部分唯一索引（仅对非空 certificate_id 生效）。幂等。
+// migrateProxyCertificateBinding 为已有数据库的 proxies 表补充 certificate_id 列。
+// 新 schema 已去掉该列；Domain 绑定权威在 domains.certificate_id。
 func migrateProxyCertificateBinding(ctx context.Context, db *sql.DB) error {
+	hasLegacyHost, err := proxyTableHasColumn(ctx, db, "entry_host")
+	if err != nil || !hasLegacyHost {
+		return err
+	}
 	if err := addColumnIfMissing(ctx, db, "proxies", "certificate_id", "text not null default ''"); err != nil {
 		return err
 	}
@@ -1786,7 +1966,11 @@ func managedCertificatesHasProxyForeignKey(ctx context.Context, db *sql.DB) (boo
 // TODO(phase2): 旧代理静态证书（cert_file/key_file）迁移为文件型证书资源
 // （provider_type=file）需要 ID 生成与 certmanager 逻辑，留待 Phase 2 服务层实现。
 func migrateBindProxyCertificates(ctx context.Context, db *sql.DB) error {
-	_, err := db.ExecContext(ctx, `update proxies set certificate_id = (select mc.id from managed_certificates mc where mc.proxy_id = proxies.id) where certificate_id = '' and exists(select 1 from managed_certificates mc where mc.proxy_id = proxies.id)`)
+	hasColumn, err := proxyTableHasColumn(ctx, db, "certificate_id")
+	if err != nil || !hasColumn {
+		return err
+	}
+	_, err = db.ExecContext(ctx, `update proxies set certificate_id = (select mc.id from managed_certificates mc where mc.proxy_id = proxies.id) where certificate_id = '' and exists(select 1 from managed_certificates mc where mc.proxy_id = proxies.id)`)
 	return err
 }
 
@@ -1942,13 +2126,9 @@ create table if not exists proxies (
     strip_prefix integer not null default 0,
     upstream_path_prefix text not null default '/',
     entry_bind_host text not null default '',
-    entry_host text not null default '',
     entry_port integer not null default 0,
     target_host text not null,
     target_port integer not null,
-    cert_file text not null default '',
-    key_file text not null default '',
-    certificate_id text not null default '',
     access_auth_enabled integer not null default 0,
     access_auth_version integer not null default 0,
     stats_legacy_aggregate integer not null default 0,

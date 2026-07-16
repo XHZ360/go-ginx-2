@@ -13,16 +13,18 @@ import { isNotFoundError, type ProxySummary } from '../lib/contracts';
 import { useSession } from '../session';
 import { DetailBackLink, PageHeader, StatusBadge, Timestamp } from './shared';
 
-function isRouteProxy(type: string) {
-  return type === 'http' || type === 'https';
+function isWebProxy(type: string) {
+  return type === 'web' || type === 'http' || type === 'https';
 }
 
 function formatProxyEntry(proxy: ProxySummary) {
+  if (isWebProxy(proxy.type)) {
+    const host = proxy.entryHost || 'domain pending';
+    return host;
+  }
   const bindHost = proxy.entryBindHost || 'default';
   const entryPort = proxy.entryPort ?? 'default';
-  const routeHost = isRouteProxy(proxy.type) ? proxy.entryHost || 'domain pending' : '';
-
-  return routeHost ? `${bindHost}:${entryPort} / ${routeHost}` : `${bindHost}:${entryPort}`;
+  return `${bindHost}:${entryPort}`;
 }
 
 export function ClientDetailPage() {

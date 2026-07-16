@@ -219,6 +219,7 @@ export type ProxyRecord = {
   udpErrorCount: number;
   httpErrorCount: number;
   accessAuthEnabled?: boolean | null;
+  accessAuthVersion?: number | null;
   config: ProxyConfig;
   certificate?: ManagedCertificate | null;
   createdAt: string;

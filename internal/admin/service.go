@@ -245,6 +245,41 @@ func proxyActivationURL(webDomain domain.Domain, proxy domain.Proxy, token strin
 	return fmt.Sprintf("https://%s/.well-known/goginx/activate/%s", webDomain.Host, token)
 }
 
+// revokeProxyAccessIfEnabled bumps auth version and deletes tokens/credentials when access auth is on.
+func (service Service) revokeProxyAccessIfEnabled(ctx context.Context, proxy *domain.Proxy) error {
+	if proxy == nil || !proxy.AccessAuthEnabled {
+		return nil
+	}
+	access, ok := store.Access(service.Store)
+	if !ok {
+		return errors.New("proxy access repository is unavailable")
+	}
+	nextVersion := proxy.AccessAuthVersion + 1
+	if err := access.RevokeAllAccess(ctx, proxy.ID, nextVersion); err != nil {
+		return err
+	}
+	proxy.AccessAuthVersion = nextVersion
+	return nil
+}
+
+// revokeAccessForDomainProxies invalidates access sessions for every auth-enabled Web Proxy under a Domain.
+func (service Service) revokeAccessForDomainProxies(ctx context.Context, domainID string) error {
+	if strings.TrimSpace(domainID) == "" || service.Store == nil {
+		return nil
+	}
+	proxies, err := service.Store.Proxies().ByDomainID(ctx, domainID)
+	if err != nil {
+		return err
+	}
+	for _, proxy := range proxies {
+		item := proxy
+		if err := service.revokeProxyAccessIfEnabled(ctx, &item); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (service Service) domainHasEnabledHTTPSEntry(ctx context.Context, domainID string) bool {
 	entries, err := service.Store.DomainEntries().ListByDomainID(ctx, domainID)
 	if err != nil {
@@ -807,8 +842,7 @@ func (service Service) UpdateProxy(ctx context.Context, input UpdateProxyInput) 
 	existing.TargetPort = input.TargetPort
 	existing.Description = input.Description
 	if existing.Type.IsWeb() {
-		domainChanged := false
-		pathChanged := false
+		identityChanged := false
 		if input.DomainIDSet && strings.TrimSpace(input.DomainID) != "" && input.DomainID != existing.DomainID {
 			webDomain, domainErr := service.Store.Domains().ByID(ctx, input.DomainID)
 			if domainErr != nil {
@@ -818,7 +852,7 @@ func (service Service) UpdateProxy(ctx context.Context, input UpdateProxyInput) 
 				return domain.Proxy{}, contracterr.Conflict("domain does not belong to proxy user", nil)
 			}
 			existing.DomainID = webDomain.ID
-			domainChanged = true
+			identityChanged = true
 		}
 		if input.PathPrefixSet && strings.TrimSpace(input.PathPrefix) != "" {
 			normalized, pathErr := domain.NormalizeProxyRoutePrefix(input.PathPrefix)
@@ -827,7 +861,7 @@ func (service Service) UpdateProxy(ctx context.Context, input UpdateProxyInput) 
 			}
 			if normalized != existing.PathPrefix {
 				existing.PathPrefix = normalized
-				pathChanged = true
+				identityChanged = true
 			}
 		}
 		if input.StripPrefixSet {
@@ -846,12 +880,27 @@ func (service Service) UpdateProxy(ctx context.Context, input UpdateProxyInput) 
 			if domainErr != nil {
 				return domain.Proxy{}, domainErr
 			}
-			webDomain.Host = domain.NormalizeRouteHost(input.EntryHost)
+			nextHost := domain.NormalizeRouteHost(input.EntryHost)
+			hostChanged := nextHost != webDomain.Host
+			webDomain.Host = nextHost
 			if err := webDomain.Validate(); err != nil {
 				return domain.Proxy{}, contracterr.Validation("validation failed", map[string]string{"entryHost": err.Error()})
 			}
 			if err := service.Store.Domains().Update(ctx, webDomain); err != nil {
 				return domain.Proxy{}, err
+			}
+			if hostChanged {
+				// Host change invalidates activation URLs for every auth-enabled proxy on this Domain.
+				if err := service.revokeAccessForDomainProxies(ctx, webDomain.ID); err != nil {
+					return domain.Proxy{}, err
+				}
+				if existing.AccessAuthEnabled {
+					reloaded, reloadErr := service.Store.Proxies().ByID(ctx, existing.ID)
+					if reloadErr != nil {
+						return domain.Proxy{}, reloadErr
+					}
+					existing.AccessAuthVersion = reloaded.AccessAuthVersion
+				}
 			}
 		}
 		if input.CertificateIDSet {
@@ -872,10 +921,9 @@ func (service Service) UpdateProxy(ctx context.Context, input UpdateProxyInput) 
 				}
 			}
 		}
-		if (domainChanged || pathChanged) && existing.AccessAuthEnabled {
-			if access, ok := store.Access(service.Store); ok {
-				_ = access.RevokeAllAccess(ctx, existing.ID, existing.AccessAuthVersion+1)
-				existing.AccessAuthVersion++
+		if identityChanged {
+			if err := service.revokeProxyAccessIfEnabled(ctx, &existing); err != nil {
+				return domain.Proxy{}, err
 			}
 		}
 	} else {

@@ -382,9 +382,13 @@ func convertLegacyWebProxies(ctx context.Context, db *sql.DB) error {
 				return err
 			}
 		}
-		if _, err := tx.ExecContext(ctx, `update proxies set type = ?, domain_id = ?, path_prefix = ?, strip_prefix = 0, upstream_path_prefix = ?, entry_bind_host = '', entry_host = '', entry_port = 0, certificate_id = '', cert_file = '', key_file = '', access_auth_version = ?, stats_legacy_aggregate = 1, updated_at = ? where id = ?`,
+		if _, err := tx.ExecContext(ctx, `update proxies set type = ?, domain_id = ?, path_prefix = ?, strip_prefix = 0, upstream_path_prefix = ?, entry_bind_host = '', entry_port = 0, access_auth_version = ?, stats_legacy_aggregate = 1, updated_at = ? where id = ?`,
 			domain.ProxyWeb, agg.ID, "/", upstream, nextAuthVersion, now, proxy.ID); err != nil {
-			return err
+			// Older DBs still have entry_host/cert columns; clear those when present.
+			if _, fallbackErr := tx.ExecContext(ctx, `update proxies set type = ?, domain_id = ?, path_prefix = ?, strip_prefix = 0, upstream_path_prefix = ?, entry_bind_host = '', entry_host = '', entry_port = 0, certificate_id = '', cert_file = '', key_file = '', access_auth_version = ?, stats_legacy_aggregate = 1, updated_at = ? where id = ?`,
+				domain.ProxyWeb, agg.ID, "/", upstream, nextAuthVersion, now, proxy.ID); fallbackErr != nil {
+				return err
+			}
 		}
 
 		routes, err := queryLegacyProxyRoutes(ctx, tx, proxy.ID)
@@ -410,7 +414,7 @@ func convertLegacyWebProxies(ctx context.Context, db *sql.DB) error {
 				authVersion = 0
 			}
 			name := proxy.Name + " " + pathPrefix
-			if _, err := tx.ExecContext(ctx, `insert into proxies (id, user_id, client_id, name, type, status, domain_id, path_prefix, strip_prefix, upstream_path_prefix, entry_bind_host, entry_host, entry_port, target_host, target_port, cert_file, key_file, certificate_id, access_auth_enabled, access_auth_version, stats_legacy_aggregate, description, created_at, updated_at) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', '', 0, ?, ?, '', '', '', ?, ?, 0, ?, ?, ?)`,
+			if _, err := tx.ExecContext(ctx, `insert into proxies (id, user_id, client_id, name, type, status, domain_id, path_prefix, strip_prefix, upstream_path_prefix, entry_bind_host, entry_port, target_host, target_port, access_auth_enabled, access_auth_version, stats_legacy_aggregate, description, created_at, updated_at) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '', 0, ?, ?, ?, ?, 0, ?, ?, ?)`,
 				route.ID, proxy.UserID, route.ClientID, name, domain.ProxyWeb, status, agg.ID, pathPrefix, route.StripPrefix, upstreamPrefix, route.TargetHost, route.TargetPort, authEnabled, authVersion, "migrated from proxy route "+route.ID, route.CreatedAt, route.UpdatedAt); err != nil {
 				return translateError(err)
 			}
