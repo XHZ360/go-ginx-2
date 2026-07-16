@@ -39,6 +39,7 @@
 - 无可用证书的 Domain HTTPS entry 不对外服务。
 - 续期失败不覆盖健康 active 证书。
 - API、日志、审计、UI 不泄露私钥、token 或完整敏感响应。
+- 管理 API 必须返回 ACME DNS-01 与 Origin CA 各自的 provider readiness；ACME 未就绪时返回 `PROVIDER_NOT_READY` 和稳定的缺失项，并且不得调用 CA、DNS API 或创建证书记录。
 - 证书 hostnames 不覆盖 Domain Host 时绑定失败并返回可消费错误；同一证书绑定多个 Domain 是允许行为。
 
 ## 已知缺口

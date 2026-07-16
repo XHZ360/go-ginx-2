@@ -754,6 +754,13 @@ func (server *Server) buildSchema() (graphql.Schema, error) {
 		"createdAt":        &graphql.Field{Type: graphql.String, Resolve: timeResolve(func(value adminquery.ProviderCredentialSummary) time.Time { return value.CreatedAt })},
 		"updatedAt":        &graphql.Field{Type: graphql.String, Resolve: timeResolve(func(value adminquery.ProviderCredentialSummary) time.Time { return value.UpdatedAt })},
 	}})
+	providerReadinessType := graphql.NewObject(graphql.ObjectConfig{Name: "AdminCertificateProviderReadiness", Fields: graphql.Fields{
+		"providerType":        &graphql.Field{Type: graphql.NewNonNull(graphql.String)},
+		"ready":               &graphql.Field{Type: graphql.NewNonNull(graphql.Boolean)},
+		"missingRequirements": &graphql.Field{Type: graphql.NewNonNull(graphql.NewList(graphql.NewNonNull(graphql.String)))},
+		"tokenEnvName":        &graphql.Field{Type: graphql.String},
+		"guidance":            &graphql.Field{Type: graphql.String},
+	}})
 	auditType := graphql.NewObject(graphql.ObjectConfig{Name: "AdminAuditEvent", Fields: graphql.Fields{
 		"id":           &graphql.Field{Type: graphql.String},
 		"actorType":    &graphql.Field{Type: graphql.String},
@@ -1333,6 +1340,9 @@ func (server *Server) buildSchema() (graphql.Schema, error) {
 		})},
 		"certificates": &graphql.Field{Type: certificatesPageType, Args: graphql.FieldConfigArgument{"input": &graphql.ArgumentConfig{Type: certificatesInput}}, Resolve: server.wrapResolve(func(params graphql.ResolveParams) (any, error) {
 			return server.query.ListManagedCertificates(params.Context, certificateListInputFromArgs(params.Args))
+		})},
+		"certificateProviderReadiness": &graphql.Field{Type: graphql.NewNonNull(graphql.NewList(graphql.NewNonNull(providerReadinessType))), Resolve: server.wrapResolve(func(graphql.ResolveParams) (any, error) {
+			return server.commands.CertificateProviderReadiness(), nil
 		})},
 		"providerCredentials": &graphql.Field{Type: providerCredentialsPageType, Args: graphql.FieldConfigArgument{"input": &graphql.ArgumentConfig{Type: providerCredentialsInput}}, Resolve: server.wrapResolve(func(params graphql.ResolveParams) (any, error) {
 			input := mapArg(params.Args, "input")

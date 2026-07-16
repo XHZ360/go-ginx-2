@@ -23,6 +23,7 @@ import {
   mutateUpdateProviderCredential,
   mutateVerifyProviderCredential,
   queryCertificates,
+	queryCertificateProviderReadiness,
   queryProviderCredentials,
   type CertificateMutationInput,
   type CertificateFilter,
@@ -30,7 +31,7 @@ import {
   type DeleteCertificateInput,
   type ProviderCredentialInput,
 } from '../lib/admin-graphql';
-import { isApiError, type ManagedCertificate, type ProviderCredential } from '../lib/contracts';
+import { isApiError, type CertificateProviderReadiness, type ManagedCertificate, type ProviderCredential } from '../lib/contracts';
 import { formatTitle } from '../lib/format';
 import {
   appendCreatedCertificate,
@@ -115,12 +116,19 @@ export function CertificatesPage() {
     refetchInterval: session.pollIntervalSeconds * 3000,
   });
 
+  const readinessQuery = useAuthedQuery({
+    queryKey: ['certificateProviderReadiness'],
+    queryFn: queryCertificateProviderReadiness,
+    refetchInterval: session.pollIntervalSeconds * 3000,
+  });
+
   const credentials = credentialsQuery.data?.items ?? [];
   const hasEnabledCredential = credentials.some((item) => item.status !== 'disabled');
 
   const invalidateCertificateViews = async (proxyId?: string) => {
     await queryClient.invalidateQueries({ queryKey: ['certificates'] });
     await queryClient.invalidateQueries({ queryKey: ['providerCredentials'] });
+		await queryClient.invalidateQueries({ queryKey: ['certificateProviderReadiness'] });
     if (proxyId) {
       await queryClient.invalidateQueries({ queryKey: ['proxy', proxyId] });
     }
@@ -400,6 +408,12 @@ export function CertificatesPage() {
       />
 
       <section className="page-section__band">
+        <div className="section-heading"><h2>提供方运行条件</h2></div>
+        {readinessQuery.error ? <div className="banner banner--danger">无法检查服务端就绪状态；创建请求仍由服务端校验。</div> : null}
+        {readinessQuery.data?.map((readiness) => <ProviderReadinessPanel key={readiness.providerType} readiness={readiness} />)}
+      </section>
+
+      <section className="page-section__band">
         <div className="section-heading">
           <h2>Cloudflare Credentials</h2>
         </div>
@@ -573,6 +587,7 @@ export function CertificatesPage() {
         hostHint={hostHint}
         providerHint={providerHint}
         credentials={credentials}
+		providerReadiness={readinessQuery.data ?? []}
         pending={createCertificateMutation.isPending}
         errorMessage={createError}
         fieldErrors={createFieldErrors}
@@ -593,6 +608,22 @@ export function CertificatesPage() {
         }}
       />
     </section>
+  );
+}
+
+function ProviderReadinessPanel({ readiness }: { readiness: CertificateProviderReadiness }) {
+  const copyDiagnostic = () => {
+    const diagnostic = `provider=${readiness.providerType}\nready=${readiness.ready}\nmissingRequirements=${readiness.missingRequirements.join(',')}\nguidance=${readiness.guidance ?? ''}`;
+    void navigator.clipboard?.writeText(diagnostic);
+  };
+  return (
+    <div className={readiness.ready ? 'banner banner--success' : 'banner banner--danger'}>
+      <strong>{readiness.providerType === ORIGIN_PROVIDER ? 'Cloudflare Origin CA' : 'ACME DNS-01'}：</strong>
+      {readiness.ready ? '已就绪' : `缺少 ${readiness.missingRequirements.join('、')}`}
+      {readiness.tokenEnvName ? `；环境变量 ${readiness.tokenEnvName}` : ''}
+      {readiness.guidance ? <div>{readiness.guidance}</div> : null}
+      {!readiness.ready ? <Button type="link" onClick={copyDiagnostic}>复制诊断信息</Button> : null}
+    </div>
   );
 }
 

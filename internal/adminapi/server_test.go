@@ -787,6 +787,30 @@ func TestServerCloudflareOriginCAIssueFailureIsConsumable(t *testing.T) {
 	}
 }
 
+func TestServerReportsACMEReadinessAndBlocksCreate(t *testing.T) {
+	server := startAdminTestServer(t, func(entry *Entry) {
+		entry.Commands.Certificates = certmanager.Service{Settings: domain.ACMEProviderSettings{DNSProviderTokenEnv: "CF_DNS_API_TOKEN"}}
+	})
+	client := newAdminHTTPClient(t)
+	bootstrap := loginAdmin(t, client, server.Addr().String(), "admin", "secret")
+
+	result := postAdminGraphQL(t, client, server.Addr().String(), `query {
+  certificateProviderReadiness { providerType ready missingRequirements tokenEnvName }
+}`, "", http.StatusOK)
+	readiness := result["data"].(map[string]any)["certificateProviderReadiness"].([]any)[0].(map[string]any)
+	if readiness["providerType"] != "acme_dns01" || readiness["ready"] != false || readiness["tokenEnvName"] != "CF_DNS_API_TOKEN" {
+		t.Fatalf("unexpected acme readiness: %+v", readiness)
+	}
+
+	response := postGraphQLErrorQuery(t, client, server.Addr().String(), `mutation {
+  createCertificate(input: { host: "blocked.example.com", providerType: "acme_dns01" }) { certificate { certificateId } }
+}`, bootstrap.CSRFToken)
+	code, _ := firstGraphQLErrorCode(response)
+	if code != "PROVIDER_NOT_READY" {
+		t.Fatalf("expected provider readiness error, got %+v", response)
+	}
+}
+
 func TestServerCreatesWildcardOriginCACertificateThroughGraphQL(t *testing.T) {
 	now := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
 	certificateDir := t.TempDir()

@@ -118,6 +118,9 @@ func (service Service) IssueWithProvider(ctx context.Context, request ManagedCer
 	if request.ProviderType == "" {
 		request.ProviderType = domain.CertificateProviderACMEDNS01
 	}
+	if err := service.requireProviderReady(request.ProviderType); err != nil {
+		return domain.ManagedCertificate{}, err
+	}
 	provider, err := service.providerFor(request.ProviderType)
 	if err != nil {
 		return domain.ManagedCertificate{}, err
@@ -160,8 +163,14 @@ func (service Service) IssueCertificate(ctx context.Context, request Certificate
 	}
 	switch providerType {
 	case domain.CertificateProviderACMEDNS01:
+		if err := service.requireProviderReady(providerType); err != nil {
+			return domain.ManagedCertificate{}, err
+		}
 		return service.issueACMEForIdentity(ctx, request.CertificateID, proxyID, host, nil, domain.CertificateIssueFailed)
 	case domain.CertificateProviderCloudflareOriginCA:
+		if err := service.requireProviderReady(providerType); err != nil {
+			return domain.ManagedCertificate{}, err
+		}
 		req := ManagedCertificateRequest{ProviderType: providerType, CredentialID: request.CredentialID, Hostnames: request.Hostnames, RequestType: request.RequestType, RequestedValidity: request.RequestedValidity}
 		return service.issueOriginCAForIdentity(ctx, request.CertificateID, proxyID, host, req, nil, domain.CertificateIssueFailed)
 	case domain.CertificateProviderFile:

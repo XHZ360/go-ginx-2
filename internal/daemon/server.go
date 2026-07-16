@@ -215,7 +215,7 @@ func managedCertificateService(cfg config.Server, db store.Store) (certmanager.S
 		OriginCAClient:      certmanager.CloudflareOriginCAClient{},
 		ProviderSecretStore: certmanager.FileSecretStore{Dir: cfg.OriginCASecretStorePath},
 		Storage:             httpsproxy.ManagedCertificateStorage{CertificateDir: cfg.CertificateDir},
-		Settings:            domain.ACMEProviderSettings{DirectoryURL: cfg.ACMEDirectoryURL, AccountEmail: cfg.ACMEAccountEmail, TermsAccepted: cfg.ACMETermsAccepted, RenewalWindow: cfg.ACMERenewalWindow, DNSProvider: "cloudflare", DNSProviderTokenEnv: cfg.ACMECloudflareTokenEnv},
+		Settings:            domain.ACMEProviderSettings{Enabled: cfg.ACMEEnabled, DirectoryURL: cfg.ACMEDirectoryURL, AccountEmail: cfg.ACMEAccountEmail, TermsAccepted: cfg.ACMETermsAccepted, RenewalWindow: cfg.ACMERenewalWindow, DNSProvider: "cloudflare", DNSProviderTokenEnv: cfg.ACMECloudflareTokenEnv},
 		OriginCASettings:    domain.OriginCAProviderSettings{Enabled: cfg.OriginCAEnabled, SecretStorePath: cfg.OriginCASecretStorePath, DefaultRequestType: cfg.OriginCADefaultRequestType, RequestedValidity: cfg.OriginCARequestedValidity, RotationWindow: cfg.OriginCARotationWindow},
 	}, nil
 }

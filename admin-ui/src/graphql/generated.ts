@@ -354,6 +354,11 @@ export type CertificatesQueryVariables = Exact<{
 
 export type CertificatesQuery = { certificates: { totalCount: number, pageInfo: { page: number, pageSize: number, totalCount: number, totalPages: number, hasNext: boolean, hasPrev: boolean }, items: Array<{ proxyId: string, certificateId: string, boundProxyId: string, boundDomainId: string, referenced: boolean, servable: boolean, deletionRisk: string, host: string, status: string, servingStatus: string, operationStatus: string, providerType: string, providerName: string, credentialId: string, providerStatus: string, cloudflareCertificateId: string, hostnames: Array<string>, requestType: string, requestedValidity: number, lastSyncedAt: string, deploymentHints: Array<string>, notAfter: string, lastIssuedAt: string, lastRenewedAt: string, lastCheckedAt: string, lastAttemptedAt: string, nextAttemptAt: string, failureCount: number, fingerprint: string, lastError: string }> } };
 
+export type CertificateProviderReadinessQueryVariables = Exact<{ [key: string]: never; }>;
+
+
+export type CertificateProviderReadinessQuery = { certificateProviderReadiness: Array<{ providerType: string, ready: boolean, missingRequirements: Array<string>, tokenEnvName: string, guidance: string }> };
+
 export type ProviderCredentialsQueryVariables = Exact<{
   input: AdminProviderCredentialsInput | null | undefined;
 }>;

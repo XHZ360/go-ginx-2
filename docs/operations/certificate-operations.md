@@ -24,6 +24,8 @@ export CF_DNS_API_TOKEN="<cloudflare-token>"
 ./bin/goginx-admin managed-certificate-status -proxy secure-1 -certificate-dir data/certs -acme-account-email ops@example.com -acme-terms-accepted
 ```
 
+Admin UI 的“提供方运行条件”会显示 ACME 配置与 `CF_DNS_API_TOKEN` 是否已由运行进程持有，但不会显示 token 值。若页面提示未就绪，修改服务端配置、在服务管理器环境中注入 token 后重启 daemon；Origin CA 的管理面 credential 不可代替 ACME DNS Token。
+
 托管证书文件保存在 `certificate_dir/managed/<host>/`。SQLite 只保存证书生命周期元数据和文件路径，不保存私钥字节或 Cloudflare token。
 
 ### Cloudflare Origin CA

@@ -388,6 +388,16 @@ query Certificates($input: AdminCertificatesInput) {
   }
 }
 
+query CertificateProviderReadiness {
+  certificateProviderReadiness {
+    providerType
+    ready
+    missingRequirements
+    tokenEnvName
+    guidance
+  }
+}
+
 query ProviderCredentials($input: AdminProviderCredentialsInput) {
   providerCredentials(input: $input) {
     totalCount

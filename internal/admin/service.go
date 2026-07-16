@@ -1025,7 +1025,7 @@ func (service Service) DeleteProxy(ctx context.Context, proxyID string, actorID 
 func (service Service) IssueManagedCertificate(ctx context.Context, input CertificateInput) (domain.ManagedCertificate, error) {
 	manager, err := service.certificateManager()
 	if err != nil {
-		return domain.ManagedCertificate{}, err
+		return domain.ManagedCertificate{}, providerReadinessError(err)
 	}
 	providerType := input.ProviderType
 	var certificate domain.ManagedCertificate
@@ -1057,13 +1057,35 @@ func (service Service) IssueManagedCertificate(ctx context.Context, input Certif
 		certificate, err = manager.IssueWithProvider(ctx, certmanager.ManagedCertificateRequest{ProxyID: input.ProxyID, ProviderType: providerType, CredentialID: input.CredentialID, RequestType: input.RequestType, RequestedValidity: input.RequestedValidity})
 	}
 	if err != nil {
-		return domain.ManagedCertificate{}, err
+		return domain.ManagedCertificate{}, providerReadinessError(err)
 	}
 	action := "issue_managed_certificate"
 	if providerType == domain.CertificateProviderCloudflareOriginCA {
 		action = "issue_cloudflare_origin_certificate"
 	}
 	return certificate, service.audit(ctx, input.ActorID, "certificate", certificate.ID, action)
+}
+
+func (service Service) CertificateProviderReadiness() []certmanager.ProviderReadiness {
+	manager, err := service.certificateManager()
+	if err != nil {
+		return nil
+	}
+	return []certmanager.ProviderReadiness{
+		manager.ProviderReadiness(domain.CertificateProviderACMEDNS01),
+		manager.ProviderReadiness(domain.CertificateProviderCloudflareOriginCA),
+	}
+}
+
+func providerReadinessError(err error) error {
+	readinessErr, ok := certmanager.IsProviderNotReady(err)
+	if !ok {
+		return err
+	}
+	return contracterr.ProviderNotReady("certificate provider is not ready", map[string]string{
+		"missingRequirements": strings.Join(readinessErr.Readiness.MissingRequirements, ","),
+		"guidance":            readinessErr.Readiness.Guidance,
+	})
 }
 
 func (service Service) RenewManagedCertificate(ctx context.Context, input CertificateInput) (domain.ManagedCertificate, error) {
@@ -1136,7 +1158,7 @@ func (service Service) CreateCertificate(ctx context.Context, input CreateCertif
 	}
 	certificate, err := manager.IssueCertificate(ctx, certmanager.CertificateIssueRequest{Host: host, ProviderType: providerType, CredentialID: input.CredentialID, RequestType: input.RequestType, RequestedValidity: input.RequestedValidity, CertFile: input.CertFile, KeyFile: input.KeyFile})
 	if err != nil {
-		return domain.ManagedCertificate{}, err
+		return domain.ManagedCertificate{}, providerReadinessError(err)
 	}
 	action := "create_managed_certificate"
 	if providerType == domain.CertificateProviderCloudflareOriginCA {

@@ -7,6 +7,7 @@ export const CONTRACT_ERROR_CODES = [
   'ENTRY_CONFLICT',
   'CONFIRMATION_REQUIRED',
   'CERTIFICATE_INCOMPATIBLE',
+	'PROVIDER_NOT_READY',
   'UNSUPPORTED',
   'INTERNAL',
   'INVALID_CSRF',
@@ -126,6 +127,14 @@ export type ManagedCertificate = {
   failureCount?: number | null;
   fingerprint?: string | null;
   lastError?: string | null;
+};
+
+export type CertificateProviderReadiness = {
+  providerType: string;
+  ready: boolean;
+  missingRequirements: string[];
+  tokenEnvName?: string | null;
+  guidance?: string | null;
 };
 
 export type ProviderCredential = {

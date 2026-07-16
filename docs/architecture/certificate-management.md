@@ -8,6 +8,8 @@
 
 SQLite 只保存证书路径、host/hostnames、指纹、有效期、provider、状态和脱敏错误。私钥及 provider token 保存在 SQLite 之外，token 通过环境变量或受保护 secret store 提供。
 
+Admin GraphQL 通过 `certificateProviderReadiness` 返回只读的 provider readiness。ACME 检查 `acme_enabled`、账户邮箱、条款和配置的 DNS Token 环境变量是否非空；响应只能返回环境变量名称、稳定缺失项和脱敏 guidance。创建/签发会在任何 CA、DNS 或证书记录操作前重复检查；未就绪时返回 `PROVIDER_NOT_READY`，其中 `fields.missingRequirements` 是逗号分隔的稳定枚举。
+
 ## 生命周期
 
 证书状态分为两组：`serving_status` 表示 active material 是否可服务（`usable`、`expiring_soon`、`expired`、`missing`、`invalid`），`operation_status` 表示最近签发、续期、轮换或同步结果。健康 active material 即使最近续期失败仍继续服务；新材料只有通过证书、私钥、有效期和主机覆盖检查后才替换 active 文件，并保留上一组材料。

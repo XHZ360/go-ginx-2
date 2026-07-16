@@ -17,6 +17,7 @@ changes/
 
 | 文档 | 说明 |
 | --- | --- |
+| [completed/acme-certificate-readiness-ux.md](completed/acme-certificate-readiness-ux.md) | ACME DNS-01 创建前置条件可见性与失败诊断改进（已完成） |
 | [completed/domain-path-proxy-routing.md](completed/domain-path-proxy-routing.md) | Domain + Path => Proxy 路由模型改造（已完成） |
 | [completed/http-path-routing-and-https-access-activation.md](completed/http-path-routing-and-https-access-activation.md) | HTTP 路径路由与 HTTPS 访问激活（旧模型实施记录） |
 | [archive/milestone-one-continuation.md](archive/milestone-one-continuation.md) | 里程碑一实施批次与续作笔记（历史） |

@@ -518,6 +518,7 @@ type ManagedCertificate struct {
 }
 
 type ACMEProviderSettings struct {
+	Enabled             bool
 	DirectoryURL        string
 	AccountEmail        string
 	TermsAccepted       bool

@@ -15,6 +15,7 @@
 - 里程碑一运行时与首个部署基线已具备：控制通道、反向代理、Admin API/UI、证书管理、SQLite、Linux systemd / Windows 服务发布包。
 - 文档按信息类型收敛到 `docs/`（project / requirements / architecture / operations / changes / references）。
 - completed Change [domain-path-proxy-routing.md](changes/completed/domain-path-proxy-routing.md)：`Domain + PathPrefix => Proxy` 已落地并部署；证书与 Domain 为 1:n；`proxy_routes` 已清理。
+- completed Change [acme-certificate-readiness-ux.md](changes/completed/acme-certificate-readiness-ux.md)：已补齐 ACME DNS-01/Origin CA provider readiness、`PROVIDER_NOT_READY` 契约和 Certificates 页面前置诊断；完整包测仅受既有目录权限测试失败阻断。
 
 ## 已实现能力（摘要）
 

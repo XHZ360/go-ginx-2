@@ -11,6 +11,7 @@ const (
 	CodeUnsupported      = "UNSUPPORTED"
 	CodeEntryConflict    = "ENTRY_CONFLICT"
 	CodeInternal         = "INTERNAL"
+	CodeProviderNotReady = "PROVIDER_NOT_READY"
 	// CodeConfirmationRequired 表示高风险操作（如删除正在服务且已绑定的证书）需要调用方提供匹配的强确认（ConfirmHost/ConfirmCertificateID）。
 	CodeConfirmationRequired = "CONFIRMATION_REQUIRED"
 	// CodeCertificateIncompatible 表示证书与 Domain/代理 SNI 主机不兼容。
@@ -63,6 +64,13 @@ func Unsupported(message string) error {
 		message = "operation is not supported"
 	}
 	return &Error{Code: CodeUnsupported, Message: message}
+}
+
+func ProviderNotReady(message string, fields map[string]string) error {
+	if strings.TrimSpace(message) == "" {
+		message = "certificate provider is not ready"
+	}
+	return &Error{Code: CodeProviderNotReady, Message: message, Fields: fields}
 }
 
 // ConfirmationRequired 构造一个表示需要强确认的可消费错误。fields 可携带需要确认的字段提示（如 confirmHost、confirmCertificateId）。

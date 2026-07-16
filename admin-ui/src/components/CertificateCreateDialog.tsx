@@ -4,7 +4,7 @@ import { Dialog } from './Dialog';
 import { TextField, SelectField } from './FormField';
 import { ValidationBanner } from './PageStates';
 import type { CreateCertificateInput } from '../lib/admin-graphql';
-import type { ProviderCredential } from '../lib/contracts';
+import type { CertificateProviderReadiness, ProviderCredential } from '../lib/contracts';
 
 // 创建证书对话框：集中入口，按 provider 类型展示不同字段。
 // providerType 取值：
@@ -60,6 +60,7 @@ export function CertificateCreateDialog({
   hostHint,
   providerHint,
   credentials,
+  providerReadiness,
   pending,
   errorMessage,
   fieldErrors,
@@ -71,6 +72,7 @@ export function CertificateCreateDialog({
   hostHint?: string;
   providerHint?: string;
   credentials: ProviderCredential[];
+  providerReadiness: CertificateProviderReadiness[];
   pending: boolean;
   errorMessage?: string;
   fieldErrors?: Record<string, string>;
@@ -102,6 +104,8 @@ export function CertificateCreateDialog({
 
   const isOrigin = form.providerType === 'cloudflare_origin_ca';
   const isFile = form.providerType === 'file';
+  const readiness = providerReadiness.find((item) => item.providerType === form.providerType);
+  const providerNotReady = readiness != null && !readiness.ready;
   const hostMissing = form.host.trim().length === 0;
 
   const submit = () => {
@@ -134,7 +138,7 @@ export function CertificateCreateDialog({
           <Button type="default" onClick={onClose}>
             取消
           </Button>
-          <Button type="primary" onClick={submit} disabled={pending || hostMissing}>
+          <Button type="primary" onClick={submit} disabled={pending || hostMissing || providerNotReady}>
             {pending ? '创建中...' : returnToProxy ? '创建并返回代理' : '创建证书'}
           </Button>
         </>
@@ -165,6 +169,13 @@ export function CertificateCreateDialog({
           placeholder="例如 app.example.com"
           onChange={(event) => update('host', event.target.value)}
         />
+
+        {providerNotReady ? (
+          <div className="banner banner--danger">
+            <div>当前证书来源尚未就绪：{readiness.missingRequirements.join('、')}</div>
+            <div>{readiness.guidance}</div>
+          </div>
+        ) : null}
 
         {isOrigin ? (
           <>

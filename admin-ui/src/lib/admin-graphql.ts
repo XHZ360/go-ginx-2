@@ -9,7 +9,8 @@ import type {
   BindCertificateMutation,
   BindCertificateMutationVariables,
   CertificatesQuery,
-  CertificatesQueryVariables,
+	CertificatesQueryVariables,
+	CertificateProviderReadinessQuery,
   ClientQuery,
   ClientQueryVariables,
   ClientsQuery,
@@ -92,7 +93,8 @@ import type {
   DashboardSummary,
   DomainEntry,
   DomainRecord,
-  ManagedCertificate,
+	ManagedCertificate,
+	CertificateProviderReadiness,
   PageInfo,
   PageResult,
   ProviderCredential,
@@ -295,6 +297,11 @@ export async function queryCertificates(input: ListInput<CertificateFilter>) {
   const variables = { input: cleanObject(input) } satisfies CertificatesQueryVariables;
   const data = await request<CertificatesQuery, CertificatesQueryVariables>({ operationName: 'Certificates', variables });
   return normalizePageResult<ManagedCertificate>(data.certificates);
+}
+
+export async function queryCertificateProviderReadiness() {
+  const data = await request<CertificateProviderReadinessQuery, undefined>({ operationName: 'CertificateProviderReadiness' });
+  return data.certificateProviderReadiness satisfies CertificateProviderReadiness[];
 }
 
 export async function queryProviderCredentials(input: { page?: { page: number; pageSize: number } }) {
