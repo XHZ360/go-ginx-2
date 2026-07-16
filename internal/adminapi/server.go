@@ -1100,16 +1100,18 @@ func (server *Server) buildSchema() (graphql.Schema, error) {
 			return "", nil
 		}},
 	}})
+	// DomainDetail embeds DomainListItem; graphql-go DefaultResolveFn does not walk
+	// anonymous embedded structs, so scalar/certificate fields need explicit resolvers.
 	domainType := graphql.NewObject(graphql.ObjectConfig{Name: "AdminDomain", Fields: graphql.Fields{
-		"id":              &graphql.Field{Type: graphql.String},
-		"userId":          &graphql.Field{Type: graphql.String},
-		"host":            &graphql.Field{Type: graphql.String},
-		"certificateId":   &graphql.Field{Type: graphql.String},
-		"status":          &graphql.Field{Type: graphql.String},
-		"proxyCount":      &graphql.Field{Type: graphql.Int},
-		"httpEntryCount":  &graphql.Field{Type: graphql.Int},
-		"httpsEntryCount": &graphql.Field{Type: graphql.Int},
-		"certificate":     &graphql.Field{Type: managedCertificateType},
+		"id":              &graphql.Field{Type: graphql.String, Resolve: domainListFieldResolve(func(item adminquery.DomainListItem) interface{} { return item.ID })},
+		"userId":          &graphql.Field{Type: graphql.String, Resolve: domainListFieldResolve(func(item adminquery.DomainListItem) interface{} { return item.UserID })},
+		"host":            &graphql.Field{Type: graphql.String, Resolve: domainListFieldResolve(func(item adminquery.DomainListItem) interface{} { return item.Host })},
+		"certificateId":   &graphql.Field{Type: graphql.String, Resolve: domainListFieldResolve(func(item adminquery.DomainListItem) interface{} { return item.CertificateID })},
+		"status":          &graphql.Field{Type: graphql.String, Resolve: domainListFieldResolve(func(item adminquery.DomainListItem) interface{} { return item.Status })},
+		"proxyCount":      &graphql.Field{Type: graphql.Int, Resolve: domainListFieldResolve(func(item adminquery.DomainListItem) interface{} { return item.ProxyCount })},
+		"httpEntryCount":  &graphql.Field{Type: graphql.Int, Resolve: domainListFieldResolve(func(item adminquery.DomainListItem) interface{} { return item.HTTPEntryCount })},
+		"httpsEntryCount": &graphql.Field{Type: graphql.Int, Resolve: domainListFieldResolve(func(item adminquery.DomainListItem) interface{} { return item.HTTPSEntryCount })},
+		"certificate":     &graphql.Field{Type: managedCertificateType, Resolve: domainListFieldResolve(func(item adminquery.DomainListItem) interface{} { return item.Certificate })},
 		"entries": &graphql.Field{Type: graphql.NewList(domainEntryType), Resolve: func(params graphql.ResolveParams) (interface{}, error) {
 			switch value := params.Source.(type) {
 			case adminquery.DomainDetail:
@@ -1132,26 +1134,12 @@ func (server *Server) buildSchema() (graphql.Schema, error) {
 				return []adminquery.ProxyListItem{}, nil
 			}
 		}},
-		"createdAt": &graphql.Field{Type: graphql.String, Resolve: func(params graphql.ResolveParams) (interface{}, error) {
-			switch value := params.Source.(type) {
-			case adminquery.DomainListItem:
-				return value.CreatedAt.UTC().Format(time.RFC3339), nil
-			case adminquery.DomainDetail:
-				return value.CreatedAt.UTC().Format(time.RFC3339), nil
-			default:
-				return "", nil
-			}
-		}},
-		"updatedAt": &graphql.Field{Type: graphql.String, Resolve: func(params graphql.ResolveParams) (interface{}, error) {
-			switch value := params.Source.(type) {
-			case adminquery.DomainListItem:
-				return value.UpdatedAt.UTC().Format(time.RFC3339), nil
-			case adminquery.DomainDetail:
-				return value.UpdatedAt.UTC().Format(time.RFC3339), nil
-			default:
-				return "", nil
-			}
-		}},
+		"createdAt": &graphql.Field{Type: graphql.String, Resolve: domainListFieldResolve(func(item adminquery.DomainListItem) interface{} {
+			return item.CreatedAt.UTC().Format(time.RFC3339)
+		})},
+		"updatedAt": &graphql.Field{Type: graphql.String, Resolve: domainListFieldResolve(func(item adminquery.DomainListItem) interface{} {
+			return item.UpdatedAt.UTC().Format(time.RFC3339)
+		})},
 	}})
 	domainsPageType := graphql.NewObject(graphql.ObjectConfig{Name: "AdminDomainsPage", Fields: graphql.Fields{
 		"items":      &graphql.Field{Type: graphql.NewList(domainType)},
@@ -2117,6 +2105,31 @@ func domainListInputFromArgs(args map[string]interface{}) adminquery.DomainListI
 		Page:   pageInput(mapValue(input, "page")),
 		Filter: adminquery.DomainFilter{Query: stringValue(filter, "query"), UserID: stringValue(filter, "userId"), Status: stringValue(filter, "status")},
 		Sort:   sortInput(mapValue(input, "sort")),
+	}
+}
+
+// domainListFieldResolve reads fields from DomainListItem and DomainDetail (which embeds it).
+// graphql-go DefaultResolveFn does not promote anonymous embedded struct fields.
+func domainListFieldResolve(selector func(adminquery.DomainListItem) interface{}) graphql.FieldResolveFn {
+	return func(params graphql.ResolveParams) (interface{}, error) {
+		switch value := params.Source.(type) {
+		case adminquery.DomainListItem:
+			return selector(value), nil
+		case *adminquery.DomainListItem:
+			if value == nil {
+				return nil, nil
+			}
+			return selector(*value), nil
+		case adminquery.DomainDetail:
+			return selector(value.DomainListItem), nil
+		case *adminquery.DomainDetail:
+			if value == nil {
+				return nil, nil
+			}
+			return selector(value.DomainListItem), nil
+		default:
+			return nil, nil
+		}
 	}
 }
 

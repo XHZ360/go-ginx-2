@@ -1289,6 +1289,64 @@ func assertFrontendResponse(t *testing.T, url string, wantBodyFragment string, w
 	}
 }
 
+func TestServerDomainDetailResolvesEmbeddedListFields(t *testing.T) {
+	// DomainDetail embeds DomainListItem; graphql-go default resolve does not promote
+	// anonymous fields, so certificateId/host must use explicit resolvers.
+	db, err := sqlite.Open(filepath.Join(t.TempDir(), "domain-detail.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	ctx := context.Background()
+	user := domain.User{ID: "user-1", Username: "alice", Role: domain.RoleUser, Status: domain.UserEnabled}
+	if err := db.Users().Create(ctx, user); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	if err := db.Certificates().Create(ctx, domain.ManagedCertificate{
+		ID: "cert-ww1", Host: "ww1.example.com", Status: domain.CertificateValid, ServingStatus: domain.CertificateServingUsable,
+		ProviderStatus: domain.CertificateProviderStatusActive, Hostnames: []string{"ww1.example.com"}, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Domains().Create(ctx, domain.Domain{
+		ID: "domain-ww1", UserID: user.ID, Host: "ww1.example.com", CertificateID: "cert-ww1", Status: domain.DomainEnabled, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	server := startAdminTestServer(t, func(entry *Entry) {
+		entry.Query = adminquery.Service{Store: db}
+		entry.Commands = admin.Service{Store: db}
+	})
+	client := newAdminHTTPClient(t)
+	bootstrap := loginAdmin(t, client, server.Addr().String(), "admin", "secret")
+
+	decoded := postAdminGraphQL(t, client, server.Addr().String(), `
+query {
+  domain(id: "domain-ww1") {
+    id
+    host
+    certificateId
+    status
+    certificate { certificateId host boundDomainId }
+  }
+}
+`, bootstrap.CSRFToken, http.StatusOK)
+	data, _ := decoded["data"].(map[string]any)
+	domainNode, _ := data["domain"].(map[string]any)
+	if domainNode["host"] != "ww1.example.com" {
+		t.Fatalf("expected domain host from embedded list item, got %+v", domainNode)
+	}
+	if domainNode["certificateId"] != "cert-ww1" {
+		t.Fatalf("expected bound certificateId on domain detail, got %+v", domainNode)
+	}
+	certificate, _ := domainNode["certificate"].(map[string]any)
+	if certificate["certificateId"] != "cert-ww1" || certificate["boundDomainId"] != "domain-ww1" {
+		t.Fatalf("expected certificate summary on domain detail, got %+v", certificate)
+	}
+}
+
 func TestServerCertificateBindingMutationsAndReferenceFields(t *testing.T) {
 	server := startAdminTestServer(t, func(entry *Entry) {
 		ctx := context.Background()
