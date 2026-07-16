@@ -81,6 +81,36 @@ func TestLoadServerConfigResolvesRelativeConfigAndPathsFromDeploymentRoot(t *tes
 	}
 }
 
+func TestLoadServerConfigAutomaticallyLoadsDeploymentConfig(t *testing.T) {
+	deploymentRoot := t.TempDir()
+	setServerExecutable(t, deploymentRoot)
+	configPath := filepath.Join(deploymentRoot, config.DefaultServerConfigPath)
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.DefaultServer()
+	cfg.AdminEnabled = true
+	cfg.ACMEEnabled = true
+	cfg.ACMEAccountEmail = "ops@example.com"
+	cfg.ACMETermsAccepted = true
+	cfg.ACMECloudflareTokenEnv = "CF_DNS_API_TOKEN"
+	content, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath, content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := loadServerConfig("")
+	if err != nil {
+		t.Fatalf("load managed server config: %v", err)
+	}
+	if !loaded.ACMEEnabled || loaded.ACMEAccountEmail != "ops@example.com" || !loaded.ACMETermsAccepted {
+		t.Fatalf("expected deployment config ACME settings, got %+v", loaded)
+	}
+}
+
 func TestRunServiceCommandUsesServerDefaults(t *testing.T) {
 	oldRun := runWindowsServiceCommand
 	var gotArgs []string

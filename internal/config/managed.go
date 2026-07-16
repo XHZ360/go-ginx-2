@@ -47,6 +47,16 @@ func LoadManagedServer() (Server, error) {
 func LoadManagedServerAtRoot(root string) (Server, error) {
 	cfg := DefaultServer()
 	cfg.AdminEnabled = true
+	if root != "" {
+		configPath := deploypath.Resolve(root, DefaultServerConfigPath)
+		if fileExists(configPath) {
+			loaded, err := LoadServer(configPath)
+			if err != nil {
+				return Server{}, err
+			}
+			cfg = loaded
+		}
+	}
 	applyManagedServerEnv(&cfg)
 	ResolveServerPaths(&cfg, root)
 	if err := PrepareManagedServer(&cfg); err != nil {

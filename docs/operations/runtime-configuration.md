@@ -35,7 +35,7 @@ server/client 默认启用应用内日志轮换，当前写入文件保持上述
 
 ### 环境变量覆盖
 
-无配置启动仍可通过环境变量调整端口和路径：
+无参数启动会优先读取部署根目录的 `config/server.json`（若存在），再应用以下环境变量覆盖；文件不存在时使用托管默认值。因而 systemd 默认 `ExecStart=.../goginx-server` 已可使用 `config/server.json` 中的 ACME、Origin CA 等完整配置，无需额外添加 `-config`。
 
 | 分类 | 环境变量 |
 | --- | --- |

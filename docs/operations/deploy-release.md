@@ -19,6 +19,8 @@ Linux `systemd` Release 包核心内容：
 sudo mkdir -p /opt/go-ginx
 sudo tar -xzf <release-bundle>.tar.gz -C /opt/go-ginx --strip-components=1
 cd /opt/go-ginx
+# 若需要 ACME、Origin CA 或自定义监听配置，先编辑 config/server.json；
+# systemd 的无参数 server 启动会自动读取该文件。
 printf 'GOGINX_JOIN_SERVICE_HOST=control.example.com\n' | sudo tee config/goginx-server.env >/dev/null
 sudo cp systemd/goginx-server.service /etc/systemd/system/
 sudo systemctl daemon-reload
@@ -29,6 +31,8 @@ token="$(sudo env GOGINX_JOIN_SERVICE_HOST=control.example.com ./bin/goginx-admi
 ```
 
 如果只做本机试用，可以不创建 `config/goginx-server.env`，但生成的 token 通常不能直接给远程客户端使用。
+
+`config/goginx-server.env` 仅承载运行进程环境变量，例如 `CF_DNS_API_TOKEN` 和 `GOGINX_JOIN_SERVICE_HOST`；`acme_enabled`、`acme_account_email`、`acme_terms_accepted` 等服务配置应写入 `config/server.json`。修改任一文件后执行 `sudo systemctl restart goginx-server`；仅在修改 unit 文件时才需要额外执行 `sudo systemctl daemon-reload`。
 
 如果 enrollment 入口经过 HTTPS 反向代理，或控制通道端口不是默认值，请用显式地址生成 token：
 

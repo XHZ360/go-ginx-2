@@ -80,7 +80,7 @@ Managed startup accepts environment overrides for file-free deployments that nee
 
 ## Optional Server Config
 
-Explicit JSON config remains supported for advanced deployments. Create `server.json` with fields from `internal/config/config.go` when defaults and environment overrides are not enough:
+The configless server command automatically loads `config/server.json` from the deployment root when that file exists, then applies supported `GOGINX_*` environment overrides. Explicit `-config` remains available when a different path is required. Create `server.json` with fields from `internal/config/config.go` when defaults and environment overrides are not enough:
 
 ```json
 {
