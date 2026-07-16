@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestNewCloudflareDNSProviderFromEnvRequiresToken(t *testing.T) {
@@ -108,6 +109,30 @@ func TestNewCloudflareDNSProviderFromEnv(t *testing.T) {
 	}
 	if provider.APIToken != "secret-token" {
 		t.Fatal("expected token from environment")
+	}
+}
+
+func TestACMEIssuerWaitsForDNSPropagation(t *testing.T) {
+	lookups := 0
+	issuer := ACMEIssuer{
+		LookupTXT: func(_ context.Context, fqdn string) ([]string, error) {
+			lookups++
+			if fqdn != "_acme-challenge.app.example.com" {
+				t.Fatalf("unexpected TXT lookup name %q", fqdn)
+			}
+			if lookups == 1 {
+				return nil, nil
+			}
+			return []string{"challenge-value"}, nil
+		},
+		PropagationTimeout:  time.Second,
+		PropagationInterval: time.Millisecond,
+	}
+	if err := issuer.waitForDNSPropagation(context.Background(), "_acme-challenge.app.example.com", "challenge-value"); err != nil {
+		t.Fatalf("wait for DNS propagation: %v", err)
+	}
+	if lookups != 2 {
+		t.Fatalf("expected two TXT lookups, got %d", lookups)
 	}
 }
 

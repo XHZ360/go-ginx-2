@@ -13,6 +13,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -23,6 +24,11 @@ import (
 )
 
 const dnsChallengePrefix = "_acme-challenge."
+
+const (
+	defaultDNSPropagationTimeout = 2 * time.Minute
+	dnsPropagationPollInterval   = 2 * time.Second
+)
 
 type Issuer interface {
 	Issue(ctx context.Context, request IssueRequest) (IssuedCertificate, error)
@@ -48,8 +54,11 @@ type IssuedCertificate struct {
 }
 
 type ACMEIssuer struct {
-	AccountKey crypto.Signer
-	HTTPClient *http.Client
+	AccountKey          crypto.Signer
+	HTTPClient          *http.Client
+	LookupTXT           func(context.Context, string) ([]string, error)
+	PropagationTimeout  time.Duration
+	PropagationInterval time.Duration
 }
 
 func (issuer ACMEIssuer) Issue(ctx context.Context, request IssueRequest) (IssuedCertificate, error) {
@@ -137,6 +146,9 @@ func (issuer ACMEIssuer) completeDNSAuthorizations(ctx context.Context, client *
 		if err := provider.Present(ctx, fqdn, value); err != nil {
 			return err
 		}
+		if err := issuer.waitForDNSPropagation(ctx, fqdn, value); err != nil {
+			return errors.Join(err, provider.CleanUp(ctx, fqdn, value))
+		}
 		accepted, err := client.Accept(ctx, challenge)
 		if err != nil {
 			return errors.Join(err, provider.CleanUp(ctx, fqdn, value))
@@ -153,6 +165,46 @@ func (issuer ACMEIssuer) completeDNSAuthorizations(ctx context.Context, client *
 		}
 	}
 	return nil
+}
+
+func (issuer ACMEIssuer) waitForDNSPropagation(ctx context.Context, fqdn string, value string) error {
+	lookupTXT := issuer.LookupTXT
+	if lookupTXT == nil {
+		lookupTXT = net.DefaultResolver.LookupTXT
+	}
+	timeout := issuer.PropagationTimeout
+	if timeout <= 0 {
+		timeout = defaultDNSPropagationTimeout
+	}
+	interval := issuer.PropagationInterval
+	if interval <= 0 {
+		interval = dnsPropagationPollInterval
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	for {
+		records, err := lookupTXT(ctx, fqdn)
+		if err == nil && containsDNSRecord(records, value) {
+			return nil
+		}
+		timer := time.NewTimer(interval)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return fmt.Errorf("acme dns-01 propagation timed out for %s: %w", fqdn, ctx.Err())
+		case <-timer.C:
+		}
+	}
+}
+
+func containsDNSRecord(records []string, expected string) bool {
+	for _, record := range records {
+		if strings.TrimSpace(record) == expected {
+			return true
+		}
+	}
+	return false
 }
 
 func dnsChallenge(challenges []*acme.Challenge) *acme.Challenge {
