@@ -7,6 +7,7 @@
 | 想找什么 | 入口 |
 | --- | --- |
 | 项目目标、产品形态、技术栈约束 | [project/overview.md](project/overview.md) |
+| 跨功能用户体验原则与评审约束 | [project/ux-principles.md](project/ux-principles.md) |
 | 日常开发、验证、提交流程 | [project/workflow.md](project/workflow.md) |
 | 文档目录规则、迁移流程、记录要求 | [project/documentation-workflow.md](project/documentation-workflow.md) |
 | Change 的建立、实施、完成与归档 | [project/change-workflow.md](project/change-workflow.md) |
