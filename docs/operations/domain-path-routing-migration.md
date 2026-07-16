@@ -98,6 +98,6 @@ cp -a data/certs.pre-domain-path data/certs
 
 ## 相关文档
 
-- Change：`docs/changes/active/domain-path-proxy-routing.md`
+- Change：`docs/changes/completed/domain-path-proxy-routing.md`
 - 决策：`docs/decisions/domain-path-proxy-routing.md`
 - 架构：`docs/architecture/reverse-proxy.md`

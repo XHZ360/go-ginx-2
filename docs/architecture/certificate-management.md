@@ -2,7 +2,9 @@
 
 ## 证书来源
 
-控制通道首次 configless 启动时生成并复用 CA、服务端证书和私钥；这些材料只用于控制通道，不是公网 HTTPS 证书。HTTPS proxy 可使用 file-backed 证书，或使用托管证书 provider：ACME Cloudflare DNS-01 与 Cloudflare Origin CA。
+控制通道首次 configless 启动时生成并复用 CA、服务端证书和私钥；这些材料只用于控制通道，不是公网 HTTPS 证书。公网 HTTPS 使用 Domain 绑定的证书资源：file-backed，或托管证书 provider（ACME Cloudflare DNS-01、Cloudflare Origin CA）。
+
+权威绑定在 Domain（`Domain.CertificateID`）。一张证书可服务多个 Domain（1:n，例如 `*.example.com`）；每个 Domain 最多一张证书。HTTPS 在读取请求 Path 前按 SNI 选择 Domain 与证书并完成 TLS，再按 Path 选择 Web Proxy。
 
 SQLite 只保存证书路径、host/hostnames、指纹、有效期、provider、状态和脱敏错误。私钥及 provider token 保存在 SQLite 之外，token 通过环境变量或受保护 secret store 提供。
 

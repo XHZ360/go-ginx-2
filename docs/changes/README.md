@@ -17,8 +17,8 @@ changes/
 
 | 文档 | 说明 |
 | --- | --- |
-| [active/domain-path-proxy-routing.md](active/domain-path-proxy-routing.md) | 将旧父 Proxy/子路由模型改为 Domain + Path => Proxy |
-| [completed/http-path-routing-and-https-access-activation.md](completed/http-path-routing-and-https-access-activation.md) | HTTP 路径路由与 HTTPS 访问激活实施记录 |
+| [completed/domain-path-proxy-routing.md](completed/domain-path-proxy-routing.md) | Domain + Path => Proxy 路由模型改造（已完成） |
+| [completed/http-path-routing-and-https-access-activation.md](completed/http-path-routing-and-https-access-activation.md) | HTTP 路径路由与 HTTPS 访问激活（旧模型实施记录） |
 | [archive/milestone-one-continuation.md](archive/milestone-one-continuation.md) | 里程碑一实施批次与续作笔记（历史） |
 
 ## 写法

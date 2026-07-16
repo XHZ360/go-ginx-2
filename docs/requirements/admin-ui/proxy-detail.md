@@ -99,27 +99,23 @@ HTTPS 详情页提供访问认证区域：
 
 激活链接对话框展示完整 URL、复制按钮、二维码与过期时间，并提示“链接仅展示一次”。关闭对话框后清理前端内存中的 URL，不得写入长期缓存、草稿或 storage。
 
-## 8. HTTPS 证书区
+## 8. 证书区（Web Proxy）
 
-当代理类型为 HTTPS 且存在绑定证书时展示该证书摘要：
+Web Proxy 不持有权威证书绑定；证书绑定在所属 Domain 上。本页可只读展示 Domain 证书摘要（若有）：
 
 - Serving / Operation 状态
-- Host
-- 到期时间
-- 最近签发时间
-- 最近续签时间
-- 最近检查 / 尝试 / 下次尝试时间
-- 失败次数、指纹
-- 最近错误摘要
+- Host / hostnames
+- 到期时间与最近操作时间
+- 失败次数、指纹、最近错误摘要
 
-证书摘要为只读视图。证书的创建、删除、签发、续期、轮换、同步、撤销等动作只能在证书页执行；本页只负责改绑证书或跳转创建证书。
+证书的创建、删除、签发、续期、轮换、同步、撤销在证书页执行；绑定/解绑在 Domain 详情页执行。
 
-### 8.1 显式绑定与运行时解析
+### 8.1 绑定与运行时解析
 
-- HTTPS proxy 通过 `certificateId` 显式绑定证书（数据层为 `proxies.certificate_id`），本次实现一个证书最多绑定一个 proxy。
-- 运行时优先按绑定的 certificate ID 解析 TLS active material，并校验证书覆盖该 proxy 的 SNI host。
-- 没有绑定可服务证书或证书失效（过期、缺失、不可读、域名不匹配、key 不匹配、provider status 阻止服务）的 HTTPS proxy 会被标记为证书失效/需要重新配置，且不对外提供 HTTPS。
-- 在证书页删除仍在服务的绑定证书会解除绑定并把本 proxy 标记为需要重新配置，需重新绑定可用证书后才能恢复 HTTPS。
+- 权威绑定为 `domains.certificate_id`；证书与 Domain 为 1:n（一证可服务多 Domain）。
+- HTTPS 按 SNI 选择 Domain 与证书后终止 TLS，再按 Path 选择本 Proxy。
+- Domain 未绑定可服务证书或证书失效时，该 Domain 的 HTTPS entry fail closed。
+- 在证书页删除仍被 Domain 引用的证书会解除相关 Domain 绑定，HTTPS 在重新绑定前不可用。
 
 ## 9. 状态设计
 

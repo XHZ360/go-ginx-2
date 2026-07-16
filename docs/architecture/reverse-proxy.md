@@ -11,7 +11,7 @@ HTTP/HTTPS 支持 HTTP/1.1 WebSocket Upgrade，并在升级后进入双向隧道
 
 ## 路径路由
 
-> 实现正在收敛到 Domain + Path 模型（见 [../decisions/domain-path-proxy-routing.md](../decisions/domain-path-proxy-routing.md) 与 [../changes/active/domain-path-proxy-routing.md](../changes/active/domain-path-proxy-routing.md)）。运行时与 SQLite 迁移已切到新模型；Admin UI 完整 Domain 页仍在收尾。
+> 当前事实：Domain + Path 模型已落地（见 [../decisions/domain-path-proxy-routing.md](../decisions/domain-path-proxy-routing.md) 与 [../changes/completed/domain-path-proxy-routing.md](../changes/completed/domain-path-proxy-routing.md)）。
 
 HTTP 与终止 TLS 的 HTTPS 使用共享路径映射：
 

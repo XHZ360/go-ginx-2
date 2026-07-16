@@ -7,7 +7,7 @@
 ## 2. 路由
 
 - ` /certificates `
-- ` /certificates?create=1 `：自动打开“创建证书”对话框；从 proxy 表单跳转时还会携带 `returnTo`、`draftId`、`host`、`providerType` 参数
+- ` /certificates?create=1 `：自动打开“创建证书”对话框；从 Domain/Proxy 表单跳转时还会携带 `returnTo`、`draftId`、`host`、`providerType` 参数
 
 ## 3. 页面目标
 
@@ -16,7 +16,7 @@
 - 执行签发、续期、轮换、同步、撤销和按风险分级的删除
 - 管理 Cloudflare provider credential（创建、更新、校验、禁用、删除）
 - 支持搜索、按多个状态维度筛选和分页
-- 支持从 proxy 表单跳转创建证书并在成功后自动返回原表单
+- 支持从 Domain/Proxy 表单跳转创建证书并在成功后自动返回原表单
 
 ## 4. 页面结构
 
@@ -30,16 +30,16 @@
 
 ## 5. 证书作为独立资源
 
-证书是可独立管理、可被 proxy 选择的资源，不再隐式附着在 proxy 上。
+证书是可独立管理的资源；权威绑定在 Domain，不再附着在 Web Proxy 上。
 
-- 证书可以先创建为未绑定状态，随后从 proxy 表单选择绑定。
-- HTTPS proxy 通过 `certificateId` 显式绑定证书（数据层为 `proxies.certificate_id`）。
-- 本次实现一个证书最多绑定一个 proxy；尝试把已被其他 proxy 绑定的证书绑定到新 proxy 会被拒绝并返回可消费冲突。
-- 把 proxy 的证书选择改为其他证书或清空后，原证书保留为未绑定资源，除非在本页显式删除；删除对应 proxy 后证书同样保留为未绑定资源。
-- 运行时优先按绑定的 certificate ID 解析 TLS active material，并校验证书覆盖该 proxy 的 SNI host。
+- 证书可以先创建为未绑定状态，随后从 Domain 详情绑定。
+- Domain 通过 `certificateId` 显式绑定证书（数据层为 `domains.certificate_id`）。
+- 证书与 Domain 为 **1:n**：同一证书可绑定多个 Domain（hostnames 覆盖时，例如通配证书）；每个 Domain 最多一张证书。
+- Domain 解绑或改绑后，证书资源保留，除非在本页显式删除。
+- 运行时按 Domain 绑定的 certificate ID 解析 TLS active material，并校验证书覆盖该 Domain Host。
 - 私钥材料始终只以文件路径或受管文件形式存在，绝不进入 SQLite，UI 也不回显私钥内容。
 
-旧 `managed_certificates.proxy_id` 与旧 HTTPS proxy `certFile` / `keyFile` 的迁移、运行时兼容 fallback、私钥不入库和证书在 proxy 删除后保留等策略，详见 [../../references/certificate-binding-migration.md](../../references/certificate-binding-migration.md)。
+历史 Proxy 绑定迁移与私钥不入库策略见 [../../references/certificate-binding-migration.md](../../references/certificate-binding-migration.md)；Domain 模型见 [../../changes/completed/domain-path-proxy-routing.md](../../changes/completed/domain-path-proxy-routing.md)。
 
 ## 6. 创建证书
 

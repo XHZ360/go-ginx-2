@@ -7,23 +7,21 @@
 | 项 | 值 |
 | --- | --- |
 | 最后更新 | 2026-07-16 |
-| 基线提交 | `02d9aed`（Merge branch `opencode/silent-comet`） |
-| 验证状态 | 本次文档整改未执行全量测试 |
+| 基线提交 | `2b15535`（证书 1:n + Domain GraphQL 修复） |
+| 验证状态 | Domain Path Change 已完成并部署验收 |
 
 ## 当前状态
 
 - 里程碑一运行时与首个部署基线已具备：控制通道、反向代理、Admin API/UI、证书管理、SQLite、Linux systemd / Windows 服务发布包。
 - 文档按信息类型收敛到 `docs/`（project / requirements / architecture / operations / changes / references）。
-- OpenSpec 已移除；有效内容已并入普通 Markdown。
-- 文档整改已落地：收敛单一事实来源、补齐 requirements 层、收缩根 README 长文。
-- active Change [domain-path-proxy-routing.md](changes/active/domain-path-proxy-routing.md)：Domain 模型、运行时、Admin API/UI 已落地；ProxyRoute GraphQL/API 与 `proxy_routes` 表/仓储已清理；升级路径仍可读旧表。可选：证书文档收敛、`proxies` 遗留列物理 DROP。
+- completed Change [domain-path-proxy-routing.md](changes/completed/domain-path-proxy-routing.md)：`Domain + PathPrefix => Proxy` 已落地并部署；证书与 Domain 为 1:n；`proxy_routes` 已清理。
 
 ## 已实现能力（摘要）
 
 - QUIC 与 TCP+TLS 控制通道、认证、心跳、代理快照、最新会话路由。
-- TCP / UDP / HTTP / HTTPS 反向代理与 listener 协调。
-- HTTP/HTTPS 路径前缀路由与 HTTPS 访问激活（Cookie）。
-- 托管证书（ACME Cloudflare DNS-01、Origin CA）、健康状态与失败保留。
+- TCP / UDP / Web（Domain + Path）反向代理与 listener 协调。
+- Domain 优先 Admin UI；HTTPS 按 Domain 选证，路径命中后访问激活（Cookie）。
+- 托管证书（ACME Cloudflare DNS-01、Origin CA）、健康状态与失败保留；一证可服务多 Domain。
 - Admin JWT 会话、GraphQL、同源 Admin UI。
 - 可复现部署包与 daemon 运行文档。
 
@@ -32,25 +30,22 @@
 - 配额、限速、普通用户自助、备份恢复、完整指标/告警。
 - 正向代理；HTTPS 访问激活不支持逐设备撤销。
 - 原生安装器与包管理器分发。
+- 可选清理：`proxies` 上 Web 遗留列物理 DROP、legacy HTTP/HTTPS 类型提示。
 - 详见 [requirements/limits.md](requirements/limits.md)。
 
 ## 下一步
 
-1. 可选：证书生命周期文档继续收敛到 Domain 绑定；`proxies` Web 遗留列物理 DROP。
-2. 生产运维：备份恢复、容量校验。
+1. 生产运维：备份恢复、容量校验。
+2. 可选：`proxies` Web 遗留列物理 DROP；证书/UI 文案继续去 legacy。
 3. 有代码变更时同步更新 requirements/architecture，并回写本日志验证结果。
-
-## 阻塞问题关闭记录（2026-07-15）
-
-- HTTP 认证：有可用 HTTPS entry 时 `308`，否则 `403`。
-- 历史统计：`/` Proxy 保留 legacy aggregate 并 UI 标注；子路径 Proxy 从零计数。
 
 ## 最近验证
 
 | 日期 | 范围 | 结果 | 说明 |
 | --- | --- | --- | --- |
+| 2026-07-16 | Domain Path 部署验收 | 通过 | Domain 证书展示/绑定与 1:n 行为可用 |
+| 2026-07-16 | `go test` admin/store/adminapi/adminquery + UI cert 测试 | 通过 | GraphQL 嵌入字段、1:n 绑定 |
 | 2026-07-15 | 文档链接与路径 | 通过 | 本地相对链接检查无失效路径 |
-| 2026-07-15 | `go test ./...` / e2e | 未执行 | 本次仅文档整改 |
 
 建议验证入口：
 

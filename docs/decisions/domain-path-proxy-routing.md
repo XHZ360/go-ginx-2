@@ -2,13 +2,13 @@
 
 ## 状态
 
-已采纳，尚未完成实现迁移。
+已采纳，已实现（2026-07-16 完成）。
 
 ## 背景
 
-当前实现把 HTTP/HTTPS Domain 绑定到一个父 Proxy，再通过 `ProxyRoute` 把多个 Path 挂到该 Proxy 下。这使 Domain 成为 Proxy 的属性，阻止同一 Domain 被多个独立 Proxy 使用，也把证书、TLS、路径路由和后端目标耦合在同一个资源中。
+改造前实现把 HTTP/HTTPS Domain 绑定到一个父 Proxy，再通过 `ProxyRoute` 把多个 Path 挂到该 Proxy 下。这使 Domain 成为 Proxy 的属性，阻止同一 Domain 被多个独立 Proxy 使用，也把证书、TLS、路径路由和后端目标耦合在同一个资源中。
 
-产品需要以 `domain + path => proxy` 作为 Web 反向代理的入口模型：Domain 负责公网主机身份和 TLS，Proxy 负责某个路径对应的 Client 与 target。
+产品以 `domain + path => proxy` 作为 Web 反向代理的入口模型：Domain 负责公网主机身份和 TLS，Proxy 负责某个路径对应的 Client 与 target。
 
 ## 决策
 
@@ -38,15 +38,16 @@
 
 ## 后果
 
-- Web Proxy 不再以 `http` / `https` 类型区分公网协议；Domain entry 决定 HTTP/HTTPS 暴露方式，Proxy 表达 Web 路径后端。
-- `ProxyRoute` 子资源和 `proxy_routes` 表将被移除或迁移为独立 Proxy。
-- `EntryHost`、Web entry 配置和 `CertificateID` 从 Proxy 迁到 Domain/Domain entry。
-- listener 协调、证书解析、GraphQL、Admin UI 和数据迁移都需要调整。
-- 旧模型已经实现，迁移期间必须明确区分当前行为和目标行为。
+- Web Proxy 使用协议无关的 `web` 类型；Domain entry 决定 HTTP/HTTPS 暴露方式。
+- `ProxyRoute` 子资源和 `proxy_routes` 表已迁移为独立 Web Proxy，迁移后 DROP。
+- Web 的 Host/entry/证书权威在 Domain；TCP/UDP 仍使用 Proxy entry 字段。
+- listener 由 DomainEntry 驱动；HTTPS 按 Domain 选证。
+- 管理面以 Domain 优先：先管理 Host/entry/证书，再为 Proxy 选择 Domain + PathPrefix。
 
 ## 相关文档
 
-- 实施 Change：[../changes/active/domain-path-proxy-routing.md](../changes/active/domain-path-proxy-routing.md)
+- 实施 Change：[../changes/completed/domain-path-proxy-routing.md](../changes/completed/domain-path-proxy-routing.md)
 - 产品需求：[../requirements/proxy-runtime.md](../requirements/proxy-runtime.md)
 - 当前运行时：[../architecture/reverse-proxy.md](../architecture/reverse-proxy.md)
+- 迁移运维：[../operations/domain-path-routing-migration.md](../operations/domain-path-routing-migration.md)
 - 被替代的实施记录：[../changes/completed/http-path-routing-and-https-access-activation.md](../changes/completed/http-path-routing-and-https-access-activation.md)

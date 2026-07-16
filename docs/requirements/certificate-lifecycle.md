@@ -11,13 +11,14 @@
 
 ## 管理原则
 
-- 证书是独立资源；HTTPS proxy 通过 `certificateId` 显式绑定。
-- 证书增删与生命周期动作集中在证书管理入口；proxy 表单只负责选择或跳转创建。
+- 证书是独立资源；权威绑定在 Domain（`domains.certificate_id`）。
+- 证书与 Domain 为 **1:n**：一张证书可被多个 Domain 引用（例如通配证书）；每个 Domain 最多一张证书。
+- 证书增删与生命周期动作集中在证书管理入口；Domain 页面负责绑定/解绑；Web Proxy 不持有权威证书绑定。
 - SQLite 只存路径、元数据与脱敏状态；私钥与 provider token 不得入库。
 - 首次创建失败且无可用材料时，不得让坏状态进入运行时。
 - 续期/轮换失败时保留旧的可用 active material。
 
-> 目标模型：Domain 与证书可选 **1:n** 绑定（一证多 Domain），HTTPS 在选择 Proxy 前按 Domain 解析证书。迁移见 [../changes/active/domain-path-proxy-routing.md](../changes/active/domain-path-proxy-routing.md)。
+> 实现状态：HTTPS 在选择 Proxy 前按 Domain 解析证书。Change 见 [../changes/completed/domain-path-proxy-routing.md](../changes/completed/domain-path-proxy-routing.md)。
 
 ## 用户可见状态
 
@@ -31,14 +32,14 @@
 
 - 签发、续期、状态查询（Admin UI 或 `goginx-admin`）。
 - Origin CA：同步、显式撤销（高风险，不因轮换自动发生）。
-- 删除仍在服务的绑定证书会解除绑定并使对应 HTTPS proxy 需要重新配置。
+- 删除仍在服务的绑定证书会解除相关 Domain 绑定，并使依赖该证书的 HTTPS entry fail closed，直到重新绑定可服务证书。
 
 ## 验收口径
 
-- 无可用证书的 HTTPS proxy 不对外服务。
+- 无可用证书的 Domain HTTPS entry 不对外服务。
 - 续期失败不覆盖健康 active 证书。
 - API、日志、审计、UI 不泄露私钥、token 或完整敏感响应。
-- 绑定冲突（一证书多 proxy）以可消费错误返回。
+- 证书 hostnames 不覆盖 Domain Host 时绑定失败并返回可消费错误；同一证书绑定多个 Domain 是允许行为。
 
 ## 已知缺口
 
