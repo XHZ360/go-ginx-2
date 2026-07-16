@@ -235,10 +235,7 @@ func (stream *muxStream) Write(p []byte) (int, error) {
 		return 0, io.ErrClosedPipe
 	}
 	for written := 0; written < len(p); {
-		end := written + maxMuxPayloadSize
-		if end > len(p) {
-			end = len(p)
-		}
+		end := min(written+maxMuxPayloadSize, len(p))
 		if stream.isClosed() {
 			return written, io.ErrClosedPipe
 		}

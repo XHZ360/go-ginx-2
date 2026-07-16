@@ -34,7 +34,7 @@ func newProxyConn(stream io.ReadWriteCloser, proxyID string) *ProxyConn {
 
 func (c *ProxyConn) Read(p []byte) (int, error)  { return c.stream.Read(p) }
 func (c *ProxyConn) Write(p []byte) (int, error) { return c.stream.Write(p) }
-func (c *ProxyConn) Close() error                 { return c.stream.Close() }
+func (c *ProxyConn) Close() error                { return c.stream.Close() }
 
 // LocalAddr returns a synthetic address identifying the proxy target.
 func (c *ProxyConn) LocalAddr() net.Addr { return c.addr }

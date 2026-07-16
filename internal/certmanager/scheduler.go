@@ -61,10 +61,7 @@ func (scheduler LifecycleScheduler) NextAttemptAt(now time.Time, failureCount in
 }
 
 func (scheduler LifecycleScheduler) MaxLookahead() time.Duration {
-	window := scheduler.RenewalWindow
-	if scheduler.OriginCARotationWindow > window {
-		window = scheduler.OriginCARotationWindow
-	}
+	window := max(scheduler.OriginCARotationWindow, scheduler.RenewalWindow)
 	return window
 }
 

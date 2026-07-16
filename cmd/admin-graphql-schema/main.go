@@ -34,7 +34,7 @@ func main() {
 		exitf("introspect admin GraphQL schema: %s", strings.Join(messages, "; "))
 	}
 
-	payload, err := json.MarshalIndent(map[string]interface{}{"data": result.Data}, "", "  ")
+	payload, err := json.MarshalIndent(map[string]any{"data": result.Data}, "", "  ")
 	if err != nil {
 		exitf("encode admin GraphQL schema: %v", err)
 	}
@@ -55,7 +55,7 @@ func main() {
 	}
 }
 
-func exitf(format string, args ...interface{}) {
+func exitf(format string, args ...any) {
 	_, _ = fmt.Fprintf(os.Stderr, format+"\n", args...)
 	os.Exit(1)
 }

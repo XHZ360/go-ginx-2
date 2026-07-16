@@ -14,10 +14,7 @@ func runSessionExpiryLoop(ctx context.Context, sessions *session.Manager, db sto
 	if sessions == nil || timeout <= 0 {
 		return
 	}
-	interval := timeout / 2
-	if interval < time.Second {
-		interval = time.Second
-	}
+	interval := max(timeout/2, time.Second)
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	for {

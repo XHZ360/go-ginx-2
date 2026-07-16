@@ -21,12 +21,12 @@ const MaxDatagramFrameSize = maxFrameSize
 type MessageType string
 
 const (
-	MessageAuthRequest      MessageType = "auth_request"
-	MessageAuthResponse     MessageType = "auth_response"
-	MessageHeartbeat        MessageType = "heartbeat"
-	MessageOpenStream       MessageType = "open_stream"
-	MessageProxySnapshot    MessageType = "proxy_snapshot"
-	MessageProxyListRequest MessageType = "proxy_list_request"
+	MessageAuthRequest       MessageType = "auth_request"
+	MessageAuthResponse      MessageType = "auth_response"
+	MessageHeartbeat         MessageType = "heartbeat"
+	MessageOpenStream        MessageType = "open_stream"
+	MessageProxySnapshot     MessageType = "proxy_snapshot"
+	MessageProxyListRequest  MessageType = "proxy_list_request"
 	MessageProxyListResponse MessageType = "proxy_list_response"
 )
 

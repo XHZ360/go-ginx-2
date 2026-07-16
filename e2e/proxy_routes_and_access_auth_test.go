@@ -378,12 +378,12 @@ func enableAccessAuth(t *testing.T, dbPath string, proxyID string, tokenValue st
 		t.Fatal(err)
 	}
 	token := domain.ProxyActivationToken{
-		ID:         "activation-e2e-1",
-		ProxyID:    proxyID,
+		ID:          "activation-e2e-1",
+		ProxyID:     proxyID,
 		AuthVersion: proxy.AccessAuthVersion + 1,
-		TokenHash:  hashValue(tokenValue),
-		ExpiresAt:  time.Now().UTC().Add(10 * time.Minute),
-		CreatedBy:  "test",
+		TokenHash:   hashValue(tokenValue),
+		ExpiresAt:   time.Now().UTC().Add(10 * time.Minute),
+		CreatedBy:   "test",
 	}
 	if err := db.ProxyAccess().EnableAuthAndCreateActivation(ctx, proxyID, token.AuthVersion, token); err != nil {
 		t.Fatalf("enable access auth: %v", err)

@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"slices"
 	"sync"
 
 	"github.com/simp-frp/go-ginx-2/internal/control"
@@ -262,12 +263,7 @@ func (c *Client) shouldUseProtocol(name string) bool {
 	if len(c.cfg.AllowedProtocols) == 0 {
 		return true
 	}
-	for _, p := range c.cfg.AllowedProtocols {
-		if p == name {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(c.cfg.AllowedProtocols, name)
 }
 
 func proxyListFromDomain(proxies []domain.Proxy) []ProxyInfo {

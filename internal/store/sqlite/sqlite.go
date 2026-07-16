@@ -1962,7 +1962,7 @@ func managedCertificatesHasProxyForeignKey(ctx context.Context, db *sql.DB) (boo
 
 // migrateBindProxyCertificates 将旧的“证书反向引用 proxy_id”回填为代理侧的权威绑定
 // proxies.certificate_id（设计迁移步骤 2：旧 managed cert -> proxy.certificate_id）。
-// 仅当代理尚未绑定证书（certificate_id = ''）且存在对应反向引用证书时才回填。幂等。
+// 仅当代理尚未绑定证书（certificate_id = ”）且存在对应反向引用证书时才回填。幂等。
 // TODO(phase2): 旧代理静态证书（cert_file/key_file）迁移为文件型证书资源
 // （provider_type=file）需要 ID 生成与 certmanager 逻辑，留待 Phase 2 服务层实现。
 func migrateBindProxyCertificates(ctx context.Context, db *sql.DB) error {

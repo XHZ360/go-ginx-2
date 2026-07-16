@@ -74,7 +74,7 @@ func newAuthStore(userStatus domain.UserStatus, clientStatus domain.ClientStatus
 // newConsumerAuthStore creates an auth store that supports both provider and consumer client lookups.
 func newConsumerAuthStore(credentialHash string) authStore {
 	return authStore{
-		user: domain.User{ID: "user-1", Username: "alice", Role: domain.RoleUser, Status: domain.UserEnabled},
+		user:   domain.User{ID: "user-1", Username: "alice", Role: domain.RoleUser, Status: domain.UserEnabled},
 		client: domain.Client{ID: "client-provider", UserID: "user-1", Name: "provider", Kind: domain.ClientKindProvider, Status: domain.ClientOffline, CredentialHash: credentialHash, Version: 7},
 		clients: []domain.Client{
 			{ID: "client-provider", UserID: "user-1", Name: "provider", Kind: domain.ClientKindProvider, Status: domain.ClientOffline, CredentialHash: credentialHash, Version: 7},

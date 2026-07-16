@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"sort"
 	"strings"
@@ -1412,9 +1413,7 @@ func (m *model) openClientJoinDefaultsFromInput(values map[string]string) admin.
 
 func copyValues(values map[string]string) map[string]string {
 	copied := make(map[string]string, len(values))
-	for key, value := range values {
-		copied[key] = value
-	}
+	maps.Copy(copied, values)
 	return copied
 }
 

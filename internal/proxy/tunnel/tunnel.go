@@ -32,7 +32,7 @@ func IsWebSocketUpgrade(header http.Header) bool {
 		return false
 	}
 	for _, value := range header.Values("Connection") {
-		for _, token := range strings.Split(value, ",") {
+		for token := range strings.SplitSeq(value, ",") {
 			if strings.EqualFold(strings.TrimSpace(token), "upgrade") {
 				return true
 			}

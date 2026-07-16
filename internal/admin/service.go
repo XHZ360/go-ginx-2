@@ -106,24 +106,24 @@ type CreateProxyInput struct {
 }
 
 type UpdateProxyInput struct {
-	ID                 string
-	Type               domain.ProxyType
-	Name               string
-	DomainID           string
-	DomainIDSet        bool
-	PathPrefix         string
-	PathPrefixSet      bool
-	StripPrefix        bool
-	StripPrefixSet     bool
-	UpstreamPathPrefix string
+	ID                    string
+	Type                  domain.ProxyType
+	Name                  string
+	DomainID              string
+	DomainIDSet           bool
+	PathPrefix            string
+	PathPrefixSet         bool
+	StripPrefix           bool
+	StripPrefixSet        bool
+	UpstreamPathPrefix    string
 	UpstreamPathPrefixSet bool
-	EntryBindHost      string
-	EntryHost          string
-	EntryPort          int
-	TargetHost         string
-	TargetPort         int
-	CertFile           string
-	KeyFile            string
+	EntryBindHost         string
+	EntryHost             string
+	EntryPort             int
+	TargetHost            string
+	TargetPort            int
+	CertFile              string
+	KeyFile               string
 	// CertificateID 选择/清除绑定的证书资源；CertificateIDSet 为 true 且值为空时表示清除绑定。
 	CertificateID    string
 	CertificateIDSet bool
@@ -817,7 +817,6 @@ func (service Service) CreateProxy(ctx context.Context, input CreateProxyInput) 
 	}
 	return proxy, service.audit(ctx, input.ActorID, "proxy", proxy.ID, action)
 }
-
 
 func (service Service) UpdateProxy(ctx context.Context, input UpdateProxyInput) (domain.Proxy, error) {
 	if service.Store == nil {

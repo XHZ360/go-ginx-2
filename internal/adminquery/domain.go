@@ -198,7 +198,7 @@ func sortDomains(items []DomainListItem, sortInput SortInput) {
 			return items[i].Host < items[j].Host
 		}
 	}
-	for i := 0; i < len(items); i++ {
+	for i := range items {
 		for j := i + 1; j < len(items); j++ {
 			if less(j, i) == asc {
 				items[i], items[j] = items[j], items[i]

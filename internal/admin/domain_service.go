@@ -36,11 +36,11 @@ type CreateDomainEntryInput struct {
 }
 
 type UpdateDomainEntryInput struct {
-	ID      string
+	ID       string
 	BindHost string
-	Port    int
-	Status  domain.DomainEntryStatus
-	ActorID string
+	Port     int
+	Status   domain.DomainEntryStatus
+	ActorID  string
 }
 
 func (service Service) CreateDomain(ctx context.Context, input CreateDomainInput) (domain.Domain, error) {

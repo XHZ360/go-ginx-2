@@ -301,8 +301,6 @@ type ProxySummary struct {
 	ActiveTCPConnections int64
 }
 
-
-
 type ProxyListItem struct {
 	ID                   string
 	UserID               string
@@ -640,10 +638,7 @@ func (service Service) ProviderCredential(ctx context.Context, id string) (Provi
 }
 
 func (service Service) ListRecentAuditEvents(ctx context.Context, input AuditListInput) (AuditPage, error) {
-	limit := normalizePage(input.Page).PageSize * normalizePage(input.Page).Page
-	if limit < 50 {
-		limit = 50
-	}
+	limit := max(normalizePage(input.Page).PageSize*normalizePage(input.Page).Page, 50)
 	events, err := service.Store.AuditEvents().ListRecent(ctx, limit)
 	if err != nil {
 		return AuditPage{}, err
@@ -973,14 +968,8 @@ func pageSlice[T any](items []T, input PageInput) ([]T, PageInfo) {
 	if input.Page > totalPages {
 		input.Page = totalPages
 	}
-	start := (input.Page - 1) * input.PageSize
-	if start > totalCount {
-		start = totalCount
-	}
-	end := start + input.PageSize
-	if end > totalCount {
-		end = totalCount
-	}
+	start := min((input.Page-1)*input.PageSize, totalCount)
+	end := min(start+input.PageSize, totalCount)
 	pageItems := append([]T(nil), items[start:end]...)
 	return pageItems, PageInfo{Page: input.Page, PageSize: input.PageSize, TotalCount: totalCount, TotalPages: totalPages, HasNext: input.Page < totalPages, HasPrev: input.Page > 1}
 }

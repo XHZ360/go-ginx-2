@@ -42,12 +42,12 @@ func TestHTTPEntryProxiesThroughQUICClientStream(t *testing.T) {
 	}
 	var targetAuthority string
 	testCases := map[string]originCase{
-		"/hello":          {requestOrigin: stringPtr("https://app.example.com"), wantPresent: true},
+		"/hello":          {requestOrigin: new("https://app.example.com"), wantPresent: true},
 		"/missing-origin": {wantPresent: false},
-		"/null-origin":    {requestOrigin: stringPtr("null"), wantPresent: true, wantOrigin: "null"},
-		"/empty-origin":   {requestOrigin: stringPtr(""), wantPresent: true, wantOrigin: ""},
-		"/ftp-origin":     {requestOrigin: stringPtr("ftp://app.example.com"), wantPresent: true, wantOrigin: "ftp://app.example.com"},
-		"/bad-origin":     {requestOrigin: stringPtr("://bad"), wantPresent: true, wantOrigin: "://bad"},
+		"/null-origin":    {requestOrigin: new("null"), wantPresent: true, wantOrigin: "null"},
+		"/empty-origin":   {requestOrigin: new(""), wantPresent: true, wantOrigin: ""},
+		"/ftp-origin":     {requestOrigin: new("ftp://app.example.com"), wantPresent: true, wantOrigin: "ftp://app.example.com"},
+		"/bad-origin":     {requestOrigin: new("://bad"), wantPresent: true, wantOrigin: "://bad"},
 	}
 	origin := httptest.NewServer(nethttp.HandlerFunc(func(w nethttp.ResponseWriter, r *nethttp.Request) {
 		body, err := io.ReadAll(r.Body)
@@ -609,8 +609,9 @@ func TestHTTPEntryReleasesQUICStreamsAfterShortRequests(t *testing.T) {
 	}
 }
 
+//go:fix inline
 func stringPtr(value string) *string {
-	return &value
+	return new(value)
 }
 
 func seedHTTPProxy(t *testing.T, ctx context.Context, db *sqlite.Store, targetHost string, targetPort int) {

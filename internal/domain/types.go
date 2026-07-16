@@ -778,8 +778,8 @@ func validHostname(hostname string) bool {
 
 func validCertificateHost(host string) bool {
 	host = strings.TrimSpace(host)
-	if strings.HasPrefix(host, "*.") {
-		return validHostname(strings.TrimPrefix(host, "*."))
+	if after, ok := strings.CutPrefix(host, "*."); ok {
+		return validHostname(after)
 	}
 	return validHostname(host)
 }

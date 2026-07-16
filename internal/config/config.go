@@ -486,8 +486,8 @@ func validateOptionalServiceHost(name string, value string) error {
 	if ip := net.ParseIP(value); ip != nil {
 		return nil
 	}
-	labels := strings.Split(value, ".")
-	for _, label := range labels {
+	labels := strings.SplitSeq(value, ".")
+	for label := range labels {
 		if label == "" || strings.HasPrefix(label, "-") || strings.HasSuffix(label, "-") {
 			return fmt.Errorf("%s must be a valid domain name or IP address", name)
 		}
