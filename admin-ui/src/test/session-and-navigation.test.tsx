@@ -38,6 +38,27 @@ describe('session bootstrap and navigation', () => {
     await screen.findByText('Login route');
   });
 
+  it('redirects to login when the authenticated session has expired', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).endsWith('/api/admin/session')) {
+        return new Response(JSON.stringify({ authenticated: true, username: 'admin', csrfToken: 'csrf', expiresAt: new Date(0).toISOString() }), { status: 200 });
+      }
+      return new Response('{}', { status: 200 });
+    }));
+
+    renderWithProviders(
+      ['/dashboard'],
+      <Routes>
+        <Route path="/login" element={<div>Login route</div>} />
+        <Route path="/" element={<ProtectedLayout />}>
+          <Route path="dashboard" element={<div>Dashboard route</div>} />
+        </Route>
+      </Routes>,
+    );
+
+    await screen.findByText('Login route');
+  });
+
   it('restores intended destination after login', async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = String(input);

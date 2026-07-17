@@ -25,6 +25,7 @@ export type SessionBootstrap = {
   authenticated: boolean;
   username?: string;
   csrfToken?: string;
+  expiresAt?: string;
   pollIntervalSeconds?: number;
 };
 

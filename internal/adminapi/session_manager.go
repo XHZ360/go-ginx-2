@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	defaultSessionAbsoluteLifetime = 8 * time.Hour
+	defaultSessionAbsoluteLifetime = 7 * 24 * time.Hour
 	adminJWTVersion                = 1
 	adminJWTType                   = "admin"
 	minAdminJWTSecretLength        = 32

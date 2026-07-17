@@ -39,6 +39,21 @@ func TestSessionManagerSignsAndVerifiesJWT(t *testing.T) {
 	}
 }
 
+func TestSessionManagerDefaultsToSevenDayLifetime(t *testing.T) {
+	now := time.Date(2026, 6, 5, 8, 0, 0, 0, time.UTC)
+	manager, err := newSessionManager(testAdminJWTSecret(), 0, func() time.Time { return now })
+	if err != nil {
+		t.Fatalf("new session manager: %v", err)
+	}
+	session, err := manager.Create("admin")
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if want := now.Add(7 * 24 * time.Hour); !session.ExpiresAt.Equal(want) {
+		t.Fatalf("expected session expiry %s, got %s", want, session.ExpiresAt)
+	}
+}
+
 func TestSessionManagerRejectsInvalidJWTs(t *testing.T) {
 	now := time.Date(2026, 6, 5, 8, 0, 0, 0, time.UTC)
 	manager, err := newSessionManager(testAdminJWTSecret(), 8*time.Hour, func() time.Time { return now })

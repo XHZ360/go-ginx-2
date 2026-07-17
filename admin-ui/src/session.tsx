@@ -16,6 +16,7 @@ type SessionState = {
   status: SessionStatus;
   username?: string;
   csrfToken?: string;
+  expiresAt?: string;
   pollIntervalSeconds: number;
 };
 
@@ -41,6 +42,7 @@ function fromBootstrap(bootstrap: SessionBootstrap): SessionState {
     status: 'authenticated',
     username: bootstrap.username,
     csrfToken: bootstrap.csrfToken,
+    expiresAt: bootstrap.expiresAt,
     pollIntervalSeconds: bootstrap.pollIntervalSeconds ?? DEFAULT_POLL_INTERVAL,
   };
 }
@@ -90,6 +92,20 @@ export function SessionProvider({ children }: PropsWithChildren) {
       setState({ status: 'unauthenticated', pollIntervalSeconds: DEFAULT_POLL_INTERVAL });
     });
   }, [state.status]);
+
+  useEffect(() => {
+    if (state.status !== 'authenticated' || !state.expiresAt) {
+      return;
+    }
+    const expiresAt = Date.parse(state.expiresAt);
+    if (Number.isNaN(expiresAt)) {
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      markUnauthenticated();
+    }, Math.max(0, expiresAt - Date.now()));
+    return () => window.clearTimeout(timer);
+  }, [state.status, state.expiresAt]);
 
   const value = useMemo<SessionContextValue>(
     () => ({

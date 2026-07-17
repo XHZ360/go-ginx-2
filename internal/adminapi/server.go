@@ -117,6 +117,7 @@ type sessionBootstrapResponse struct {
 	Authenticated      bool   `json:"authenticated"`
 	Username           string `json:"username,omitempty"`
 	CSRFToken          string `json:"csrfToken,omitempty"`
+	ExpiresAt          string `json:"expiresAt,omitempty"`
 	PollIntervalSecond int    `json:"pollIntervalSeconds,omitempty"`
 }
 
@@ -646,6 +647,7 @@ func writeBootstrapJSON(w http.ResponseWriter, status int, session *administrato
 		response.Authenticated = true
 		response.Username = session.Username
 		response.CSRFToken = session.CSRFToken
+		response.ExpiresAt = session.ExpiresAt.Format(time.RFC3339)
 		response.PollIntervalSecond = defaultPollSeconds
 	}
 	writeJSON(w, status, response)
