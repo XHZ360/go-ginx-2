@@ -1,7 +1,9 @@
-import { Button, Space, Tag, Typography } from 'antd';
+import { Button, Space, Table, Tag, Typography } from 'antd';
+import type { TablePaginationConfig, TableProps } from 'antd';
 import { LeftOutlined, RightOutlined } from '@ant-design/icons';
 import type { ReactNode } from 'react';
 import { Link } from 'react-router-dom';
+import type { PageInfo } from '../lib/contracts';
 import { formatDateTime, formatTitle } from '../lib/format';
 
 const statusColors: Record<string, string> = {
@@ -72,6 +74,56 @@ export function Pagination({
         Next
         <RightOutlined aria-hidden="true" />
       </Button>
+    </div>
+  );
+}
+
+export function pageTablePagination(
+  pageInfo: PageInfo,
+  onPageChange: (page: number) => void,
+  options?: { itemLabel?: string },
+): TablePaginationConfig {
+  return {
+    current: pageInfo.page,
+    pageSize: pageInfo.pageSize,
+    total: pageInfo.totalCount,
+    showSizeChanger: false,
+    showTotal: options?.itemLabel ? (total) => `${total} ${options.itemLabel}` : undefined,
+    onChange: (nextPage) => onPageChange(nextPage),
+  };
+}
+
+const defaultTableBodyScrollY = 'max(200px, calc(100dvh - 280px))';
+
+export function DataTable<T extends object>(props: TableProps<T> & { compact?: boolean }) {
+  const { className, size = 'middle', scroll, pagination, compact = false, ...rest } = props;
+  const nextScroll = compact
+    ? {
+        x: scroll?.x ?? 'max-content',
+        ...(scroll?.y !== undefined ? { y: scroll.y } : {}),
+      }
+    : {
+        ...(scroll ?? {}),
+        y: scroll?.y ?? defaultTableBodyScrollY,
+      };
+
+  return (
+    <div className={['data-table-host', compact ? 'data-table-host--compact' : ''].filter(Boolean).join(' ')}>
+      <Table<T>
+        className={['data-table', compact ? 'data-table--compact' : '', className].filter(Boolean).join(' ')}
+        size={size}
+        scroll={nextScroll}
+        tableLayout={compact ? 'auto' : undefined}
+        pagination={
+          pagination === false
+            ? false
+            : {
+                ...(typeof pagination === 'object' ? pagination : {}),
+                placement: ['bottomEnd'],
+              }
+        }
+        {...rest}
+      />
     </div>
   );
 }

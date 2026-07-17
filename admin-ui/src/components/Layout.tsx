@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react';
 import {
   AuditOutlined,
   DashboardOutlined,
@@ -5,15 +6,18 @@ import {
   DesktopOutlined,
   GlobalOutlined,
   LogoutOutlined,
+  MenuOutlined,
   SafetyCertificateOutlined,
   TeamOutlined,
   UserOutlined,
 } from '@ant-design/icons';
-import { Button, Layout as AntLayout, Menu, Typography } from 'antd';
+import { Button, Drawer, Grid, Layout as AntLayout, Menu, Typography } from 'antd';
 import { Navigate, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { PageLoading } from './PageStates';
 import { rememberDestination } from '../lib/navigation';
 import { useSession } from '../session';
+
+const SIDER_WIDTH = 248;
 
 const navItems = [
   { to: '/dashboard', label: 'Dashboard', icon: <DashboardOutlined aria-hidden="true" /> },
@@ -31,6 +35,38 @@ const menuItems = navItems.map((item) => ({
   label: item.label,
 }));
 
+function BrandBlock() {
+  return (
+    <div className="brand-block">
+      <div className="brand">GoGinx Admin</div>
+      <Typography.Text className="sidebar-caption">Management console</Typography.Text>
+    </div>
+  );
+}
+
+function SideNav({
+  selectedKey,
+  onNavigate,
+}: {
+  selectedKey: string;
+  onNavigate: (key: string) => void;
+}) {
+  return (
+    <>
+      <BrandBlock />
+      <Menu
+        aria-label="Primary"
+        className="nav-list"
+        mode="inline"
+        selectedKeys={[selectedKey]}
+        items={menuItems}
+        onClick={({ key }) => onNavigate(String(key))}
+        theme="dark"
+      />
+    </>
+  );
+}
+
 export function RootRedirect() {
   const session = useSession();
 
@@ -45,6 +81,14 @@ export function ProtectedLayout() {
   const session = useSession();
   const location = useLocation();
   const navigate = useNavigate();
+  const screens = Grid.useBreakpoint();
+  const isMobile = !screens.lg;
+  const [mobileOpen, setMobileOpen] = useState(false);
+  const [collapsed, setCollapsed] = useState(false);
+
+  useEffect(() => {
+    setMobileOpen(false);
+  }, [location.pathname]);
 
   if (session.status === 'unknown' || session.status === 'checking') {
     return <PageLoading label="Loading admin session..." />;
@@ -57,29 +101,53 @@ export function ProtectedLayout() {
 
   const selectedKey = navItems.find((item) => location.pathname === item.to || location.pathname.startsWith(`${item.to}/`))?.to ?? '/dashboard';
 
+  const go = (key: string) => {
+    navigate(key);
+    setMobileOpen(false);
+  };
+
   return (
     <AntLayout className="app-shell">
-      <AntLayout.Sider className="app-sidebar" width={248}>
-        <div className="brand-block">
-          <div className="brand">GoGinx Admin</div>
-          <Typography.Text className="sidebar-caption">Management console</Typography.Text>
-        </div>
-        <Menu
-          aria-label="Primary"
-          className="nav-list"
-          mode="inline"
-          selectedKeys={[selectedKey]}
-          items={menuItems}
-          onClick={({ key }) => navigate(String(key))}
+      {!isMobile ? (
+        <AntLayout.Sider
+          className="app-sidebar"
+          width={SIDER_WIDTH}
+          collapsedWidth={80}
+          collapsible
+          collapsed={collapsed}
+          onCollapse={setCollapsed}
           theme="dark"
-        />
-      </AntLayout.Sider>
+          trigger={null}
+        >
+          <SideNav selectedKey={selectedKey} onNavigate={go} />
+          <button
+            type="button"
+            className="app-sidebar__collapse"
+            aria-label={collapsed ? 'Expand navigation' : 'Collapse navigation'}
+            onClick={() => setCollapsed((current) => !current)}
+          >
+            {collapsed ? '»' : '«'}
+          </button>
+        </AntLayout.Sider>
+      ) : null}
+
       <AntLayout className="app-content-shell">
         <AntLayout.Header className="topbar">
-          <div className="topbar__user">
-            <UserOutlined aria-hidden="true" />
-            <strong>{session.username}</strong>
-            <span className="muted"> signed in</span>
+          <div className="topbar__leading">
+            {isMobile ? (
+              <Button
+                type="text"
+                className="topbar__menu-trigger"
+                icon={<MenuOutlined aria-hidden="true" />}
+                aria-label="Open navigation"
+                onClick={() => setMobileOpen(true)}
+              />
+            ) : null}
+            <div className="topbar__user">
+              <UserOutlined aria-hidden="true" />
+              <strong>{session.username}</strong>
+              <span className="muted"> signed in</span>
+            </div>
           </div>
           <Button
             type="default"
@@ -96,6 +164,20 @@ export function ProtectedLayout() {
           <Outlet />
         </AntLayout.Content>
       </AntLayout>
+
+      <Drawer
+        open={isMobile && mobileOpen}
+        onClose={() => setMobileOpen(false)}
+        placement="left"
+        width={SIDER_WIDTH}
+        className="app-nav-drawer"
+        styles={{ body: { padding: 0, background: '#0f172a' }, header: { display: 'none' } }}
+        destroyOnHidden
+      >
+        <div className="app-sidebar app-sidebar--drawer">
+          <SideNav selectedKey={selectedKey} onNavigate={go} />
+        </div>
+      </Drawer>
     </AntLayout>
   );
 }

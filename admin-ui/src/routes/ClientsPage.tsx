@@ -1,6 +1,6 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { CopyOutlined, DeploymentUnitOutlined, PlusOutlined, ReloadOutlined } from '@ant-design/icons';
-import { Button } from 'antd';
+import { Button, type TableColumnsType } from 'antd';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { Dialog } from '../components/Dialog';
@@ -8,10 +8,10 @@ import { SelectField, TextField } from '../components/FormField';
 import { useAuthedQuery } from '../hooks/useAuthedQuery';
 import { useMutationWithAuth } from '../hooks/useMutationWithAuth';
 import { mutateCreateClient, mutateCreateClientJoin, mutateDeleteClient, queryClients, queryUsers, type ClientFilter, type ClientJoinInput } from '../lib/admin-graphql';
-import { isApiError, type User } from '../lib/contracts';
+import { isApiError, type Client, type User } from '../lib/contracts';
 import { EmptyState, ErrorState, FilteredEmptyState, PageLoading, ValidationBanner } from '../components/PageStates';
 import { useSession } from '../session';
-import { PageHeader, Pagination, StatusBadge, Timestamp } from './shared';
+import { DataTable, PageHeader, StatusBadge, Timestamp, pageTablePagination } from './shared';
 import { ConfirmButton } from '../components/ConfirmButton';
 
 const defaultFilter: ClientFilter = { query: '', userId: '', status: '' };
@@ -269,6 +269,73 @@ export function ClientsPage() {
     navigate(`/proxies?create=1&userId=${encodeURIComponent(userId)}&clientId=${encodeURIComponent(clientId)}`);
   };
 
+  const columns = useMemo<TableColumnsType<Client>>(
+    () => [
+      { title: 'ID', dataIndex: 'id', key: 'id', ellipsis: true, width: 120 },
+      { title: 'User', dataIndex: 'userId', key: 'userId', ellipsis: true, width: 120 },
+      { title: 'Name', dataIndex: 'name', key: 'name', ellipsis: true },
+      {
+        title: 'Status',
+        dataIndex: 'status',
+        key: 'status',
+        width: 110,
+        render: (value: string) => <StatusBadge value={value} />,
+      },
+      {
+        title: 'Online',
+        key: 'online',
+        width: 90,
+        render: (_, client) => (client.runtime.online ? 'Yes' : 'No'),
+      },
+      {
+        title: 'Protocol',
+        key: 'protocol',
+        width: 100,
+        render: (_, client) => client.runtime.protocol ?? 'N/A',
+      },
+      {
+        title: 'Active proxies',
+        key: 'activeProxies',
+        width: 120,
+        align: 'right',
+        render: (_, client) => client.runtime.activeProxies ?? 0,
+      },
+      {
+        title: 'Active streams',
+        key: 'activeStreams',
+        width: 120,
+        align: 'right',
+        render: (_, client) => client.runtime.activeStreams ?? 0,
+      },
+      {
+        title: 'Last heartbeat',
+        key: 'lastHeartbeat',
+        width: 160,
+        render: (_, client) => <Timestamp value={client.runtime.lastHeartbeat} />,
+      },
+      {
+        title: 'Actions',
+        key: 'actions',
+        fixed: 'right',
+        width: 220,
+        render: (_, client) => (
+          <div className="inline-actions" onClick={(event) => event.stopPropagation()}>
+            <Button type="default" icon={<DeploymentUnitOutlined aria-hidden="true" />} onClick={() => createProxyForClient(client.id, client.userId)}>
+              Create proxy
+            </Button>
+            <ConfirmButton
+              label="Delete"
+              confirmLabel="Delete this client?"
+              onConfirm={() => deleteMutation.mutate(client.id)}
+              disabled={deleteMutation.isPending}
+            />
+          </div>
+        ),
+      },
+    ],
+    [deleteMutation.isPending, navigate],
+  );
+
   if (query.isLoading) {
     return <PageLoading label="Loading clients..." />;
   }
@@ -284,7 +351,7 @@ export function ClientsPage() {
   const hasFilter = Boolean(filter.query || filter.userId || filter.status);
 
   return (
-    <section className="page-section">
+    <section className="page-section page-section--fill">
       <PageHeader
         title="Clients"
         description="Live runtime view for managed clients."
@@ -332,55 +399,17 @@ export function ClientsPage() {
           <EmptyState title="No clients" message="No managed clients are registered yet." />
         )
       ) : (
-        <>
-          <div className="table-wrap">
-            <table className="table">
-              <thead>
-                <tr>
-                  <th>ID</th>
-                  <th>User</th>
-                  <th>Name</th>
-                  <th>Status</th>
-                  <th>Online</th>
-                  <th>Protocol</th>
-                  <th>Active proxies</th>
-                  <th>Active streams</th>
-                  <th>Last heartbeat</th>
-                  <th>Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {data.items.map((client) => (
-                  <tr key={client.id} className="table-row-link" onClick={() => navigate(`/clients/${client.id}`)}>
-                    <td>{client.id}</td>
-                    <td>{client.userId}</td>
-                    <td>{client.name}</td>
-                    <td><StatusBadge value={client.status} /></td>
-                    <td>{client.runtime.online ? 'Yes' : 'No'}</td>
-                    <td>{client.runtime.protocol ?? 'N/A'}</td>
-                    <td>{client.runtime.activeProxies ?? 0}</td>
-                    <td>{client.runtime.activeStreams ?? 0}</td>
-                    <td><Timestamp value={client.runtime.lastHeartbeat} /></td>
-                    <td>
-                      <div className="inline-actions" onClick={(event) => event.stopPropagation()}>
-                        <Button type="default" icon={<DeploymentUnitOutlined aria-hidden="true" />} onClick={() => createProxyForClient(client.id, client.userId)}>
-                          Create proxy
-                        </Button>
-                        <ConfirmButton
-                          label="Delete"
-                          confirmLabel="Delete this client?"
-                          onConfirm={() => deleteMutation.mutate(client.id)}
-                          disabled={deleteMutation.isPending}
-                        />
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          <Pagination page={data.pageInfo.page} totalPages={data.pageInfo.totalPages} onPageChange={setPage} />
-        </>
+        <DataTable<Client>
+          rowKey="id"
+          columns={columns}
+          dataSource={data.items}
+          scroll={{ x: 1200 }}
+          pagination={pageTablePagination(data.pageInfo, setPage, { itemLabel: 'clients' })}
+          onRow={(client) => ({
+            onClick: () => navigate(`/clients/${client.id}`),
+            className: 'table-row-link',
+          })}
+        />
       )}
 
       <Dialog

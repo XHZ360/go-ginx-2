@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { GlobalOutlined, PlusOutlined, ReloadOutlined } from '@ant-design/icons';
-import { Button } from 'antd';
+import { Button, type TableColumnsType } from 'antd';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { Dialog } from '../components/Dialog';
@@ -19,7 +19,7 @@ import {
 } from '../lib/admin-graphql';
 import { isApiError, type DomainRecord, type User } from '../lib/contracts';
 import { useSession } from '../session';
-import { PageHeader, Pagination, StatusBadge, Timestamp } from './shared';
+import { DataTable, PageHeader, StatusBadge, Timestamp, pageTablePagination } from './shared';
 
 const defaultFilter: DomainFilter = { query: '', userId: '', status: '' };
 
@@ -91,8 +91,92 @@ export function DomainsPage() {
     return (id: string) => map.get(id) ?? id;
   }, [users]);
 
+  const columns = useMemo<TableColumnsType<DomainRecord>>(
+    () => [
+      {
+        title: 'Host',
+        dataIndex: 'host',
+        key: 'host',
+        render: (_, domain) => (
+          <div className="cell-stack">
+            <Link to={`/domains/${domain.id}`}>
+              <GlobalOutlined aria-hidden="true" /> {domain.host}
+            </Link>
+            <span className="muted mono">{domain.id}</span>
+          </div>
+        ),
+      },
+      {
+        title: 'Owner',
+        dataIndex: 'userId',
+        key: 'userId',
+        width: 140,
+        render: (userId: string) => userLabel(userId),
+      },
+      {
+        title: 'Status',
+        dataIndex: 'status',
+        key: 'status',
+        width: 110,
+        render: (value: string) => <StatusBadge value={value} />,
+      },
+      {
+        title: 'Entries',
+        key: 'entries',
+        width: 160,
+        render: (_, domain) => (
+          <span className="muted">
+            HTTP {domain.httpEntryCount} · HTTPS {domain.httpsEntryCount}
+          </span>
+        ),
+      },
+      { title: 'Proxies', dataIndex: 'proxyCount', key: 'proxyCount', width: 90, align: 'right' },
+      {
+        title: 'Certificate',
+        key: 'certificate',
+        width: 140,
+        render: (_, domain) =>
+          domain.certificateId ? (
+            <span className="mono muted">{domain.certificateId.slice(0, 12)}…</span>
+          ) : (
+            <span className="muted">Unbound</span>
+          ),
+      },
+      {
+        title: 'Updated',
+        dataIndex: 'updatedAt',
+        key: 'updatedAt',
+        width: 160,
+        render: (value: string) => <Timestamp value={value} />,
+      },
+      {
+        title: 'Actions',
+        key: 'actions',
+        fixed: 'right',
+        width: 120,
+        render: (_, domain) => (
+          <div className="inline-actions">
+            {domain.status === 'enabled' ? (
+              <ConfirmButton
+                label="Disable"
+                confirmLabel="Disable this domain? HTTPS/HTTP listeners for this host stop accepting traffic."
+                onConfirm={() => disableMutation.mutate(domain.id)}
+                tone="secondary"
+              />
+            ) : (
+              <Button size="small" onClick={() => enableMutation.mutate(domain.id)}>
+                Enable
+              </Button>
+            )}
+          </div>
+        ),
+      },
+    ],
+    [disableMutation, enableMutation, userLabel],
+  );
+
   return (
-    <section className="page-section">
+    <section className="page-section page-section--fill">
       <PageHeader
         title="Domains"
         description="Public host identities shared by HTTP and HTTPS. Create a domain first, then attach path proxies and certificates."
@@ -164,80 +248,13 @@ export function DomainsPage() {
         )
       ) : null}
 
-      {items.length > 0 ? (
-        <div className="table-wrap">
-          <table className="table">
-            <thead>
-              <tr>
-                <th>Host</th>
-                <th>Owner</th>
-                <th>Status</th>
-                <th>Entries</th>
-                <th>Proxies</th>
-                <th>Certificate</th>
-                <th>Updated</th>
-                <th>Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {items.map((domain: DomainRecord) => (
-                <tr key={domain.id}>
-                  <td>
-                    <div className="cell-stack">
-                      <Link to={`/domains/${domain.id}`}>
-                        <GlobalOutlined aria-hidden="true" /> {domain.host}
-                      </Link>
-                      <span className="muted mono">{domain.id}</span>
-                    </div>
-                  </td>
-                  <td>{userLabel(domain.userId)}</td>
-                  <td>
-                    <StatusBadge value={domain.status} />
-                  </td>
-                  <td>
-                    <span className="muted">
-                      HTTP {domain.httpEntryCount} · HTTPS {domain.httpsEntryCount}
-                    </span>
-                  </td>
-                  <td>{domain.proxyCount}</td>
-                  <td>
-                    {domain.certificateId ? (
-                      <span className="mono muted">{domain.certificateId.slice(0, 12)}…</span>
-                    ) : (
-                      <span className="muted">Unbound</span>
-                    )}
-                  </td>
-                  <td>
-                    <Timestamp value={domain.updatedAt} />
-                  </td>
-                  <td>
-                    <div className="inline-actions">
-                      {domain.status === 'enabled' ? (
-                        <ConfirmButton
-                          label="Disable"
-                          confirmLabel="Disable this domain? HTTPS/HTTP listeners for this host stop accepting traffic."
-                          onConfirm={() => disableMutation.mutate(domain.id)}
-                          tone="secondary"
-                        />
-                      ) : (
-                        <Button size="small" onClick={() => enableMutation.mutate(domain.id)}>
-                          Enable
-                        </Button>
-                      )}
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      ) : null}
-
-      {domainsQuery.data ? (
-        <Pagination
-          page={domainsQuery.data.pageInfo?.page ?? page}
-          totalPages={Math.max(1, domainsQuery.data.pageInfo?.totalPages ?? 1)}
-          onPageChange={setPage}
+      {items.length > 0 && domainsQuery.data ? (
+        <DataTable<DomainRecord>
+          rowKey="id"
+          columns={columns}
+          dataSource={items}
+          scroll={{ x: 1100 }}
+          pagination={pageTablePagination(domainsQuery.data.pageInfo, setPage, { itemLabel: 'domains' })}
         />
       ) : null}
 

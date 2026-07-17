@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { LinkOutlined, PlusOutlined, ReloadOutlined, ThunderboltOutlined } from '@ant-design/icons';
-import { Button, Switch } from 'antd';
+import { Button, Switch, type TableColumnsType } from 'antd';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { Dialog } from '../components/Dialog';
@@ -23,7 +23,7 @@ import {
 import { isApiError, type Client, type DomainRecord, type ProxyEntryHostOption, type ProxyRecord, type User } from '../lib/contracts';
 import { formatBytes } from '../lib/format';
 import { useSession } from '../session';
-import { PageHeader, Pagination, StatusBadge } from './shared';
+import { DataTable, PageHeader, StatusBadge, pageTablePagination } from './shared';
 
 export type ProxyFormDraft = {
   userId: string;
@@ -312,6 +312,82 @@ export function ProxiesPage() {
     setForm((current) => ({ ...current, userId, clientId: '', domainId: '' }));
   };
 
+  const columns = useMemo<TableColumnsType<ProxyRecord>>(
+    () => [
+      {
+        title: 'Name',
+        dataIndex: 'name',
+        key: 'name',
+        render: (name: string, proxy) => (
+          <Button type="link" icon={<LinkOutlined aria-hidden="true" />} onClick={() => navigate(`/proxies/${proxy.id}`)}>
+            {name}
+          </Button>
+        ),
+      },
+      { title: 'Type', dataIndex: 'type', key: 'type', width: 90 },
+      { title: 'User', dataIndex: 'userId', key: 'userId', ellipsis: true, width: 120 },
+      { title: 'Client', dataIndex: 'clientId', key: 'clientId', ellipsis: true, width: 120 },
+      {
+        title: 'Status',
+        dataIndex: 'status',
+        key: 'status',
+        width: 110,
+        render: (value: string) => <StatusBadge value={value} />,
+      },
+      {
+        title: 'Runtime',
+        dataIndex: 'runtimeStatus',
+        key: 'runtimeStatus',
+        width: 110,
+        render: (value: string) => <StatusBadge value={value} />,
+      },
+      {
+        title: 'Entry',
+        key: 'entry',
+        ellipsis: true,
+        render: (_, proxy) => proxyEntryLabel(proxy),
+      },
+      {
+        title: 'Target',
+        key: 'target',
+        width: 160,
+        render: (_, proxy) => `${proxy.config.targetHost ?? '-'}:${proxy.config.targetPort ?? '-'}`,
+      },
+      {
+        title: 'Upload',
+        dataIndex: 'uploadBytes',
+        key: 'uploadBytes',
+        width: 110,
+        render: (value: number) => formatBytes(value),
+      },
+      {
+        title: 'Download',
+        dataIndex: 'downloadBytes',
+        key: 'downloadBytes',
+        width: 110,
+        render: (value: number) => formatBytes(value),
+      },
+      {
+        title: 'Actions',
+        key: 'actions',
+        fixed: 'right',
+        width: 120,
+        render: (_, proxy) => (
+          <div className="inline-actions">
+            {proxy.status === 'disabled' ? (
+              <Button type="default" icon={<ThunderboltOutlined aria-hidden="true" />} onClick={() => enableMutation.mutate(proxy.id)}>
+                Enable
+              </Button>
+            ) : (
+              <ConfirmButton label="Disable" confirmLabel="Disable this proxy?" onConfirm={() => disableMutation.mutate(proxy.id)} tone="secondary" />
+            )}
+          </div>
+        ),
+      },
+    ],
+    [disableMutation, enableMutation, navigate],
+  );
+
   if (query.isLoading) {
     return <PageLoading label="Loading proxies..." />;
   }
@@ -327,7 +403,7 @@ export function ProxiesPage() {
   const hasFilter = Boolean(filter.query || filter.userId || filter.clientId || filter.type || filter.status);
 
   return (
-    <section className="page-section">
+    <section className="page-section page-section--fill">
       <PageHeader
         title="Proxies"
         description="TCP/UDP listeners and web path proxies. Prefer creating web paths from a Domain so host, TLS, and paths stay consistent."
@@ -373,55 +449,13 @@ export function ProxiesPage() {
           <EmptyState title="No proxies" message="Create the first proxy to expose managed traffic." />
         )
       ) : (
-        <>
-          <div className="table-wrap">
-            <table className="table">
-              <thead>
-                <tr>
-                  <th>Name</th>
-                  <th>Type</th>
-                  <th>User</th>
-                  <th>Client</th>
-                  <th>Status</th>
-                  <th>Runtime</th>
-                  <th>Entry</th>
-                  <th>Target</th>
-                  <th>Upload</th>
-                  <th>Download</th>
-                  <th>Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {data.items.map((proxy) => (
-                  <tr key={proxy.id}>
-                    <td><Button type="link" icon={<LinkOutlined aria-hidden="true" />} onClick={() => navigate(`/proxies/${proxy.id}`)}>{proxy.name}</Button></td>
-                    <td>{proxy.type}</td>
-                    <td>{proxy.userId}</td>
-                    <td>{proxy.clientId}</td>
-                    <td><StatusBadge value={proxy.status} /></td>
-                    <td><StatusBadge value={proxy.runtimeStatus} /></td>
-                    <td>{proxyEntryLabel(proxy)}</td>
-                    <td>{proxy.config.targetHost ?? '-'}:{proxy.config.targetPort ?? '-'}</td>
-                    <td>{formatBytes(proxy.uploadBytes)}</td>
-                    <td>{formatBytes(proxy.downloadBytes)}</td>
-                    <td>
-                      <div className="inline-actions">
-                        {proxy.status === 'disabled' ? (
-                          <Button type="default" icon={<ThunderboltOutlined aria-hidden="true" />} onClick={() => enableMutation.mutate(proxy.id)}>
-                            Enable
-                          </Button>
-                        ) : (
-                          <ConfirmButton label="Disable" confirmLabel="Disable this proxy?" onConfirm={() => disableMutation.mutate(proxy.id)} tone="secondary" />
-                        )}
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          <Pagination page={data.pageInfo.page} totalPages={data.pageInfo.totalPages} onPageChange={setPage} />
-        </>
+        <DataTable<ProxyRecord>
+          rowKey="id"
+          columns={columns}
+          dataSource={data.items}
+          scroll={{ x: 1300 }}
+          pagination={pageTablePagination(data.pageInfo, setPage, { itemLabel: 'proxies' })}
+        />
       )}
 
       <Dialog

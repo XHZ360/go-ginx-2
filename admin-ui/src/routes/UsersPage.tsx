@@ -1,6 +1,6 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { PlusOutlined, ReloadOutlined } from '@ant-design/icons';
-import { Button } from 'antd';
+import { Button, type TableColumnsType } from 'antd';
 import { useNavigate } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { Dialog } from '../components/Dialog';
@@ -8,11 +8,11 @@ import { TextField, SelectField } from '../components/FormField';
 import { useAuthedQuery } from '../hooks/useAuthedQuery';
 import { useMutationWithAuth } from '../hooks/useMutationWithAuth';
 import { mutateCreateUser, queryUsers, type UserFilter } from '../lib/admin-graphql';
-import { isApiError } from '../lib/contracts';
+import { isApiError, type User } from '../lib/contracts';
 import { formatBytes } from '../lib/format';
 import { EmptyState, ErrorState, FilteredEmptyState, PageLoading, ValidationBanner } from '../components/PageStates';
 import { useSession } from '../session';
-import { PageHeader, Pagination, StatusBadge, Timestamp } from './shared';
+import { DataTable, PageHeader, StatusBadge, Timestamp, pageTablePagination } from './shared';
 
 const defaultFilter: UserFilter = { query: '', role: '', status: '' };
 
@@ -49,6 +49,69 @@ export function UsersPage() {
     },
   });
 
+  const columns = useMemo<TableColumnsType<User>>(
+    () => [
+      { title: 'ID', dataIndex: 'id', key: 'id', ellipsis: true, width: 120 },
+      { title: 'Username', dataIndex: 'username', key: 'username', ellipsis: true },
+      { title: 'Role', dataIndex: 'role', key: 'role', width: 100 },
+      {
+        title: 'Status',
+        dataIndex: 'status',
+        key: 'status',
+        width: 120,
+        render: (value: string) => <StatusBadge value={value} />,
+      },
+      { title: 'Clients', dataIndex: 'clientCount', key: 'clientCount', width: 90, align: 'right' },
+      { title: 'Proxies', dataIndex: 'proxyCount', key: 'proxyCount', width: 90, align: 'right' },
+      {
+        title: 'Upload',
+        dataIndex: 'uploadBytes',
+        key: 'uploadBytes',
+        width: 110,
+        render: (value: number) => formatBytes(value),
+      },
+      {
+        title: 'Download',
+        dataIndex: 'downloadBytes',
+        key: 'downloadBytes',
+        width: 110,
+        render: (value: number) => formatBytes(value),
+      },
+      {
+        title: 'Last activity',
+        dataIndex: 'lastActivityAt',
+        key: 'lastActivityAt',
+        width: 160,
+        render: (value: string | null | undefined) => <Timestamp value={value} />,
+      },
+      {
+        title: 'Updated',
+        dataIndex: 'updatedAt',
+        key: 'updatedAt',
+        width: 160,
+        render: (value: string | null | undefined) => <Timestamp value={value} />,
+      },
+      {
+        title: 'Actions',
+        key: 'actions',
+        fixed: 'right',
+        width: 100,
+        render: (_, user) => (
+          <Button
+            type="link"
+            onClick={(event) => {
+              event.stopPropagation();
+              navigate(`/clients?userId=${encodeURIComponent(user.id)}`);
+            }}
+          >
+            Clients
+          </Button>
+        ),
+      },
+    ],
+    [navigate],
+  );
+
   if (query.isLoading) {
     return <PageLoading label="Loading users..." />;
   }
@@ -60,11 +123,10 @@ export function UsersPage() {
   }
 
   const data = query.data;
-
   const hasFilter = Boolean(filter.query || filter.role || filter.status);
 
   return (
-    <section className="page-section">
+    <section className="page-section page-section--fill">
       <PageHeader
         title="Users"
         description="Manage administrator-visible user accounts."
@@ -101,55 +163,17 @@ export function UsersPage() {
           <EmptyState title="No users" message="Create the first user to start assigning clients and proxies." />
         )
       ) : (
-        <>
-          <div className="table-wrap">
-            <table className="table">
-              <thead>
-                <tr>
-                  <th>ID</th>
-                  <th>Username</th>
-                  <th>Role</th>
-                  <th>Status</th>
-                  <th>Clients</th>
-                  <th>Proxies</th>
-                  <th>Upload</th>
-                  <th>Download</th>
-                  <th>Last activity</th>
-                  <th>Updated</th>
-                  <th>Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {data.items.map((user) => (
-                  <tr key={user.id} className="table-row-link" onClick={() => navigate(`/users/${user.id}`)}>
-                    <td>{user.id}</td>
-                    <td>{user.username}</td>
-                    <td>{user.role}</td>
-                    <td><StatusBadge value={user.status} /></td>
-                    <td>{user.clientCount}</td>
-                    <td>{user.proxyCount}</td>
-                    <td>{formatBytes(user.uploadBytes)}</td>
-                    <td>{formatBytes(user.downloadBytes)}</td>
-                    <td><Timestamp value={user.lastActivityAt} /></td>
-                    <td><Timestamp value={user.updatedAt} /></td>
-                    <td>
-                      <Button
-                        type="link"
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          navigate(`/clients?userId=${encodeURIComponent(user.id)}`);
-                        }}
-                      >
-                        Clients
-                      </Button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          <Pagination page={data.pageInfo.page} totalPages={data.pageInfo.totalPages} onPageChange={setPage} />
-        </>
+        <DataTable<User>
+          rowKey="id"
+          columns={columns}
+          dataSource={data.items}
+          scroll={{ x: 1100 }}
+          pagination={pageTablePagination(data.pageInfo, setPage, { itemLabel: 'users' })}
+          onRow={(user) => ({
+            onClick: () => navigate(`/users/${user.id}`),
+            className: 'table-row-link',
+          })}
+        />
       )}
 
       <Dialog

@@ -1,9 +1,8 @@
-import { type FormEvent, type ReactElement, useEffect, useMemo, useState } from 'react';
-import { CloudUploadOutlined, PlusOutlined, ReloadOutlined, SyncOutlined } from '@ant-design/icons';
-import { Button, Tooltip } from 'antd';
+import { type FormEvent, useEffect, useMemo, useState } from 'react';
+import { PlusOutlined, ReloadOutlined } from '@ant-design/icons';
+import { Button, Collapse } from 'antd';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
-import { ConfirmButton } from '../components/ConfirmButton';
 import { CertificateCreateDialog } from '../components/CertificateCreateDialog';
 import { CertificateDeleteDialog } from '../components/CertificateDeleteDialog';
 import { EmptyState, ErrorState, FilteredEmptyState, PageLoading } from '../components/PageStates';
@@ -23,7 +22,7 @@ import {
   mutateUpdateProviderCredential,
   mutateVerifyProviderCredential,
   queryCertificates,
-	queryCertificateProviderReadiness,
+  queryCertificateProviderReadiness,
   queryProviderCredentials,
   type CertificateMutationInput,
   type CertificateFilter,
@@ -31,7 +30,7 @@ import {
   type DeleteCertificateInput,
   type ProviderCredentialInput,
 } from '../lib/admin-graphql';
-import { isApiError, type CertificateProviderReadiness, type ManagedCertificate, type ProviderCredential } from '../lib/contracts';
+import { isApiError, type ManagedCertificate, type ProviderCredential } from '../lib/contracts';
 import { formatTitle } from '../lib/format';
 import {
   appendCreatedCertificate,
@@ -42,29 +41,19 @@ import {
   RETURN_TO_PARAM,
 } from '../lib/proxy-draft';
 import { useSession } from '../session';
-import { PageHeader, Pagination, StatusBadge, Timestamp } from './shared';
-
-const defaultFilter: CertificateFilter = { query: '', status: '' };
-const defaultCredentialForm: ProviderCredentialInput = { id: '', name: '', scope: '', token: '' };
-
-// 客户端附加的状态维度筛选（后端单一 status 过滤器只覆盖 serving 维度，这里把各维度拆开，避免歧义）。
-type DimensionFilters = {
-  operation: string;
-  provider: string;
-  providerType: string;
-};
-
-const defaultDimensionFilters: DimensionFilters = { operation: '', provider: '', providerType: '' };
-
-const ORIGIN_PROVIDER = 'cloudflare_origin_ca';
-const FILE_PROVIDER = 'file';
-
-function certificateMutationInput(certificate: ManagedCertificate): CertificateMutationInput {
-  return {
-    proxyId: certificate.boundProxyId || certificate.proxyId || undefined,
-    certificateId: certificate.certificateId || undefined,
-  };
-}
+import { PageHeader } from './shared';
+import {
+  defaultCredentialForm,
+  defaultDimensionFilters,
+  defaultFilter,
+  ORIGIN_PROVIDER,
+  type DimensionFilters,
+} from './certificates/constants';
+import { certificateMutationInput } from './certificates/helpers';
+import { CertificateFiltersBar } from './certificates/CertificateFiltersBar';
+import { CertificateTable } from './certificates/CertificateTable';
+import { CredentialsPanel } from './certificates/CredentialsPanel';
+import { ProviderReadinessSection } from './certificates/ProviderReadinessSection';
 
 export function CertificatesPage() {
   const session = useSession();
@@ -77,17 +66,12 @@ export function CertificatesPage() {
   const [credentialForm, setCredentialForm] = useState<ProviderCredentialInput>(defaultCredentialForm);
   const [editingCredentialId, setEditingCredentialId] = useState('');
   const [selectedCredentialId, setSelectedCredentialId] = useState('');
-
-  // 创建证书对话框状态。
   const [showCreate, setShowCreate] = useState(false);
   const [createError, setCreateError] = useState<string>();
   const [createFieldErrors, setCreateFieldErrors] = useState<Record<string, string>>();
-
-  // 删除证书状态：低风险直接删除；高风险（或后端要求确认）走强确认对话框。
   const [deleteTarget, setDeleteTarget] = useState<ManagedCertificate | null>(null);
   const [deleteError, setDeleteError] = useState<string>();
 
-  // 从 proxy 表单跳转过来的导航上下文。
   const createParam = searchParams.get(CREATE_PARAM);
   const returnTo = searchParams.get(RETURN_TO_PARAM) ?? '';
   const draftId = searchParams.get(DRAFT_ID_PARAM) ?? '';
@@ -95,7 +79,6 @@ export function CertificatesPage() {
   const providerHint = searchParams.get(PROVIDER_HINT_PARAM) ?? '';
   const returnToProxy = Boolean(returnTo && draftId);
 
-  // 挂载/参数变化时：?create=1 自动打开创建对话框并预填。
   useEffect(() => {
     if (createParam === '1') {
       setShowCreate(true);
@@ -104,22 +87,21 @@ export function CertificatesPage() {
     }
   }, [createParam]);
 
+  const pollMs = session.pollIntervalSeconds * 1000;
   const query = useAuthedQuery({
     queryKey: ['certificates', page, filter],
     queryFn: () => queryCertificates({ page: { page, pageSize: 10 }, sort: { field: 'host', direction: 'asc' }, filter }),
-    refetchInterval: session.pollIntervalSeconds * 3000,
+    refetchInterval: pollMs,
   });
-
   const credentialsQuery = useAuthedQuery({
     queryKey: ['providerCredentials'],
     queryFn: () => queryProviderCredentials({ page: { page: 1, pageSize: 100 } }),
-    refetchInterval: session.pollIntervalSeconds * 3000,
+    refetchInterval: pollMs,
   });
-
   const readinessQuery = useAuthedQuery({
     queryKey: ['certificateProviderReadiness'],
     queryFn: queryCertificateProviderReadiness,
-    refetchInterval: session.pollIntervalSeconds * 3000,
+    refetchInterval: pollMs,
   });
 
   const credentials = credentialsQuery.data?.items ?? [];
@@ -128,13 +110,12 @@ export function CertificatesPage() {
   const invalidateCertificateViews = async (proxyId?: string) => {
     await queryClient.invalidateQueries({ queryKey: ['certificates'] });
     await queryClient.invalidateQueries({ queryKey: ['providerCredentials'] });
-		await queryClient.invalidateQueries({ queryKey: ['certificateProviderReadiness'] });
+    await queryClient.invalidateQueries({ queryKey: ['certificateProviderReadiness'] });
     if (proxyId) {
       await queryClient.invalidateQueries({ queryKey: ['proxy', proxyId] });
     }
   };
 
-  // 删除可能影响多个代理，逐一失效其详情视图。
   const invalidateAffectedProxies = async (proxyIds: string[]) => {
     await queryClient.invalidateQueries({ queryKey: ['certificates'] });
     await queryClient.invalidateQueries({ queryKey: ['proxies'] });
@@ -145,7 +126,6 @@ export function CertificatesPage() {
     }
   };
 
-  // 清理创建相关的 query param（关闭对话框时调用）。
   const clearCreateParams = () => {
     setSearchParams(
       (current) => {
@@ -217,7 +197,6 @@ export function CertificatesPage() {
     onSuccess: async (result) => {
       const createdId = result.createCertificate?.certificate?.certificateId ?? '';
       await invalidateCertificateViews();
-      // 来自 proxy 表单：携带新证书 ID 返回，选中后继续编辑代理。
       if (returnToProxy && createdId) {
         const target = appendCreatedCertificate(returnTo, draftId, createdId);
         setShowCreate(false);
@@ -246,12 +225,10 @@ export function CertificatesPage() {
       setDeleteTarget(null);
       setDeleteError(undefined);
       if (affected.length > 0) {
-        // 提示受影响代理（已被标记为 needs-config）。
         window.alert(`证书已删除。受影响的代理：${affected.join(', ')}（已标记为需要重新配置）。`);
       }
     },
     onError: (error, variables) => {
-      // 防御：原以为低风险，但后端要求强确认 → 切换到强确认对话框。
       if (isApiError(error) && error.code === 'CONFIRMATION_REQUIRED') {
         const target = certificatesById.get(variables.certificateId) ?? deleteTarget;
         if (target) {
@@ -298,8 +275,6 @@ export function CertificatesPage() {
   });
 
   const allItems = query.data?.items ?? [];
-
-  // 按证书 ID 建索引，供删除错误回退时定位目标。
   const certificatesById = useMemo(() => {
     const map = new Map<string, ManagedCertificate>();
     for (const item of allItems) {
@@ -310,7 +285,6 @@ export function CertificatesPage() {
     return map;
   }, [allItems]);
 
-  // 客户端按维度筛选（serving 由后端 filter.status 负责）。
   const visibleItems = useMemo(() => {
     return allItems.filter((item) => {
       if (dimensionFilters.operation && (item.operationStatus ?? '') !== dimensionFilters.operation) {
@@ -364,7 +338,12 @@ export function CertificatesPage() {
 
   const submitCredential = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    const input = { ...credentialForm, name: credentialForm.name ?? '', scope: credentialForm.scope ?? '', token: credentialForm.token ?? '' };
+    const input = {
+      ...credentialForm,
+      name: credentialForm.name ?? '',
+      scope: credentialForm.scope ?? '',
+      token: credentialForm.token ?? '',
+    };
     if (editingCredentialId) {
       updateCredentialMutation.mutate({ ...input, id: editingCredentialId });
       return;
@@ -372,7 +351,6 @@ export function CertificatesPage() {
     createCredentialMutation.mutate(input);
   };
 
-  // 删除分流：低风险直接删；高风险打开强确认对话框。
   const requestDelete = (certificate: ManagedCertificate) => {
     setDeleteError(undefined);
     if (certificate.deletionRisk === 'requires_strong_confirmation') {
@@ -382,11 +360,21 @@ export function CertificatesPage() {
     deleteCertificateMutation.mutate({ certificateId: certificate.certificateId ?? '' });
   };
 
+  const editCredential = (credential: ProviderCredential) => {
+    setEditingCredentialId(credential.id);
+    setCredentialForm({
+      id: credential.id,
+      name: credential.name,
+      scope: credential.scope ?? '',
+      token: '',
+    });
+  };
+
   return (
-    <section className="page-section">
+    <section className="page-section page-section--fill certificates-page">
       <PageHeader
         title="Certificates"
-        description="Managed certificate status for HTTPS proxies."
+        description="Create certificates, manage Cloudflare credentials, and run lifecycle actions for HTTPS domains."
         actions={
           <>
             <Button type="default" icon={<ReloadOutlined aria-hidden="true" />} onClick={() => query.refetch()}>
@@ -407,187 +395,99 @@ export function CertificatesPage() {
         }
       />
 
-      <section className="page-section__band">
-        <div className="section-heading"><h2>提供方运行条件</h2></div>
-        {readinessQuery.error ? <div className="banner banner--danger">无法检查服务端就绪状态；创建请求仍由服务端校验。</div> : null}
-        {readinessQuery.data?.map((readiness) => <ProviderReadinessPanel key={readiness.providerType} readiness={readiness} />)}
-      </section>
+      <Collapse
+        className="certificate-setup"
+        defaultActiveKey={['readiness', 'credentials']}
+        items={[
+          {
+            key: 'readiness',
+            label: 'Provider readiness',
+            children: (
+              <ProviderReadinessSection
+                items={readinessQuery.data ?? []}
+                error={readinessQuery.error instanceof Error ? readinessQuery.error : null}
+              />
+            ),
+          },
+          {
+            key: 'credentials',
+            label: 'Cloudflare Credentials',
+            children: (
+              <CredentialsPanel
+                credentials={credentials}
+                form={credentialForm}
+                editingId={editingCredentialId}
+                loading={credentialsQuery.isLoading}
+                error={credentialsQuery.error instanceof Error ? credentialsQuery.error : null}
+                pending={createCredentialMutation.isPending || updateCredentialMutation.isPending}
+                onFormChange={setCredentialForm}
+                onSubmit={submitCredential}
+                onCancelEdit={() => {
+                  setCredentialForm(defaultCredentialForm);
+                  setEditingCredentialId('');
+                }}
+                onEdit={editCredential}
+                onVerify={(id) => verifyCredentialMutation.mutate(id)}
+                onDisable={(id) => disableCredentialMutation.mutate(id)}
+                onDelete={(id) => deleteCredentialMutation.mutate(id)}
+              />
+            ),
+          },
+        ]}
+      />
 
-      <section className="page-section__band">
-        <div className="section-heading">
-          <h2>Cloudflare Credentials</h2>
-        </div>
-        <form className="toolbar-grid" onSubmit={submitCredential}>
-          <label className="field">
-            <span className="field__label">Name</span>
-            <input className="input" value={credentialForm.name ?? ''} onChange={(event) => setCredentialForm((current) => ({ ...current, name: event.target.value }))} />
-          </label>
-          <label className="field">
-            <span className="field__label">Scope</span>
-            <input className="input" value={credentialForm.scope ?? ''} onChange={(event) => setCredentialForm((current) => ({ ...current, scope: event.target.value }))} />
-          </label>
-          <label className="field">
-            <span className="field__label">API token</span>
-            <input className="input" type="password" value={credentialForm.token ?? ''} onChange={(event) => setCredentialForm((current) => ({ ...current, token: event.target.value }))} />
-          </label>
-          <div className="field field--actions">
-            <Button htmlType="submit" type="primary" icon={<CloudUploadOutlined aria-hidden="true" />} loading={createCredentialMutation.isPending || updateCredentialMutation.isPending}>
-              {editingCredentialId ? 'Update' : 'Create'}
-            </Button>
-            {editingCredentialId ? (
-              <Button type="default" onClick={() => { setCredentialForm(defaultCredentialForm); setEditingCredentialId(''); }}>
-                Cancel
-              </Button>
-            ) : null}
-          </div>
-        </form>
-
-        {credentialsQuery.error ? <div className="banner banner--danger">{formatTitle(credentialsQuery.error.message)}</div> : null}
-        {credentials.length > 0 ? (
-          <div className="table-wrap">
-            <table className="table">
-              <thead>
-                <tr>
-                  <th>Name</th>
-                  <th>Status</th>
-                  <th>Scope</th>
-                  <th>Fingerprint</th>
-                  <th>Verified</th>
-                  <th>Last error</th>
-                  <th>Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {credentials.map((credential) => (
-                  <CredentialRow
-                    key={credential.id}
-                    credential={credential}
-                    onEdit={() => {
-                      setEditingCredentialId(credential.id);
-                      setCredentialForm({ id: credential.id, name: credential.name, scope: credential.scope ?? '', token: '' });
-                    }}
-                    onVerify={() => verifyCredentialMutation.mutate(credential.id)}
-                    onDisable={() => disableCredentialMutation.mutate(credential.id)}
-                    onDelete={() => deleteCredentialMutation.mutate(credential.id)}
-                  />
-                ))}
-              </tbody>
-            </table>
-          </div>
-        ) : null}
-      </section>
-
-      <div className="toolbar-grid">
-        <label className="field">
-          <span className="field__label">Search</span>
-          <input className="input" value={filter.query ?? ''} onChange={(event) => setFilter((current) => ({ ...current, query: event.target.value }))} />
-        </label>
-        <label className="field">
-          <span className="field__label">Status</span>
-          <select className="input" value={filter.status ?? ''} onChange={(event) => setFilter((current) => ({ ...current, status: event.target.value }))}>
-            <option value="">All</option>
-            <option value="usable">Usable</option>
-            <option value="expiring_soon">Expiring soon</option>
-            <option value="expired">Expired</option>
-            <option value="missing">Missing</option>
-            <option value="invalid">Invalid</option>
-          </select>
-        </label>
-        <label className="field">
-          <span className="field__label">Operation status</span>
-          <select className="input" value={dimensionFilters.operation} onChange={(event) => setDimensionFilters((current) => ({ ...current, operation: event.target.value }))}>
-            <option value="">All</option>
-            <option value="idle">Idle</option>
-            <option value="pending">Pending</option>
-            <option value="issue_failed">Issue failed</option>
-            <option value="renewal_failed">Renewal failed</option>
-          </select>
-        </label>
-        <label className="field">
-          <span className="field__label">Provider status</span>
-          <select className="input" value={dimensionFilters.provider} onChange={(event) => setDimensionFilters((current) => ({ ...current, provider: event.target.value }))}>
-            <option value="">All</option>
-            <option value="active">Active</option>
-            <option value="revoked">Revoked</option>
-            <option value="missing_remote">Remote missing</option>
-            <option value="unknown">Unknown</option>
-          </select>
-        </label>
-        <label className="field">
-          <span className="field__label">Provider type</span>
-          <select className="input" value={dimensionFilters.providerType} onChange={(event) => setDimensionFilters((current) => ({ ...current, providerType: event.target.value }))}>
-            <option value="">All</option>
-            <option value="acme_dns01">ACME DNS-01</option>
-            <option value={ORIGIN_PROVIDER}>Cloudflare Origin CA</option>
-            <option value={FILE_PROVIDER}>File-backed</option>
-          </select>
-        </label>
-        <label className="field">
-          <span className="field__label">Origin credential</span>
-          <select className="input" value={selectedCredentialId} onChange={(event) => setSelectedCredentialId(event.target.value)}>
-            <option value="">Default</option>
-            {credentials.map((credential) => (
-              <option key={credential.id} value={credential.id} disabled={credential.status === 'disabled'}>{credential.name}</option>
-            ))}
-          </select>
-        </label>
-      </div>
-
-      {visibleItems.length === 0 ? (
-        hasFilter ? <FilteredEmptyState onClear={clearAllFilters} /> : <EmptyState title="No certificates" message="HTTPS proxies will appear here for lifecycle actions." />
-      ) : (
-        <>
-          <div className="table-wrap">
-            <table className="table">
-              <thead>
-                <tr>
-                  <th>Certificate</th>
-                  <th>Provider</th>
-                  <th>Hostnames</th>
-                  <th>Bound domain</th>
-                  <th>Use</th>
-                  <th>Serving</th>
-                  <th>Operation</th>
-                  <th>Provider status</th>
-                  <th>Expires</th>
-                  <th>Last sync</th>
-                  <th>Failures</th>
-                  <th>Fingerprint</th>
-                  <th>Last error</th>
-                  <th>Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {visibleItems.map((certificate) => (
-                  <CertificateRow
-                    key={certificate.certificateId || certificate.proxyId}
-                    certificate={certificate}
-                    canIssueOrigin={hasEnabledCredential}
-                    issueACME={() => issueMutation.mutate(certificateMutationInput(certificate))}
-                    issueOrigin={() => issueOriginMutation.mutate({ ...certificateMutationInput(certificate), credentialId: selectedCredentialId || undefined })}
-                    renew={() => renewMutation.mutate(certificateMutationInput(certificate))}
-                    rotate={() => rotateOriginMutation.mutate(certificateMutationInput(certificate))}
-                    sync={() => syncOriginMutation.mutate(certificateMutationInput(certificate))}
-                    revoke={() => revokeOriginMutation.mutate(certificate)}
-                    onDelete={() => requestDelete(certificate)}
-                  />
-                ))}
-              </tbody>
-            </table>
-          </div>
-          <Pagination page={data.pageInfo.page} totalPages={data.pageInfo.totalPages} onPageChange={setPage} />
-        </>
-      )}
+      <CertificateFiltersBar
+        filter={filter}
+        dimensionFilters={dimensionFilters}
+        credentials={credentials}
+        selectedCredentialId={selectedCredentialId}
+        onFilterChange={(next) => {
+          setPage(1);
+          setFilter(next);
+        }}
+        onDimensionChange={(next) => {
+          setPage(1);
+          setDimensionFilters(next);
+        }}
+        onCredentialChange={setSelectedCredentialId}
+      />
 
       {actionError ? <div className="banner banner--danger">{formatTitle(actionError.message)}</div> : null}
       {deleteError && !deleteTarget ? <div className="banner banner--danger">{formatTitle(deleteError)}</div> : null}
+
+      {visibleItems.length === 0 ? (
+        hasFilter ? (
+          <FilteredEmptyState onClear={clearAllFilters} />
+        ) : (
+          <EmptyState title="No certificates" message="Create a certificate or issue one for an HTTPS domain." />
+        )
+      ) : (
+        <CertificateTable
+          items={visibleItems}
+          pageInfo={data.pageInfo}
+          canIssueOrigin={hasEnabledCredential}
+          onPageChange={setPage}
+          onIssueACME={(certificate) => issueMutation.mutate(certificateMutationInput(certificate))}
+          onIssueOrigin={(certificate) =>
+            issueOriginMutation.mutate({
+              ...certificateMutationInput(certificate),
+              credentialId: selectedCredentialId || undefined,
+            })
+          }
+          onRenew={(certificate) => renewMutation.mutate(certificateMutationInput(certificate))}
+          onRotate={(certificate) => rotateOriginMutation.mutate(certificateMutationInput(certificate))}
+          onSync={(certificate) => syncOriginMutation.mutate(certificateMutationInput(certificate))}
+          onRevoke={(certificate) => revokeOriginMutation.mutate(certificate)}
+          onDelete={requestDelete}
+        />
+      )}
 
       <CertificateCreateDialog
         open={showCreate}
         hostHint={hostHint}
         providerHint={providerHint}
         credentials={credentials}
-		providerReadiness={readinessQuery.data ?? []}
+        providerReadiness={readinessQuery.data ?? []}
         pending={createCertificateMutation.isPending}
         errorMessage={createError}
         fieldErrors={createFieldErrors}
@@ -609,206 +509,4 @@ export function CertificatesPage() {
       />
     </section>
   );
-}
-
-function ProviderReadinessPanel({ readiness }: { readiness: CertificateProviderReadiness }) {
-  const copyDiagnostic = () => {
-    const diagnostic = `provider=${readiness.providerType}\nready=${readiness.ready}\nmissingRequirements=${readiness.missingRequirements.join(',')}\nguidance=${readiness.guidance ?? ''}`;
-    void navigator.clipboard?.writeText(diagnostic);
-  };
-  return (
-    <div className={readiness.ready ? 'banner banner--success' : 'banner banner--danger'}>
-      <strong>{readiness.providerType === ORIGIN_PROVIDER ? 'Cloudflare Origin CA' : 'ACME DNS-01'}：</strong>
-      {readiness.ready ? '已就绪' : `缺少 ${readiness.missingRequirements.join('、')}`}
-      {readiness.tokenEnvName ? `；环境变量 ${readiness.tokenEnvName}` : ''}
-      {readiness.guidance ? <div>{readiness.guidance}</div> : null}
-      {!readiness.ready ? <Button type="link" onClick={copyDiagnostic}>复制诊断信息</Button> : null}
-    </div>
-  );
-}
-
-function CredentialRow({
-  credential,
-  onEdit,
-  onVerify,
-  onDisable,
-  onDelete,
-}: {
-  credential: ProviderCredential;
-  onEdit: () => void;
-  onVerify: () => void;
-  onDisable: () => void;
-  onDelete: () => void;
-}) {
-  return (
-    <tr>
-      <td>{credential.name}</td>
-      <td><StatusBadge value={credential.status} /></td>
-      <td>{credential.scope || 'Default'}</td>
-      <td>{formatFingerprint(credential.tokenFingerprint)}</td>
-      <td><Timestamp value={credential.lastVerifiedAt} /></td>
-      <td>{credential.lastError || 'None'}</td>
-      <td>
-        <div className="inline-actions">
-          <Button type="default" onClick={onEdit}>Edit</Button>
-          <Button type="default" icon={<SyncOutlined aria-hidden="true" />} onClick={onVerify} disabled={credential.status === 'disabled'}>Verify</Button>
-          <ConfirmButton label="Disable" confirmLabel={`Disable ${credential.name}?`} onConfirm={onDisable} tone="secondary" disabled={credential.status === 'disabled'} />
-          <ConfirmButton label="Delete" confirmLabel={`Delete ${credential.name}?`} onConfirm={onDelete} />
-        </div>
-      </td>
-    </tr>
-  );
-}
-
-// DisabledHint：动作不可用时给出可理解的原因（tooltip 包裹）。
-function ActionGate({ reason, children }: { reason?: string; children: ReactElement }) {
-  if (!reason) {
-    return children;
-  }
-  return <Tooltip title={reason}>{children}</Tooltip>;
-}
-
-function CertificateRow({
-  certificate,
-  canIssueOrigin,
-  issueACME,
-  issueOrigin,
-  renew,
-  rotate,
-  sync,
-  revoke,
-  onDelete,
-}: {
-  certificate: ManagedCertificate;
-  canIssueOrigin: boolean;
-  issueACME: () => void;
-  issueOrigin: () => void;
-  renew: () => void;
-  rotate: () => void;
-  sync: () => void;
-  revoke: () => void;
-  onDelete: () => void;
-}) {
-  const providerType = certificate.providerType || 'acme_dns01';
-  const isOrigin = providerType === ORIGIN_PROVIDER;
-  const isFile = providerType === FILE_PROVIDER;
-  const isAcme = !isOrigin && !isFile;
-  const hasRemoteID = Boolean(certificate.cloudflareCertificateId);
-  const hostLabel = certificate.host ?? certificate.proxyId;
-  const hostnames = certificate.hostnames ?? [];
-  const boundProxyId = certificate.boundProxyId ?? '';
-  const boundDomainId = (certificate as { boundDomainId?: string }).boundDomainId ?? '';
-  const referenced = Boolean(certificate.referenced);
-  const strongDelete = certificate.deletionRisk === 'requires_strong_confirmation';
-
-  // 动作可用性原因（用于禁用 tooltip）。
-  const originActionReason = isFile
-    ? '文件登记证书不支持签发/轮换/同步/吊销操作。'
-    : isAcme
-      ? '该操作仅适用于 Cloudflare Origin CA 证书。'
-      : undefined;
-  const acmeActionReason = isFile
-    ? '文件登记证书不支持签发/续期操作。'
-    : isOrigin
-      ? '该操作仅适用于 ACME 证书。'
-      : undefined;
-  const revokeReason = !hasRemoteID ? '缺少 Cloudflare 证书 ID，无法吊销。' : undefined;
-  const issueOriginReason = !canIssueOrigin ? '没有可用的 Origin CA 凭据。' : undefined;
-
-  return (
-    <tr>
-      <td>
-        <div className="cell-stack">
-          <span>{certificate.certificateId || 'N/A'}</span>
-          <span className="muted-text">{hostLabel}</span>
-        </div>
-      </td>
-      <td>
-        <div className="cell-stack">
-          <span>{formatTitle(providerType)}</span>
-          {certificate.providerName ? <span className="muted-text">{certificate.providerName}</span> : null}
-          {certificate.credentialId ? <span className="muted-text">{certificate.credentialId}</span> : null}
-          {certificate.cloudflareCertificateId ? <span className="muted-text">{formatFingerprint(certificate.cloudflareCertificateId)}</span> : null}
-          {isOrigin && (certificate.deploymentHints?.length ?? 0) > 0 ? (
-            <span className="muted-text" title={certificate.deploymentHints?.join('\n')}>
-              {certificate.deploymentHints?.[0]}
-            </span>
-          ) : null}
-        </div>
-      </td>
-      <td>
-        <div className="cell-stack">
-          {hostnames.length > 0 ? hostnames.map((name) => <span key={name}>{name}</span>) : <span className="muted-text">{certificate.host ?? 'N/A'}</span>}
-        </div>
-      </td>
-      <td>
-        {boundDomainId ? (
-          <span className="mono">{boundDomainId}</span>
-        ) : boundProxyId ? (
-          <span className="mono muted-text" title="legacy proxy binding">{boundProxyId}</span>
-        ) : (
-          <span className="muted-text">未绑定</span>
-        )}
-      </td>
-      <td><StatusBadge value={referenced ? 'active' : 'idle'} /></td>
-      <td><StatusBadge value={certificate.servingStatus ?? certificate.status ?? 'unknown'} /></td>
-      <td><StatusBadge value={certificate.operationStatus ?? 'unknown'} /></td>
-      <td><StatusBadge value={certificate.providerStatus ?? 'unknown'} /></td>
-      <td><Timestamp value={certificate.notAfter} /></td>
-      <td><Timestamp value={certificate.lastSyncedAt} /></td>
-      <td>{certificate.failureCount ?? 0}</td>
-      <td>{formatFingerprint(certificate.fingerprint)}</td>
-      <td>{certificate.lastError || 'None'}</td>
-      <td>
-        <div className="inline-actions">
-          {isOrigin ? (
-            <>
-              <ConfirmButton label="Rotate" confirmLabel={`Rotate ${hostLabel}?`} onConfirm={rotate} tone="secondary" />
-              <Button type="default" icon={<SyncOutlined aria-hidden="true" />} onClick={sync}>Sync</Button>
-              <ActionGate reason={revokeReason}>
-                <ConfirmButton label="Revoke" confirmLabel={`Revoke active Origin CA certificate ${certificate.cloudflareCertificateId ?? certificate.proxyId}? Cloudflare to origin TLS will stop until a replacement is issued.`} onConfirm={revoke} disabled={!hasRemoteID} />
-              </ActionGate>
-            </>
-          ) : null}
-
-          {isAcme ? (
-            <>
-              <ConfirmButton label="Issue" confirmLabel={`Issue ACME certificate for ${hostLabel}?`} onConfirm={issueACME} tone="secondary" />
-              <ConfirmButton label="Renew" confirmLabel={`Renew ${hostLabel}?`} onConfirm={renew} tone="secondary" />
-              <ActionGate reason={issueOriginReason}>
-                <ConfirmButton label="Issue Origin" confirmLabel={`Issue Origin CA certificate for ${hostLabel}?`} onConfirm={issueOrigin} tone="secondary" disabled={!canIssueOrigin} />
-              </ActionGate>
-            </>
-          ) : null}
-
-          {isFile ? (
-            <ActionGate reason="文件登记证书不支持签发/续期/轮换/同步/吊销操作。">
-              <Button type="default" disabled>
-                No lifecycle actions
-              </Button>
-            </ActionGate>
-          ) : null}
-
-          {strongDelete ? (
-            <ActionGate reason={`该证书正在为 Domain ${boundDomainId || boundProxyId || certificate.proxyId} 提供服务，删除需要强确认。`}>
-              <Button type="primary" danger onClick={onDelete}>
-                Delete
-              </Button>
-            </ActionGate>
-          ) : (
-            <Button type="primary" danger onClick={onDelete}>
-              Delete
-            </Button>
-          )}
-        </div>
-      </td>
-    </tr>
-  );
-}
-
-function formatFingerprint(value?: string | null) {
-  if (!value) {
-    return 'None';
-  }
-  return value.length > 16 ? `${value.slice(0, 16)}...` : value;
 }

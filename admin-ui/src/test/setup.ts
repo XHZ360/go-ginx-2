@@ -25,6 +25,23 @@ Object.defineProperty(globalThis, 'ResizeObserver', {
   value: TestResizeObserver,
 });
 
+Object.defineProperty(window, 'matchMedia', {
+  configurable: true,
+  writable: true,
+  value: (query: string) => ({
+    matches: true,
+    media: query,
+    onchange: null,
+    addListener() {},
+    removeListener() {},
+    addEventListener() {},
+    removeEventListener() {},
+    dispatchEvent() {
+      return false;
+    },
+  }),
+});
+
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
