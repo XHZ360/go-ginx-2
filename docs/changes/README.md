@@ -15,6 +15,15 @@ changes/
 
 ## 当前记录
 
+### Active Changes
+
+| 文档 | 说明 |
+| --- | --- |
+| [active/server-runtime-context-architecture.md](active/server-runtime-context-architecture.md) | Server Runtime Context、业务外观与依赖边界重整 |
+| [active/server-local-virtual-client.md](active/server-local-virtual-client.md) | Server 本机虚拟 client、白名单与管理员专属本机代理（依赖架构 Change） |
+
+### Completed Changes
+
 | 文档 | 说明 |
 | --- | --- |
 | [completed/acme-certificate-readiness-ux.md](completed/acme-certificate-readiness-ux.md) | ACME DNS-01 创建前置条件可见性与失败诊断改进（已完成） |
