@@ -6,7 +6,7 @@
 
 | 项 | 值 |
 | --- | --- |
-| 最后更新 | 2026-07-23 |
+| 最后更新 | 2026-07-24 |
 | 基线提交 | `2b15535`（证书 1:n + Domain GraphQL 修复） |
 | 验证状态 | Domain Path Change 已完成并部署验收 |
 
@@ -17,7 +17,7 @@
 - completed Change [domain-path-proxy-routing.md](changes/completed/domain-path-proxy-routing.md)：`Domain + PathPrefix => Proxy` 已落地并部署；证书与 Domain 为 1:n；`proxy_routes` 已清理。
 - completed Change [acme-certificate-readiness-ux.md](changes/completed/acme-certificate-readiness-ux.md)：已补齐 ACME DNS-01/Origin CA provider readiness、`PROVIDER_NOT_READY` 契约和 Certificates 页面前置诊断；完整包测仅受既有目录权限测试失败阻断。
 - completed Change [server-runtime-context-architecture.md](changes/completed/server-runtime-context-architecture.md)：管理 facade、只读 session 查询端口与本机代理预留端口已实现；接口收窄后的 `ProxyEntryDefaults` 已改为独立装配配置。
-- active Change [admin-facade-physical-split.md](changes/active/admin-facade-physical-split.md)：runtime context 阶段 2，计划把 `admin.Service` 按耦合程度分三批物理拆分（User/ProviderCredential → Client → Domain/Proxy/Certificate），尚未开始实施。
+- completed Change [admin-facade-physical-split.md](changes/completed/admin-facade-physical-split.md)：runtime context 阶段 2 已完成，六个 Admin facade 已拆为独立 concrete service，跨领域规则通过三类 policy 注入，daemon/CLI/TUI/adminapi 已切换到 `Services.Commands`。
 
 ## 已实现能力（摘要）
 
@@ -38,10 +38,11 @@
 ## 技术债
 
 - `TestReconcileHTTPProxyCustomListenerWithoutRestart` 与 `TestReconcileHTTPSProxyCustomListenerWithoutRestart` 是预置的 flaky 测试：未修改的 HEAD 独立运行三次出现一次通过、两次 502 失败。该问题与 server runtime context Change 无关，单独跟踪，不阻塞本 Change 收尾。
+- 2026-07-24 本 Change 收尾时上述两个 daemon 测试独立运行三次均失败（HTTP 502、HTTPS 502）；同时 `TestFileSecretStoreRoundTripAndPathSafety` 在当前环境报告临时目录为 `0755` 而非期望模式。均未触及本 Change 改动范围，保留为独立阻碍项。
 
 ## 下一步
 
-1. 实施 [admin-facade-physical-split.md](changes/active/admin-facade-physical-split.md) 第一批（User + ProviderCredential 拆分），验证 `AuditRecorder` 共享依赖模式后再推进后续两批。
+1. 继续跟踪 daemon custom listener flaky 和 certmanager 临时目录权限测试问题，不与 Admin facade 拆分混合修复。
 2. 生产运维：备份恢复、容量校验。
 3. 部署含 Access activation 身份变更撤销、`proxies` 遗留列 DROP、`web` 流类型修复的版本。
 4. 有代码变更时同步更新 requirements/architecture，并回写本日志验证结果。
@@ -54,6 +55,7 @@
 | 2026-07-16 | `go test` admin/store/adminapi/adminquery + UI cert 测试 | 通过 | GraphQL 嵌入字段、1:n 绑定 |
 | 2026-07-15 | 文档链接与路径 | 通过 | 本地相对链接检查无失效路径 |
 | 2026-07-23 | runtime context 架构变更 | 已完成 | `go build ./...`、相关包测和 `go test ./e2e -count=1` 通过；受控全量包测仅遇到 daemon 自定义 Web listener 的预置 flaky，已单独记录为技术债 |
+| 2026-07-24 | Admin facade 物理拆分 | 已完成 | `CGO_ENABLED=0 go build ./...`、admin/adminapi/admintui/CLI 真实测试和 `go test ./e2e -count=1` 通过；全量包测仅遇到已登记的 daemon custom listener 502 以及 certmanager 临时目录权限断言 |
 
 建议验证入口：
 

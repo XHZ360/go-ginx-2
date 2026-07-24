@@ -27,6 +27,8 @@ GoGinX 由服务端、provider 客户端、可选的 consumer SDK、Admin API/UI
 ## 上下文边界
 
 - 管理适配器通过 `internal/admin` 的按领域 facade 执行业务命令；`adminapi.Entry.Commands` 只接受这些 facade 的组合，不直接依赖 `admin.Service` 的实现字段。非命令的入口默认值作为独立装配配置通过 `adminapi.Entry.ProxyEntryDefaults` 传入。
+- `internal/admin` 的业务命令由 `UserService`、`ClientService`、`DomainService`、`ProxyService`、`CertificateService` 和 `ProviderCredentialService` 六个 concrete service 实现；`Services` 只负责注入 Store、证书管理器、审计记录器和三类共享 policy，`Commands` 只组合六个 facade。
+- Domain、Proxy、Certificate 之间的共享规则通过 `ProxyAdmissionPolicy`、`CertificateBindingPolicy` 和 `ProxyAccessPolicy` 注入；service 之间不访问对方的字段或私有方法。`createWebProxy` 属于 `ProxyService`，不形成 Domain 到 Proxy 的 facade 依赖。
 - `internal/adminquery` 只能通过 `SessionSnapshotSource` 读取会话快照，不能操作 session 生命周期。
 - `internal/control` 负责远端协议与连接生命周期。认证结果和连接关闭可直接同步 `ClientStatus`，这是唯一登记的直连 store 写入例外；其他业务 mutation 必须经业务 facade。
 - `internal/session` 提供 `VirtualSession` 和 `SessionRegistry` 运行时端口；`internal/systemclient`、`internal/localproxy` 固定未来系统 client、本机代理、目标策略和拨号端口，不在此阶段实现业务能力。

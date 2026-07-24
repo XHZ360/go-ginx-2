@@ -30,6 +30,7 @@ import (
 	httpsproxy "github.com/simp-frp/go-ginx-2/internal/proxy/https"
 	"github.com/simp-frp/go-ginx-2/internal/session"
 	"github.com/simp-frp/go-ginx-2/internal/stats"
+	"github.com/simp-frp/go-ginx-2/internal/store"
 	"github.com/simp-frp/go-ginx-2/internal/store/sqlite"
 )
 
@@ -230,7 +231,7 @@ func TestServerAuthenticatesSQLiteAdministrators(t *testing.T) {
 	if err := db.Users().SetPassword(context.Background(), "user-1", ordinaryHash); err != nil {
 		t.Fatal(err)
 	}
-	server, err := Listen(Entry{ListenAddress: "127.0.0.1:0", AdminFrontendDir: writeAdminFrontendFixture(t), AdminJWTSecret: testAdminJWTSecret(), Query: adminquery.Service{Store: db, Sessions: sessions, Stats: memory}, Commands: admin.Service{Store: db}})
+	server, err := Listen(Entry{ListenAddress: "127.0.0.1:0", AdminFrontendDir: writeAdminFrontendFixture(t), AdminJWTSecret: testAdminJWTSecret(), Query: adminquery.Service{Store: db, Sessions: sessions, Stats: memory}, Commands: newTestCommandSet(db)})
 	if err != nil {
 		t.Fatalf("listen sqlite admin server: %v", err)
 	}
@@ -264,7 +265,7 @@ func TestServerDoesNotRedeemClientEnrollmentToken(t *testing.T) {
 	if err := db.ClientEnrollments().Create(context.Background(), domain.ClientEnrollment{ID: payload.EnrollmentID, ClientID: payload.ClientID, SecretHash: enrollment.HashSecret(payload.Secret), TokenHash: enrollment.HashToken(token), Token: token, ExpiresAt: expiresAt}); err != nil {
 		t.Fatal(err)
 	}
-	server, err := Listen(Entry{ListenAddress: "127.0.0.1:0", AdminFrontendDir: writeAdminFrontendFixture(t), AdminJWTSecret: testAdminJWTSecret(), Query: adminquery.Service{Store: db, Sessions: sessions, Stats: memory}, Commands: admin.Service{Store: db}})
+	server, err := Listen(Entry{ListenAddress: "127.0.0.1:0", AdminFrontendDir: writeAdminFrontendFixture(t), AdminJWTSecret: testAdminJWTSecret(), Query: adminquery.Service{Store: db, Sessions: sessions, Stats: memory}, Commands: newTestCommandSet(db)})
 	if err != nil {
 		t.Fatalf("listen admin server: %v", err)
 	}
@@ -847,7 +848,7 @@ func TestServerCreatesWildcardOriginCACertificateThroughGraphQL(t *testing.T) {
 	if len(hostnames) != 1 || hostnames[0] != "*.example.com" {
 		t.Fatalf("unexpected wildcard hostnames: %+v", hostnames)
 	}
-	stored, err := server.commands.(*admin.Service).Store.Certificates().ByID(context.Background(), "cert-origin-wildcard")
+	stored, err := server.commands.(*testCommandSet).Store.Certificates().ByID(context.Background(), "cert-origin-wildcard")
 	if err != nil {
 		t.Fatalf("read stored wildcard certificate: %v", err)
 	}
@@ -969,10 +970,11 @@ func startAdminTestServer(t *testing.T, mutateEntry func(*Entry)) *Server {
 	t.Cleanup(cancel)
 	db, sessions, memory := adminAPITestRuntime(t)
 	credentialsFile := writeAdminCredentials(t)
-	entry := Entry{ListenAddress: "127.0.0.1:0", AdminCredentialsFile: credentialsFile, AdminFrontendDir: writeAdminFrontendFixture(t), AdminJWTSecret: testAdminJWTSecret(), Query: adminquery.Service{Store: db, Sessions: sessions, Stats: memory}, Commands: &admin.Service{Store: db}}
+	entry := Entry{ListenAddress: "127.0.0.1:0", AdminCredentialsFile: credentialsFile, AdminFrontendDir: writeAdminFrontendFixture(t), AdminJWTSecret: testAdminJWTSecret(), Query: adminquery.Service{Store: db, Sessions: sessions, Stats: memory}, Commands: newTestCommandSet(db)}
 	if mutateEntry != nil {
 		mutateEntry(&entry)
 	}
+	testCommands(&entry).rebuild()
 	server, err := Listen(entry)
 	if err != nil {
 		t.Fatalf("listen admin server: %v", err)
@@ -982,10 +984,30 @@ func startAdminTestServer(t *testing.T, mutateEntry func(*Entry)) *Server {
 	return server
 }
 
-func testCommands(entry *Entry) *admin.Service {
-	commands, ok := entry.Commands.(*admin.Service)
+type testCommandSet struct {
+	admin.CommandFacades
+	Store                store.Store
+	Certificates         certmanager.Service
+	StaticListenerClaims []domain.ListenerClaim
+	ProxyEntryDefaults   domain.ProxyEntryDefaults
+	ListenerReconciler   admin.ListenerReconciler
+	DefaultJoin          config.JoinServiceDefaults
+}
+
+func newTestCommandSet(db store.Store) *testCommandSet {
+	commands := &testCommandSet{Store: db}
+	commands.rebuild()
+	return commands
+}
+
+func (commands *testCommandSet) rebuild() {
+	commands.CommandFacades = admin.NewServices(admin.Options{Store: commands.Store, Certificates: commands.Certificates, StaticListenerClaims: commands.StaticListenerClaims, ProxyEntryDefaults: commands.ProxyEntryDefaults, ListenerReconciler: commands.ListenerReconciler, DefaultJoin: commands.DefaultJoin}).Commands
+}
+
+func testCommands(entry *Entry) *testCommandSet {
+	commands, ok := entry.Commands.(*testCommandSet)
 	if !ok {
-		panic("admin api test entry must use *admin.Service commands")
+		panic("admin api test entry must use *testCommandSet commands")
 	}
 	return commands
 }
@@ -1349,7 +1371,7 @@ func TestServerDomainDetailResolvesEmbeddedListFields(t *testing.T) {
 
 	server := startAdminTestServer(t, func(entry *Entry) {
 		entry.Query = adminquery.Service{Store: db}
-		entry.Commands = &admin.Service{Store: db}
+		entry.Commands = newTestCommandSet(db)
 	})
 	client := newAdminHTTPClient(t)
 	bootstrap := loginAdmin(t, client, server.Addr().String(), "admin", "secret")

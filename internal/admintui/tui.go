@@ -47,7 +47,7 @@ type Backend interface {
 }
 
 type LocalBackend struct {
-	Commands          admin.Service
+	Commands          admin.CommandFacades
 	Queries           adminquery.Service
 	JoinDefaultsValue config.JoinServiceDefaults
 }

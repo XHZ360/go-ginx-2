@@ -132,20 +132,20 @@ func startServerWithStore(parent context.Context, cfg config.Server, db store.St
 			_ = runtime.Close()
 			return nil, fmt.Errorf("assemble runtime listener claims: %w", err)
 		}
-		adminService := admin.Service{Store: db, StaticListenerClaims: staticListenerClaims, ProxyEntryDefaults: proxyEntryDefaults, DefaultJoin: joinDefaults, ListenerReconciler: runtime}
+		var certificateService certmanager.Service
 		if cfg.ACMEEnabled || cfg.OriginCAEnabled {
-			certificateService, err := managedCertificateService(cfg, db)
+			certificateService, err = managedCertificateService(cfg, db)
 			if err != nil {
 				_ = runtime.Close()
 				return nil, err
 			}
-			adminService.Certificates = certificateService
 		} else {
 			// 即使未启用 ACME/Origin CA，证书管理也需要受管证书目录以支持文件型证书（health/迁移）。
-			adminService.Certificates = certmanager.Service{Storage: httpsproxy.ManagedCertificateStorage{CertificateDir: cfg.CertificateDir}}
+			certificateService = certmanager.Service{Storage: httpsproxy.ManagedCertificateStorage{CertificateDir: cfg.CertificateDir}}
 		}
+		adminServices := admin.NewServices(admin.Options{Store: db, Certificates: certificateService, StaticListenerClaims: staticListenerClaims, ProxyEntryDefaults: proxyEntryDefaults, ListenerReconciler: runtime, DefaultJoin: joinDefaults})
 		// 启动时将旧代理静态证书（cert_file/key_file）迁移为文件型证书资源并绑定。幂等。
-		if _, err := adminService.MigrateLegacyFileCertificates(runtimeCtx); err != nil {
+		if _, err := adminServices.Certificates.MigrateLegacyFileCertificates(runtimeCtx); err != nil {
 			_ = runtime.Close()
 			return nil, fmt.Errorf("migrate legacy file certificates: %w", err)
 		}
@@ -154,7 +154,7 @@ func startServerWithStore(parent context.Context, cfg config.Server, db store.St
 			_ = runtime.Close()
 			return nil, fmt.Errorf("load admin jwt secret: %w", err)
 		}
-		adminServer, err := adminapi.Listen(adminapi.Entry{ListenAddress: cfg.AdminListen, AdminCredentialsFile: cfg.AdminCredentialsFile, AdminFrontendDir: cfg.AdminFrontendDir, AdminJWTSecret: adminJWTSecret, Query: adminquery.Service{Store: db, Sessions: sessions, Stats: memoryStats, CertificateDir: cfg.CertificateDir, RenewalWindow: cfg.ACMERenewalWindow, OriginCARotationWindow: cfg.OriginCARotationWindow}, Commands: adminService, ProxyEntryDefaults: proxyEntryDefaults, Enrollment: enrollment.Service{Store: db}})
+		adminServer, err := adminapi.Listen(adminapi.Entry{ListenAddress: cfg.AdminListen, AdminCredentialsFile: cfg.AdminCredentialsFile, AdminFrontendDir: cfg.AdminFrontendDir, AdminJWTSecret: adminJWTSecret, Query: adminquery.Service{Store: db, Sessions: sessions, Stats: memoryStats, CertificateDir: cfg.CertificateDir, RenewalWindow: cfg.ACMERenewalWindow, OriginCARotationWindow: cfg.OriginCARotationWindow}, Commands: adminServices.Commands, ProxyEntryDefaults: proxyEntryDefaults, Enrollment: enrollment.Service{Store: db}})
 		if err != nil {
 			_ = runtime.Close()
 			return nil, fmt.Errorf("listen admin api: %w", err)

@@ -18,7 +18,7 @@
 
 ## 后果
 
-- 现有 `admin.Service` 仍是阶段 1 的实现载体，但其调用方已只见六组命令接口；物理拆分为独立实现需要新的 Change 和显式共享依赖设计（见 [../changes/active/admin-facade-physical-split.md](../changes/active/admin-facade-physical-split.md)）。
+- 现有 `admin.Service` 曾是阶段 1 的实现载体，调用方已只见六组命令接口；物理拆分已按 [Admin facade 物理拆分 Change](../changes/completed/admin-facade-physical-split.md) 完成，并采用显式共享依赖设计。
 - API/GraphQL、control wire protocol 和数据库 schema 均不因此改变。
 - 新增 session、listener、网络连接或本机代理能力时，必须首先复用或扩展既有端口，而非向 adapter、daemon 或 control 堆叠业务特例。
 

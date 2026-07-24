@@ -19,13 +19,13 @@ changes/
 
 | 文档 | 说明 |
 | --- | --- |
-| [active/admin-facade-physical-split.md](active/admin-facade-physical-split.md) | Admin 业务 facade 物理拆分（Runtime Context 架构 Change 阶段 2） |
 | [active/server-local-virtual-client.md](active/server-local-virtual-client.md) | Server 本机虚拟 client、白名单与管理员专属本机代理（依赖架构 Change） |
 
 ### Completed Changes
 
 | 文档 | 说明 |
 | --- | --- |
+| [completed/admin-facade-physical-split.md](completed/admin-facade-physical-split.md) | Admin 业务 facade 物理拆分（Runtime Context 架构 Change 阶段 2，已完成） |
 | [completed/acme-certificate-readiness-ux.md](completed/acme-certificate-readiness-ux.md) | ACME DNS-01 创建前置条件可见性与失败诊断改进（已完成） |
 | [completed/domain-path-proxy-routing.md](completed/domain-path-proxy-routing.md) | Domain + Path => Proxy 路由模型改造（已完成） |
 | [completed/http-path-routing-and-https-access-activation.md](completed/http-path-routing-and-https-access-activation.md) | HTTP 路径路由与 HTTPS 访问激活（旧模型实施记录） |

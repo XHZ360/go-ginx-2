@@ -7,7 +7,6 @@ import (
 
 	"github.com/simp-frp/go-ginx-2/internal/contracterr"
 	"github.com/simp-frp/go-ginx-2/internal/domain"
-	"github.com/simp-frp/go-ginx-2/internal/store"
 )
 
 type CreateDomainInput struct {
@@ -43,7 +42,7 @@ type UpdateDomainEntryInput struct {
 	ActorID  string
 }
 
-func (service Service) CreateDomain(ctx context.Context, input CreateDomainInput) (domain.Domain, error) {
+func (service *DomainService) CreateDomain(ctx context.Context, input CreateDomainInput) (domain.Domain, error) {
 	if service.Store == nil {
 		return domain.Domain{}, errors.New("store is required")
 	}
@@ -65,7 +64,7 @@ func (service Service) CreateDomain(ctx context.Context, input CreateDomainInput
 		input.ID = newID("domain")
 	}
 	if input.CertificateID != "" {
-		if err := service.validateCertificateBinding(ctx, input.CertificateID, host, input.ID); err != nil {
+		if err := service.Binding.ValidateBinding(ctx, input.CertificateID, host, input.ID); err != nil {
 			return domain.Domain{}, err
 		}
 	}
@@ -79,15 +78,15 @@ func (service Service) CreateDomain(ctx context.Context, input CreateDomainInput
 	if err := service.Store.Domains().Create(ctx, value); err != nil {
 		return domain.Domain{}, err
 	}
-	if err := service.reconcileProxyListeners(ctx); err != nil {
+	if err := service.Admission.ReconcileListeners(ctx); err != nil {
 		_ = service.Store.Domains().Delete(ctx, value.ID)
-		_ = service.reconcileProxyListeners(ctx)
+		_ = service.Admission.ReconcileListeners(ctx)
 		return domain.Domain{}, err
 	}
-	return value, service.audit(ctx, input.ActorID, "domain", value.ID, "create_domain")
+	return value, service.Audit.Record(ctx, input.ActorID, "domain", value.ID, "create_domain")
 }
 
-func (service Service) UpdateDomain(ctx context.Context, input UpdateDomainInput) (domain.Domain, error) {
+func (service *DomainService) UpdateDomain(ctx context.Context, input UpdateDomainInput) (domain.Domain, error) {
 	if service.Store == nil {
 		return domain.Domain{}, errors.New("store is required")
 	}
@@ -110,7 +109,7 @@ func (service Service) UpdateDomain(ctx context.Context, input UpdateDomainInput
 		}
 	}
 	if existing.CertificateID != "" {
-		if err := service.validateCertificateBinding(ctx, existing.CertificateID, existing.Host, existing.ID); err != nil {
+		if err := service.Binding.ValidateBinding(ctx, existing.CertificateID, existing.Host, existing.ID); err != nil {
 			return domain.Domain{}, err
 		}
 	}
@@ -121,46 +120,46 @@ func (service Service) UpdateDomain(ctx context.Context, input UpdateDomainInput
 		return domain.Domain{}, err
 	}
 	if hostChanged {
-		if err := service.revokeAccessForDomainProxies(ctx, existing.ID); err != nil {
+		if err := service.Access.RevokeForDomain(ctx, existing.ID); err != nil {
 			_ = service.Store.Domains().Update(ctx, previous)
 			return domain.Domain{}, err
 		}
 	}
-	if err := service.reconcileProxyListeners(ctx); err != nil {
+	if err := service.Admission.ReconcileListeners(ctx); err != nil {
 		_ = service.Store.Domains().Update(ctx, previous)
-		_ = service.reconcileProxyListeners(ctx)
+		_ = service.Admission.ReconcileListeners(ctx)
 		return domain.Domain{}, err
 	}
-	return existing, service.audit(ctx, input.ActorID, "domain", existing.ID, "update_domain")
+	return existing, service.Audit.Record(ctx, input.ActorID, "domain", existing.ID, "update_domain")
 }
 
-func (service Service) EnableDomain(ctx context.Context, domainID string, actorID string) error {
+func (service *DomainService) EnableDomain(ctx context.Context, domainID string, actorID string) error {
 	if service.Store == nil {
 		return errors.New("store is required")
 	}
 	if err := service.Store.Domains().SetStatus(ctx, domainID, domain.DomainEnabled); err != nil {
 		return err
 	}
-	if err := service.reconcileProxyListeners(ctx); err != nil {
+	if err := service.Admission.ReconcileListeners(ctx); err != nil {
 		return err
 	}
-	return service.audit(ctx, actorID, "domain", domainID, "enable_domain")
+	return service.Audit.Record(ctx, actorID, "domain", domainID, "enable_domain")
 }
 
-func (service Service) DisableDomain(ctx context.Context, domainID string, actorID string) error {
+func (service *DomainService) DisableDomain(ctx context.Context, domainID string, actorID string) error {
 	if service.Store == nil {
 		return errors.New("store is required")
 	}
 	if err := service.Store.Domains().SetStatus(ctx, domainID, domain.DomainDisabled); err != nil {
 		return err
 	}
-	if err := service.reconcileProxyListeners(ctx); err != nil {
+	if err := service.Admission.ReconcileListeners(ctx); err != nil {
 		return err
 	}
-	return service.audit(ctx, actorID, "domain", domainID, "disable_domain")
+	return service.Audit.Record(ctx, actorID, "domain", domainID, "disable_domain")
 }
 
-func (service Service) DeleteDomain(ctx context.Context, domainID string, actorID string) error {
+func (service *DomainService) DeleteDomain(ctx context.Context, domainID string, actorID string) error {
 	if service.Store == nil {
 		return errors.New("store is required")
 	}
@@ -186,13 +185,13 @@ func (service Service) DeleteDomain(ctx context.Context, domainID string, actorI
 	if err := service.Store.Domains().Delete(ctx, domainID); err != nil {
 		return err
 	}
-	if err := service.reconcileProxyListeners(ctx); err != nil {
+	if err := service.Admission.ReconcileListeners(ctx); err != nil {
 		return err
 	}
-	return service.audit(ctx, actorID, "domain", domainID, "delete_domain")
+	return service.Audit.Record(ctx, actorID, "domain", domainID, "delete_domain")
 }
 
-func (service Service) CreateDomainEntry(ctx context.Context, input CreateDomainEntryInput) (domain.DomainEntry, error) {
+func (service *DomainService) CreateDomainEntry(ctx context.Context, input CreateDomainEntryInput) (domain.DomainEntry, error) {
 	if service.Store == nil {
 		return domain.DomainEntry{}, errors.New("store is required")
 	}
@@ -223,15 +222,15 @@ func (service Service) CreateDomainEntry(ctx context.Context, input CreateDomain
 	if err := service.Store.DomainEntries().Create(ctx, entry); err != nil {
 		return domain.DomainEntry{}, err
 	}
-	if err := service.reconcileProxyListeners(ctx); err != nil {
+	if err := service.Admission.ReconcileListeners(ctx); err != nil {
 		_ = service.Store.DomainEntries().Delete(ctx, entry.ID)
-		_ = service.reconcileProxyListeners(ctx)
+		_ = service.Admission.ReconcileListeners(ctx)
 		return domain.DomainEntry{}, err
 	}
-	return entry, service.audit(ctx, input.ActorID, "domain_entry", entry.ID, "create_domain_entry")
+	return entry, service.Audit.Record(ctx, input.ActorID, "domain_entry", entry.ID, "create_domain_entry")
 }
 
-func (service Service) UpdateDomainEntry(ctx context.Context, input UpdateDomainEntryInput) (domain.DomainEntry, error) {
+func (service *DomainService) UpdateDomainEntry(ctx context.Context, input UpdateDomainEntryInput) (domain.DomainEntry, error) {
 	if service.Store == nil {
 		return domain.DomainEntry{}, errors.New("store is required")
 	}
@@ -264,28 +263,28 @@ func (service Service) UpdateDomainEntry(ctx context.Context, input UpdateDomain
 	if err := service.Store.DomainEntries().Update(ctx, existing); err != nil {
 		return domain.DomainEntry{}, err
 	}
-	if err := service.reconcileProxyListeners(ctx); err != nil {
+	if err := service.Admission.ReconcileListeners(ctx); err != nil {
 		_ = service.Store.DomainEntries().Update(ctx, previous)
-		_ = service.reconcileProxyListeners(ctx)
+		_ = service.Admission.ReconcileListeners(ctx)
 		return domain.DomainEntry{}, err
 	}
-	return existing, service.audit(ctx, input.ActorID, "domain_entry", existing.ID, "update_domain_entry")
+	return existing, service.Audit.Record(ctx, input.ActorID, "domain_entry", existing.ID, "update_domain_entry")
 }
 
-func (service Service) DeleteDomainEntry(ctx context.Context, entryID string, actorID string) error {
+func (service *DomainService) DeleteDomainEntry(ctx context.Context, entryID string, actorID string) error {
 	if service.Store == nil {
 		return errors.New("store is required")
 	}
 	if err := service.Store.DomainEntries().Delete(ctx, entryID); err != nil {
 		return err
 	}
-	if err := service.reconcileProxyListeners(ctx); err != nil {
+	if err := service.Admission.ReconcileListeners(ctx); err != nil {
 		return err
 	}
-	return service.audit(ctx, actorID, "domain_entry", entryID, "delete_domain_entry")
+	return service.Audit.Record(ctx, actorID, "domain_entry", entryID, "delete_domain_entry")
 }
 
-func (service Service) BindDomainCertificate(ctx context.Context, domainID string, certificateID string, actorID string) (domain.Domain, error) {
+func (service *DomainService) BindDomainCertificate(ctx context.Context, domainID string, certificateID string, actorID string) (domain.Domain, error) {
 	if service.Store == nil {
 		return domain.Domain{}, errors.New("store is required")
 	}
@@ -293,20 +292,20 @@ func (service Service) BindDomainCertificate(ctx context.Context, domainID strin
 	if err != nil {
 		return domain.Domain{}, err
 	}
-	if err := service.validateCertificateBinding(ctx, certificateID, webDomain.Host, webDomain.ID); err != nil {
+	if err := service.Binding.ValidateBinding(ctx, certificateID, webDomain.Host, webDomain.ID); err != nil {
 		return domain.Domain{}, err
 	}
 	webDomain.CertificateID = certificateID
 	if err := service.Store.Domains().Update(ctx, webDomain); err != nil {
 		return domain.Domain{}, err
 	}
-	if err := service.reconcileProxyListeners(ctx); err != nil {
+	if err := service.Admission.ReconcileListeners(ctx); err != nil {
 		return domain.Domain{}, err
 	}
-	return webDomain, service.audit(ctx, actorID, "domain", webDomain.ID, "bind_certificate")
+	return webDomain, service.Audit.Record(ctx, actorID, "domain", webDomain.ID, "bind_certificate")
 }
 
-func (service Service) UnbindDomainCertificate(ctx context.Context, domainID string, actorID string) (domain.Domain, error) {
+func (service *DomainService) UnbindDomainCertificate(ctx context.Context, domainID string, actorID string) (domain.Domain, error) {
 	if service.Store == nil {
 		return domain.Domain{}, errors.New("store is required")
 	}
@@ -317,69 +316,14 @@ func (service Service) UnbindDomainCertificate(ctx context.Context, domainID str
 	if strings.TrimSpace(webDomain.CertificateID) == "" {
 		return webDomain, nil
 	}
-	if err := service.unbindDomainCertificate(ctx, webDomain); err != nil {
+	if err := service.Binding.UnbindDomain(ctx, webDomain); err != nil {
 		return domain.Domain{}, err
 	}
 	webDomain.CertificateID = ""
-	if err := service.reconcileProxyListeners(ctx); err != nil {
+	if err := service.Admission.ReconcileListeners(ctx); err != nil {
 		return domain.Domain{}, err
 	}
-	return webDomain, service.audit(ctx, actorID, "domain", webDomain.ID, "unbind_certificate")
+	return webDomain, service.Audit.Record(ctx, actorID, "domain", webDomain.ID, "unbind_certificate")
 }
 
 // Ensure CreateProxy accepts web domain+path without relying only on legacy http conversion.
-func (service Service) createWebProxy(ctx context.Context, input CreateProxyInput) (domain.Proxy, error) {
-	if strings.TrimSpace(input.DomainID) == "" {
-		return domain.Proxy{}, contracterr.Validation("validation failed", map[string]string{"domainId": "domain id is required"})
-	}
-	webDomain, err := service.Store.Domains().ByID(ctx, input.DomainID)
-	if err != nil {
-		return domain.Proxy{}, err
-	}
-	if webDomain.UserID != input.UserID {
-		return domain.Proxy{}, contracterr.Conflict("domain does not belong to proxy user", nil)
-	}
-	pathPrefix := input.PathPrefix
-	if pathPrefix == "" {
-		pathPrefix = "/"
-	}
-	normalized, err := domain.NormalizeProxyRoutePrefix(pathPrefix)
-	if err != nil {
-		return domain.Proxy{}, contracterr.Validation("validation failed", map[string]string{"pathPrefix": err.Error()})
-	}
-	upstream, err := domain.NormalizeProxyUpstreamPathPrefix(input.UpstreamPathPrefix)
-	if err != nil {
-		return domain.Proxy{}, contracterr.Validation("validation failed", map[string]string{"upstreamPathPrefix": err.Error()})
-	}
-	if strings.TrimSpace(input.ID) == "" {
-		input.ID = newID("proxy")
-	}
-	proxy := domain.Proxy{
-		ID:                 input.ID,
-		UserID:             input.UserID,
-		ClientID:           input.ClientID,
-		Name:               input.Name,
-		Type:               domain.ProxyWeb,
-		Status:             domain.ProxyEnabled,
-		DomainID:           webDomain.ID,
-		PathPrefix:         normalized,
-		StripPrefix:        input.StripPrefix,
-		UpstreamPathPrefix: upstream,
-		TargetHost:         input.TargetHost,
-		TargetPort:         input.TargetPort,
-		Description:        input.Description,
-	}
-	if err := proxy.Validate(); err != nil {
-		return domain.Proxy{}, contracterr.Validation("validation failed", map[string]string{"proxy": err.Error()})
-	}
-	if err := service.ensureProxyAdmission(ctx, proxy, ""); err != nil {
-		return domain.Proxy{}, err
-	}
-	if err := service.Store.Proxies().Create(ctx, proxy); err != nil {
-		if errors.Is(err, store.ErrAlreadyExists) {
-			return domain.Proxy{}, contracterr.Conflict("domain path is already used by another proxy", err)
-		}
-		return domain.Proxy{}, err
-	}
-	return proxy, service.audit(ctx, input.ActorID, "proxy", proxy.ID, "create_web_proxy")
-}

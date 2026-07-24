@@ -82,7 +82,7 @@ func run(args []string) error {
 			if !errors.Is(err, store.ErrAlreadyExists) {
 				return err
 			}
-			adminID, err := existingAdminID(context.Background(), service, *id, *username)
+			adminID, err := existingAdminID(context.Background(), service.Store, *id, *username)
 			if err != nil {
 				return err
 			}
@@ -187,7 +187,7 @@ func runTUI(flags *flag.FlagSet, args []string) error {
 		return err
 	}
 	joinDefaults := joinDefaultsResult.Defaults
-	service.DefaultJoin = joinDefaults
+	service.Clients.DefaultJoin = joinDefaults
 	backend := admintui.LocalBackend{
 		Commands:          service,
 		Queries:           adminquery.Service{Store: service.Store},
@@ -270,17 +270,17 @@ func createProxy(flags *flag.FlagSet, args []string, proxyType domain.ProxyType)
 	return nil
 }
 
-func existingAdminID(ctx context.Context, service admin.Service, id string, username string) (string, error) {
-	if service.Store == nil {
+func existingAdminID(ctx context.Context, db store.Store, id string, username string) (string, error) {
+	if db == nil {
 		return "", fmt.Errorf("store is required")
 	}
 	var user domain.User
 	var err error
 	if strings.TrimSpace(id) != "" {
-		user, err = service.Store.Users().ByID(ctx, id)
+		user, err = db.Users().ByID(ctx, id)
 	}
 	if strings.TrimSpace(id) == "" || errors.Is(err, store.ErrNotFound) {
-		user, err = service.Store.Users().ByUsername(ctx, username)
+		user, err = db.Users().ByUsername(ctx, username)
 	}
 	if err != nil {
 		return "", err
@@ -354,7 +354,7 @@ func clientJoinCommand(flags *flag.FlagSet, args []string) error {
 	if err != nil {
 		return err
 	}
-	service.DefaultJoin = joinDefaultsResult.Defaults
+	service.Clients.DefaultJoin = joinDefaultsResult.Defaults
 	result, err := service.ReviewClientJoinToken(context.Background(), *clientID, actorID)
 	if err != nil {
 		return err
@@ -537,15 +537,15 @@ type certificateServiceConfig struct {
 	OriginCARotationWindow    time.Duration
 }
 
-func openService(dbPath string, certificateCfg ...certificateServiceConfig) (admin.Service, func(), error) {
+func openService(dbPath string, certificateCfg ...certificateServiceConfig) (admin.Services, func(), error) {
 	if err := ensureDatabaseParentDir(dbPath); err != nil {
-		return admin.Service{}, nil, err
+		return admin.Services{}, nil, err
 	}
 	db, err := sqlite.Open(dbPath)
 	if err != nil {
-		return admin.Service{}, nil, fmt.Errorf("open sqlite database %s: %w", dbPath, err)
+		return admin.Services{}, nil, fmt.Errorf("open sqlite database %s: %w", dbPath, err)
 	}
-	service := admin.Service{Store: db}
+	var certificates certmanager.Service
 	if len(certificateCfg) > 0 {
 		var provider certmanager.DNSChallengeProvider
 		var issuer certmanager.Issuer
@@ -553,14 +553,14 @@ func openService(dbPath string, certificateCfg ...certificateServiceConfig) (adm
 			loadedProvider, err := newDNSProvider(certificateCfg[0].TokenEnv)
 			if err != nil {
 				_ = db.Close()
-				return admin.Service{}, nil, err
+				return admin.Services{}, nil, err
 			}
 			provider = loadedProvider
 			issuer = newACMEIssuer()
 		}
-		service.Certificates = certmanager.Service{Store: db, Issuer: issuer, DNSProvider: provider, OriginCAClient: certmanager.CloudflareOriginCAClient{}, ProviderSecretStore: certmanager.FileSecretStore{Dir: certificateCfg[0].OriginCASecretStore}, Storage: httpsproxy.ManagedCertificateStorage{CertificateDir: certificateCfg[0].CertificateDir}, Settings: domain.ACMEProviderSettings{DirectoryURL: certificateCfg[0].DirectoryURL, AccountEmail: certificateCfg[0].AccountEmail, TermsAccepted: certificateCfg[0].TermsAccepted, RenewalWindow: certificateCfg[0].RenewalWindow, DNSProvider: "cloudflare", DNSProviderTokenEnv: certificateCfg[0].TokenEnv}, OriginCASettings: domain.OriginCAProviderSettings{Enabled: certificateCfg[0].OriginCAEnabled, SecretStorePath: certificateCfg[0].OriginCASecretStore, DefaultRequestType: certificateCfg[0].OriginCARequestType, RequestedValidity: certificateCfg[0].OriginCARequestedValidity, RotationWindow: certificateCfg[0].OriginCARotationWindow}}
+		certificates = certmanager.Service{Store: db, Issuer: issuer, DNSProvider: provider, OriginCAClient: certmanager.CloudflareOriginCAClient{}, ProviderSecretStore: certmanager.FileSecretStore{Dir: certificateCfg[0].OriginCASecretStore}, Storage: httpsproxy.ManagedCertificateStorage{CertificateDir: certificateCfg[0].CertificateDir}, Settings: domain.ACMEProviderSettings{DirectoryURL: certificateCfg[0].DirectoryURL, AccountEmail: certificateCfg[0].AccountEmail, TermsAccepted: certificateCfg[0].TermsAccepted, RenewalWindow: certificateCfg[0].RenewalWindow, DNSProvider: "cloudflare", DNSProviderTokenEnv: certificateCfg[0].TokenEnv}, OriginCASettings: domain.OriginCAProviderSettings{Enabled: certificateCfg[0].OriginCAEnabled, SecretStorePath: certificateCfg[0].OriginCASecretStore, DefaultRequestType: certificateCfg[0].OriginCARequestType, RequestedValidity: certificateCfg[0].OriginCARequestedValidity, RotationWindow: certificateCfg[0].OriginCARotationWindow}}
 	}
-	return service, func() { _ = db.Close() }, nil
+	return admin.NewServices(admin.Options{Store: db, Certificates: certificates}), func() { _ = db.Close() }, nil
 }
 
 func defaultAdminDBPath() string {

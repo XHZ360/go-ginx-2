@@ -28,7 +28,7 @@ import (
 func TestServiceCreatesMilestoneOneResources(t *testing.T) {
 	ctx := context.Background()
 	db := openTestStore(t)
-	service := Service{Store: db}
+	service := NewServices(Options{Store: db})
 
 	user, err := service.CreateUser(ctx, CreateUserInput{ID: "user-1", Username: "alice", ActorID: "admin-1"})
 	if err != nil {
@@ -73,7 +73,7 @@ func TestServiceCreatesMilestoneOneResources(t *testing.T) {
 func TestServiceCreatesClientJoinToken(t *testing.T) {
 	ctx := context.Background()
 	db := openTestStore(t)
-	service := Service{Store: db}
+	service := NewServices(Options{Store: db})
 	user, err := service.CreateUser(ctx, CreateUserInput{ID: "user-1", Username: "alice", ActorID: "admin-1"})
 	if err != nil {
 		t.Fatalf("create user: %v", err)
@@ -127,13 +127,13 @@ func TestServiceReviewClientJoinTokenResetsUnavailableTokenFromDefaults(t *testi
 	if err := os.WriteFile(caFile, []byte("default-ca-pem"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	service := Service{Store: db, DefaultJoin: config.JoinServiceDefaults{
+	service := NewServices(Options{Store: db, DefaultJoin: config.JoinServiceDefaults{
 		EnrollmentURL:    "http://server.example.com:8080/api/client/enroll",
 		ServerAddress:    "server.example.com:8443",
 		ServerTLSAddress: "server.example.com:9443",
 		ServerName:       "go-ginx-control.test",
 		ServerCAFile:     caFile,
-	}}
+	}})
 	user, err := service.CreateUser(ctx, CreateUserInput{ID: "user-1", Username: "alice", ActorID: "admin-1"})
 	if err != nil {
 		t.Fatalf("create user: %v", err)
@@ -163,7 +163,7 @@ func TestServiceReviewClientJoinTokenResetsUnavailableTokenFromDefaults(t *testi
 	if err != nil {
 		t.Fatalf("decode reset token: %v", err)
 	}
-	if payload.ClientID != client.ID || payload.EnrollmentURL != service.DefaultJoin.EnrollmentURL || payload.CAPEM != "default-ca-pem" || !reviewed.ExpiresAt.After(time.Now().UTC()) {
+	if payload.ClientID != client.ID || payload.EnrollmentURL != service.Clients.DefaultJoin.EnrollmentURL || payload.CAPEM != "default-ca-pem" || !reviewed.ExpiresAt.After(time.Now().UTC()) {
 		t.Fatalf("unexpected reset token payload=%+v result=%+v", payload, reviewed)
 	}
 	reloadedClient, err := db.Clients().ByID(ctx, client.ID)
@@ -178,7 +178,7 @@ func TestServiceReviewClientJoinTokenResetsUnavailableTokenFromDefaults(t *testi
 func TestServiceReviewClientJoinTokenResetsExpiredToken(t *testing.T) {
 	ctx := context.Background()
 	db := openTestStore(t)
-	service := Service{Store: db}
+	service := NewServices(Options{Store: db})
 	user, err := service.CreateUser(ctx, CreateUserInput{ID: "user-1", Username: "alice", ActorID: "admin-1"})
 	if err != nil {
 		t.Fatalf("create user: %v", err)
@@ -237,13 +237,13 @@ func TestServiceReviewClientJoinTokenResetsExpiredToken(t *testing.T) {
 func TestServiceReviewClientJoinTokenMigratesLegacyAdminEnrollmentURL(t *testing.T) {
 	ctx := context.Background()
 	db := openTestStore(t)
-	service := Service{Store: db, DefaultJoin: config.JoinServiceDefaults{
+	service := NewServices(Options{Store: db, DefaultJoin: config.JoinServiceDefaults{
 		EnrollmentURL:            "http://server.example.com:8081/api/client/enroll",
 		LegacyAdminEnrollmentURL: "http://server.example.com:8080/api/client/enroll",
 		ServerAddress:            "server.example.com:8443",
 		ServerTLSAddress:         "server.example.com:9443",
 		ServerName:               "go-ginx-control.test",
-	}}
+	}})
 	user, err := service.CreateUser(ctx, CreateUserInput{ID: "user-1", Username: "alice", ActorID: "admin-1"})
 	if err != nil {
 		t.Fatalf("create user: %v", err)
@@ -257,10 +257,10 @@ func TestServiceReviewClientJoinTokenMigratesLegacyAdminEnrollmentURL(t *testing
 	legacyPayload := enrollment.TokenPayload{
 		EnrollmentID:     "join-legacy",
 		Secret:           "legacy-secret",
-		EnrollmentURL:    service.DefaultJoin.LegacyAdminEnrollmentURL,
-		ServerAddress:    service.DefaultJoin.ServerAddress,
-		ServerTLSAddress: service.DefaultJoin.ServerTLSAddress,
-		ServerName:       service.DefaultJoin.ServerName,
+		EnrollmentURL:    service.Clients.DefaultJoin.LegacyAdminEnrollmentURL,
+		ServerAddress:    service.Clients.DefaultJoin.ServerAddress,
+		ServerTLSAddress: service.Clients.DefaultJoin.ServerTLSAddress,
+		ServerName:       service.Clients.DefaultJoin.ServerName,
 		CAPEM:            "ca-pem",
 		ClientID:         client.ID,
 		Credential:       "old-secret",
@@ -287,7 +287,7 @@ func TestServiceReviewClientJoinTokenMigratesLegacyAdminEnrollmentURL(t *testing
 	if err != nil {
 		t.Fatalf("decode migrated token: %v", err)
 	}
-	if payload.EnrollmentURL != service.DefaultJoin.EnrollmentURL || payload.ClientID != client.ID || payload.Credential == "old-secret" {
+	if payload.EnrollmentURL != service.Clients.DefaultJoin.EnrollmentURL || payload.ClientID != client.ID || payload.Credential == "old-secret" {
 		t.Fatalf("unexpected migrated token payload: %+v", payload)
 	}
 }
@@ -299,14 +299,14 @@ func TestServiceReviewClientJoinTokenPreservesExplicitExternalEnrollmentURL(t *t
 	if err := os.WriteFile(caFile, []byte("ca-pem"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	service := Service{Store: db, DefaultJoin: config.JoinServiceDefaults{
+	service := NewServices(Options{Store: db, DefaultJoin: config.JoinServiceDefaults{
 		EnrollmentURL:            "http://server.example.com:8081/api/client/enroll",
 		LegacyAdminEnrollmentURL: "http://server.example.com:8080/api/client/enroll",
 		ServerAddress:            "server.example.com:8443",
 		ServerTLSAddress:         "server.example.com:9443",
 		ServerName:               "go-ginx-control.test",
 		ServerCAFile:             caFile,
-	}}
+	}})
 	user, err := service.CreateUser(ctx, CreateUserInput{ID: "user-1", Username: "alice", ActorID: "admin-1"})
 	if err != nil {
 		t.Fatalf("create user: %v", err)
@@ -332,13 +332,13 @@ func TestServiceCreatesClientJoinTokenFromDefaultJoin(t *testing.T) {
 	if err := os.WriteFile(caFile, []byte("ca-pem"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	service := Service{Store: db, DefaultJoin: config.JoinServiceDefaults{
+	service := NewServices(Options{Store: db, DefaultJoin: config.JoinServiceDefaults{
 		EnrollmentURL:    "http://server.example.com:8080/api/client/enroll",
 		ServerAddress:    "server.example.com:8443",
 		ServerTLSAddress: "server.example.com:9443",
 		ServerName:       "go-ginx-control.test",
 		ServerCAFile:     caFile,
-	}}
+	}})
 	user, err := service.CreateUser(ctx, CreateUserInput{ID: "user-1", Username: "alice", ActorID: "admin-1"})
 	if err != nil {
 		t.Fatalf("create user: %v", err)
@@ -352,14 +352,14 @@ func TestServiceCreatesClientJoinTokenFromDefaultJoin(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decode join token: %v", err)
 	}
-	if payload.EnrollmentURL != service.DefaultJoin.EnrollmentURL || payload.ServerAddress != service.DefaultJoin.ServerAddress || payload.ServerTLSAddress != service.DefaultJoin.ServerTLSAddress || payload.ServerName != service.DefaultJoin.ServerName {
+	if payload.EnrollmentURL != service.Clients.DefaultJoin.EnrollmentURL || payload.ServerAddress != service.Clients.DefaultJoin.ServerAddress || payload.ServerTLSAddress != service.Clients.DefaultJoin.ServerTLSAddress || payload.ServerName != service.Clients.DefaultJoin.ServerName {
 		t.Fatalf("join token did not use defaults: %+v", payload)
 	}
 }
 
 func TestServiceRejectsInvalidMilestoneOneInputs(t *testing.T) {
 	ctx := context.Background()
-	service := Service{Store: openTestStore(t)}
+	service := NewServices(Options{Store: openTestStore(t)})
 
 	if _, err := service.CreateClient(ctx, CreateClientInput{ID: "client-1", UserID: "user-1", Name: "home"}); err == nil {
 		t.Fatal("expected missing credential error")
@@ -377,7 +377,7 @@ func TestServiceRejectsInvalidMilestoneOneInputs(t *testing.T) {
 
 func TestServicePropagatesDuplicateUser(t *testing.T) {
 	ctx := context.Background()
-	service := Service{Store: openTestStore(t)}
+	service := NewServices(Options{Store: openTestStore(t)})
 	input := CreateUserInput{ID: "user-1", Username: "alice"}
 	if _, err := service.CreateUser(ctx, input); err != nil {
 		t.Fatalf("create first user: %v", err)
@@ -390,7 +390,7 @@ func TestServicePropagatesDuplicateUser(t *testing.T) {
 func TestServiceDeleteClientRemovesDisabledClientResources(t *testing.T) {
 	ctx := context.Background()
 	db := openTestStore(t)
-	service := Service{Store: db}
+	service := NewServices(Options{Store: db})
 	user, err := service.CreateUser(ctx, CreateUserInput{ID: "user-1", Username: "alice", ActorID: "admin-1"})
 	if err != nil {
 		t.Fatalf("create user: %v", err)
@@ -427,7 +427,7 @@ func TestServiceDeleteClientRemovesDisabledClientResources(t *testing.T) {
 func TestServiceDeleteClientRejectsEnabledProxy(t *testing.T) {
 	ctx := context.Background()
 	db := openTestStore(t)
-	service := Service{Store: db}
+	service := NewServices(Options{Store: db})
 	user, err := service.CreateUser(ctx, CreateUserInput{ID: "user-1", Username: "alice", ActorID: "admin-1"})
 	if err != nil {
 		t.Fatalf("create user: %v", err)
@@ -453,7 +453,7 @@ func TestServiceDeleteClientRejectsEnabledProxy(t *testing.T) {
 func TestServiceIssuesRenewsAndReportsManagedCertificate(t *testing.T) {
 	ctx := context.Background()
 	db := openTestStore(t)
-	service := Service{Store: db, Certificates: certmanager.Service{Issuer: adminFakeIssuer{}, DNSProvider: adminFakeDNSProvider{}, Storage: certmanagerTestStorage(t), Settings: domain.ACMEProviderSettings{AccountEmail: "ops@example.com", TermsAccepted: true, DNSProvider: "cloudflare"}, NewID: func() (string, error) { return "cert-1", nil }, Now: func() time.Time { return time.Now().UTC() }}}
+	service := NewServices(Options{Store: db, Certificates: certmanager.Service{Issuer: adminFakeIssuer{}, DNSProvider: adminFakeDNSProvider{}, Storage: certmanagerTestStorage(t), Settings: domain.ACMEProviderSettings{AccountEmail: "ops@example.com", TermsAccepted: true, DNSProvider: "cloudflare"}, NewID: func() (string, error) { return "cert-1", nil }, Now: func() time.Time { return time.Now().UTC() }}})
 
 	user, err := service.CreateUser(ctx, CreateUserInput{ID: "user-1", Username: "alice", ActorID: "admin-1"})
 	if err != nil {
@@ -495,7 +495,7 @@ func TestServiceManagesProviderCredentialsSecretSafe(t *testing.T) {
 	db := openTestStore(t)
 	secretStore := &adminMemorySecretStore{values: make(map[string]string)}
 	originClient := &adminOriginCAClient{}
-	service := Service{Store: db, Certificates: certmanager.Service{ProviderSecretStore: secretStore, OriginCAClient: originClient, OriginCASettings: domain.OriginCAProviderSettings{Enabled: true}}}
+	service := NewServices(Options{Store: db, Certificates: certmanager.Service{ProviderSecretStore: secretStore, OriginCAClient: originClient, OriginCASettings: domain.OriginCAProviderSettings{Enabled: true}}})
 
 	if _, err := service.CreateProviderCredential(ctx, ProviderCredentialInput{ID: "service-key", Name: "legacy", Token: "v1.0-legacy-service-key", ActorID: "admin-1"}); err == nil {
 		t.Fatal("expected legacy service key to be rejected")
@@ -572,7 +572,7 @@ func TestServiceRejectsDeletingReferencedProviderCredential(t *testing.T) {
 	ctx := context.Background()
 	db := openTestStore(t)
 	secretStore := &adminMemorySecretStore{values: make(map[string]string)}
-	service := Service{Store: db, Certificates: certmanager.Service{ProviderSecretStore: secretStore}}
+	service := NewServices(Options{Store: db, Certificates: certmanager.Service{ProviderSecretStore: secretStore}})
 	user, client := createAdminTestOwnership(ctx, t, service)
 	proxy, err := service.CreateProxy(ctx, CreateProxyInput{ID: "proxy-https", UserID: user.ID, ClientID: client.ID, Name: "secure", Type: domain.ProxyHTTPS, EntryHost: "app.example.com", TargetHost: "127.0.0.1", TargetPort: 8080, ActorID: "admin-1"})
 	if err != nil {
@@ -605,7 +605,7 @@ func TestServiceRejectsDeletingReferencedProviderCredential(t *testing.T) {
 func TestServiceProviderCredentialRequiresConfiguredSecretStore(t *testing.T) {
 	ctx := context.Background()
 	db := openTestStore(t)
-	service := Service{Store: db}
+	service := NewServices(Options{Store: db})
 
 	var contractError *contracterr.Error
 	if _, err := service.CreateProviderCredential(ctx, ProviderCredentialInput{ID: "cred-1", Name: "Production Origin CA", Token: "cf-token", ActorID: "admin-1"}); !errors.As(err, &contractError) || contractError.Code != contracterr.CodeUnsupported {
@@ -628,7 +628,7 @@ func TestServiceVerifyProviderCredentialReturnsContractErrors(t *testing.T) {
 	db := openTestStore(t)
 	secretStore := &adminMemorySecretStore{values: map[string]string{"cred-1.secret": "cf-token"}}
 	originClient := &adminOriginCAClient{verifyErr: errors.New("cloudflare origin ca request failed: status 401")}
-	service := Service{Store: db, Certificates: certmanager.Service{ProviderSecretStore: secretStore, OriginCAClient: originClient}}
+	service := NewServices(Options{Store: db, Certificates: certmanager.Service{ProviderSecretStore: secretStore, OriginCAClient: originClient}})
 	if err := db.ProviderCredentials().Create(ctx, domain.ProviderCredential{ID: "cred-1", Name: "Production Origin CA", ProviderType: domain.CertificateProviderCloudflareOriginCA, Scope: "Zone SSL:Edit", TokenFingerprint: "fingerprint", SecretRef: "cred-1.secret", Status: domain.ProviderCredentialPending}); err != nil {
 		t.Fatalf("seed provider credential: %v", err)
 	}
@@ -676,7 +676,7 @@ func TestServiceAuditsOriginCALifecycleActions(t *testing.T) {
 			return nil
 		},
 	}
-	service := Service{Store: db, Certificates: certmanager.Service{ProviderSecretStore: secretStore, OriginCAClient: originClient, Storage: certmanagerTestStorage(t), OriginCASettings: domain.OriginCAProviderSettings{Enabled: true, DefaultRequestType: certmanager.OriginCARequestTypeECC, RequestedValidity: 365}, NewID: func() (string, error) { return "cert-1", nil }, Now: func() time.Time { return now }}}
+	service := NewServices(Options{Store: db, Certificates: certmanager.Service{ProviderSecretStore: secretStore, OriginCAClient: originClient, Storage: certmanagerTestStorage(t), OriginCASettings: domain.OriginCAProviderSettings{Enabled: true, DefaultRequestType: certmanager.OriginCARequestTypeECC, RequestedValidity: 365}, NewID: func() (string, error) { return "cert-1", nil }, Now: func() time.Time { return now }}})
 	user, client := createAdminTestOwnership(ctx, t, service)
 	proxy, err := service.CreateProxy(ctx, CreateProxyInput{ID: "proxy-https", UserID: user.ID, ClientID: client.ID, Name: "secure", Type: domain.ProxyHTTPS, EntryHost: "app.example.com", TargetHost: "127.0.0.1", TargetPort: 8080, ActorID: "admin-1"})
 	if err != nil {
@@ -726,7 +726,7 @@ func TestServiceAuditsOriginCALifecycleActions(t *testing.T) {
 func TestServiceDisablesUserAndSetsPassword(t *testing.T) {
 	ctx := context.Background()
 	db := openTestStore(t)
-	service := Service{Store: db}
+	service := NewServices(Options{Store: db})
 	user, err := service.CreateUser(ctx, CreateUserInput{ID: "user-1", Username: "alice", Password: "secret-1", ActorID: "admin-1"})
 	if err != nil {
 		t.Fatalf("create user: %v", err)
@@ -759,7 +759,7 @@ func TestServiceDisablesUserAndSetsPassword(t *testing.T) {
 func TestServiceDeletesUserWithoutDependentResources(t *testing.T) {
 	ctx := context.Background()
 	db := openTestStore(t)
-	service := Service{Store: db}
+	service := NewServices(Options{Store: db})
 	user, err := service.CreateUser(ctx, CreateUserInput{ID: "user-1", Username: "alice", ActorID: "admin-1"})
 	if err != nil {
 		t.Fatalf("create user: %v", err)
@@ -775,7 +775,7 @@ func TestServiceDeletesUserWithoutDependentResources(t *testing.T) {
 func TestServiceDeleteUserRejectsDependentResources(t *testing.T) {
 	ctx := context.Background()
 	db := openTestStore(t)
-	service := Service{Store: db}
+	service := NewServices(Options{Store: db})
 	user, err := service.CreateUser(ctx, CreateUserInput{ID: "user-1", Username: "alice", ActorID: "admin-1"})
 	if err != nil {
 		t.Fatalf("create user: %v", err)
@@ -800,7 +800,7 @@ func TestServiceDeleteUserRejectsDependentResources(t *testing.T) {
 func TestServiceEnforcesProxyLifecycleRules(t *testing.T) {
 	ctx := context.Background()
 	db := openTestStore(t)
-	service := Service{Store: db}
+	service := NewServices(Options{Store: db})
 	user, err := service.CreateUser(ctx, CreateUserInput{ID: "user-1", Username: "alice", ActorID: "admin-1"})
 	if err != nil {
 		t.Fatalf("create user: %v", err)
@@ -854,11 +854,11 @@ func TestServiceEnforcesProxyLifecycleRules(t *testing.T) {
 func TestServiceListenerAdmissionRejectsStaticListenerConflicts(t *testing.T) {
 	ctx := context.Background()
 	db := openTestStore(t)
-	service := Service{Store: db, StaticListenerClaims: []domain.ListenerClaim{
+	service := NewServices(Options{Store: db, StaticListenerClaims: []domain.ListenerClaim{
 		{Network: domain.ListenerNetworkTCP, Port: 10022, Source: "admin_listen", ResourceID: "admin_listen"},
 		{Network: domain.ListenerNetworkTCP, Port: 10081, Source: "client_enrollment_listen", ResourceID: "client_enrollment_listen"},
 		{Network: domain.ListenerNetworkUDP, Port: 10053, Source: "control_quic_listen", ResourceID: "control_quic_listen"},
-	}}
+	}})
 	user, client := createAdminTestOwnership(ctx, t, service)
 
 	if _, err := service.CreateProxy(ctx, CreateProxyInput{ID: "tcp-static-conflict", UserID: user.ID, ClientID: client.ID, Name: "ssh", Type: domain.ProxyTCP, EntryPort: 10022, TargetHost: "127.0.0.1", TargetPort: 22, ActorID: "admin-1"}); !errors.Is(err, domain.ErrEntryConflict) {
@@ -875,7 +875,7 @@ func TestServiceListenerAdmissionRejectsStaticListenerConflicts(t *testing.T) {
 func TestServiceListenerAdmissionUsesEnabledProxyClaims(t *testing.T) {
 	ctx := context.Background()
 	db := openTestStore(t)
-	service := Service{Store: db}
+	service := NewServices(Options{Store: db})
 	user, client := createAdminTestOwnership(ctx, t, service)
 
 	if _, err := service.CreateProxy(ctx, CreateProxyInput{ID: "tcp-active", UserID: user.ID, ClientID: client.ID, Name: "ssh", Type: domain.ProxyTCP, EntryPort: 10022, TargetHost: "127.0.0.1", TargetPort: 22, ActorID: "admin-1"}); err != nil {
@@ -896,10 +896,10 @@ func TestServiceListenerAdmissionUsesEnabledProxyClaims(t *testing.T) {
 func TestServiceListenerAdmissionAllowsDisabledProxyEdits(t *testing.T) {
 	ctx := context.Background()
 	db := openTestStore(t)
-	service := Service{Store: db, StaticListenerClaims: []domain.ListenerClaim{
+	service := NewServices(Options{Store: db, StaticListenerClaims: []domain.ListenerClaim{
 		{Network: domain.ListenerNetworkTCP, Port: 10022, Source: "admin_listen", ResourceID: "admin_listen"},
 		{Network: domain.ListenerNetworkUDP, Port: 10053, Source: "control_quic_listen", ResourceID: "control_quic_listen"},
-	}}
+	}})
 	user, client := createAdminTestOwnership(ctx, t, service)
 
 	if err := db.Proxies().Create(ctx, domain.Proxy{ID: "tcp-disabled", UserID: user.ID, ClientID: client.ID, Name: "disabled-tcp", Type: domain.ProxyTCP, Status: domain.ProxyDisabled, EntryPort: 10024, TargetHost: "127.0.0.1", TargetPort: 24}); err != nil {
@@ -928,7 +928,7 @@ func TestServiceListenerAdmissionAllowsDisabledProxyEdits(t *testing.T) {
 func TestServiceWebRouteAdmissionUsesEnabledProxies(t *testing.T) {
 	ctx := context.Background()
 	db := openTestStore(t)
-	service := Service{Store: db}
+	service := NewServices(Options{Store: db})
 	user, client := createAdminTestOwnership(ctx, t, service)
 	webDomain, err := service.CreateDomain(ctx, CreateDomainInput{ID: "domain-1", UserID: user.ID, Host: "app.example.com", ActorID: "admin-1"})
 	if err != nil {
@@ -962,7 +962,7 @@ func TestServiceWebRouteAdmissionUsesEnabledProxies(t *testing.T) {
 func TestServiceListenerAdmissionCoversCreateUpdateAndEnable(t *testing.T) {
 	ctx := context.Background()
 	db := openTestStore(t)
-	service := Service{Store: db, StaticListenerClaims: []domain.ListenerClaim{{Network: domain.ListenerNetworkTCP, Port: 10030, Source: "http_entry_listen", ResourceID: "http_entry_listen"}}}
+	service := NewServices(Options{Store: db, StaticListenerClaims: []domain.ListenerClaim{{Network: domain.ListenerNetworkTCP, Port: 10030, Source: "http_entry_listen", ResourceID: "http_entry_listen"}}})
 	user, client := createAdminTestOwnership(ctx, t, service)
 
 	created, err := service.CreateProxy(ctx, CreateProxyInput{ID: "tcp-create-success", UserID: user.ID, ClientID: client.ID, Name: "ssh", Type: domain.ProxyTCP, EntryPort: 10031, TargetHost: "127.0.0.1", TargetPort: 22, ActorID: "admin-1"})
@@ -1008,7 +1008,7 @@ func TestCreateProxyReconcileFailureRollsBackCreatedProxy(t *testing.T) {
 	ctx := context.Background()
 	db := openTestStore(t)
 	reconciler := &fakeProxyListenerReconciler{err: errors.New("bind failed")}
-	service := Service{Store: db, ListenerReconciler: reconciler}
+	service := NewServices(Options{Store: db, ListenerReconciler: reconciler})
 	user, client := createAdminTestOwnership(ctx, t, service)
 
 	_, err := service.CreateProxy(ctx, CreateProxyInput{ID: "proxy-1", UserID: user.ID, ClientID: client.ID, Name: "ssh", Type: domain.ProxyTCP, EntryPort: 10022, TargetHost: "127.0.0.1", TargetPort: 22, ActorID: "admin-1"})
@@ -1028,11 +1028,11 @@ func TestEnableProxyAccessAuthUsesCertificateIDBinding(t *testing.T) {
 	ctx := context.Background()
 	db := openTestStore(t)
 	certificateDir := t.TempDir()
-	service := Service{
+	service := NewServices(Options{
 		Store:              db,
 		Certificates:       certmanager.Service{Storage: httpsproxy.ManagedCertificateStorage{CertificateDir: certificateDir}, NewID: func() (string, error) { return "cert-access-1", nil }, Now: func() time.Time { return time.Now().UTC() }},
 		ListenerReconciler: &fakeProxyListenerReconciler{},
-	}
+	})
 	user, client := createAdminTestOwnership(ctx, t, service)
 	certFile, keyFile := writeManagedCertPair(t, certificateDir, "app.example.com", time.Now().Add(24*time.Hour))
 	// 先建未绑定证书，再 bind 到 proxy：权威绑定是 proxy.certificate_id，不一定有证书侧 proxy_id 反向引用。
@@ -1076,7 +1076,7 @@ func TestEnableProxyAccessAuthUsesCertificateIDBinding(t *testing.T) {
 	}
 }
 
-func createAdminTestOwnership(ctx context.Context, t *testing.T, service Service) (domain.User, domain.Client) {
+func createAdminTestOwnership(ctx context.Context, t *testing.T, service Services) (domain.User, domain.Client) {
 	t.Helper()
 	user, err := service.CreateUser(ctx, CreateUserInput{ID: "user-1", Username: "alice", ActorID: "admin-1"})
 	if err != nil {

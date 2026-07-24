@@ -83,11 +83,11 @@ type CommandFacades interface {
 	ProviderCredentialFacade
 }
 
-var _ UserFacade = Service{}
-var _ ClientFacade = Service{}
-var _ DomainFacade = Service{}
-var _ ProxyFacade = Service{}
-var _ CertificateFacade = Service{}
-var _ ProviderCredentialFacade = Service{}
-var _ CommandFacades = Service{}
-var _ CommandFacades = (*Service)(nil)
+var _ UserFacade = (*UserService)(nil)
+var _ ClientFacade = (*ClientService)(nil)
+var _ DomainFacade = (*DomainService)(nil)
+var _ ProxyFacade = (*ProxyService)(nil)
+var _ CertificateFacade = (*CertificateService)(nil)
+var _ ProviderCredentialFacade = (*ProviderCredentialService)(nil)
+var _ CommandFacades = Commands{}
+var _ CommandFacades = (*Commands)(nil)

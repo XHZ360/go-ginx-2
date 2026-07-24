@@ -282,4 +282,4 @@ adminapi / CLI / UI adapter
 
 阶段 1 接口收窄与运行时端口冻结已完成，且没有改变 API、协议或运行时行为；物理拆分 facade 的阶段 2 留给后续 Change。`SystemClientFacade` 已收敛为唯一导出名，`ListenerReconciler` 成为规范端口名并保留 `ProxyListenerReconciler` 兼容别名；`ProxyEntryDefaults` 作为接口收窄后必须独立装配的非命令配置传入 `adminapi`。全量包测中的 custom Web listener 502 是已确认的预置 flaky，已转入技术债，不阻塞本 Change。
 
-阶段 2（物理拆分 `admin.Service`）的具体计划见 [../active/admin-facade-physical-split.md](../active/admin-facade-physical-split.md)。
+阶段 2（物理拆分 `admin.Service`）的具体实施记录见 [../completed/admin-facade-physical-split.md](../completed/admin-facade-physical-split.md)。

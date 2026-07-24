@@ -41,7 +41,7 @@ func TestServiceCreatesUnboundFileCertificate(t *testing.T) {
 	ctx := context.Background()
 	db := openTestStore(t)
 	certificateDir := t.TempDir()
-	service := Service{Store: db, Certificates: certmanager.Service{Storage: httpsproxy.ManagedCertificateStorage{CertificateDir: certificateDir}, NewID: func() (string, error) { return "cert-file-1", nil }, Now: func() time.Time { return time.Now().UTC() }}}
+	service := NewServices(Options{Store: db, Certificates: certmanager.Service{Storage: httpsproxy.ManagedCertificateStorage{CertificateDir: certificateDir}, NewID: func() (string, error) { return "cert-file-1", nil }, Now: func() time.Time { return time.Now().UTC() }}})
 
 	certFile, keyFile := writeManagedCertPair(t, certificateDir, "app.example.com", time.Now().Add(24*time.Hour))
 	certificate, err := service.CreateCertificate(ctx, CreateCertificateInput{Host: "app.example.com", ProviderType: domain.CertificateProviderFile, CertFile: certFile, KeyFile: keyFile, ActorID: "admin-1"})
@@ -67,7 +67,7 @@ func TestServiceDeleteCertificateRiskBasedConfirmation(t *testing.T) {
 	ctx := context.Background()
 	db := openTestStore(t)
 	certificateDir := t.TempDir()
-	service := Service{Store: db, Certificates: certmanager.Service{Storage: httpsproxy.ManagedCertificateStorage{CertificateDir: certificateDir}, NewID: func() (string, error) { return "cert-file-1", nil }, Now: func() time.Time { return time.Now().UTC() }}, ListenerReconciler: &fakeProxyListenerReconciler{}}
+	service := NewServices(Options{Store: db, Certificates: certmanager.Service{Storage: httpsproxy.ManagedCertificateStorage{CertificateDir: certificateDir}, NewID: func() (string, error) { return "cert-file-1", nil }, Now: func() time.Time { return time.Now().UTC() }}, ListenerReconciler: &fakeProxyListenerReconciler{}})
 	user, client := createAdminTestOwnership(ctx, t, service)
 
 	certFile, keyFile := writeManagedCertPair(t, certificateDir, "app.example.com", time.Now().Add(24*time.Hour))
@@ -114,7 +114,7 @@ func TestServiceDeleteUnboundCertificateNoConfirmation(t *testing.T) {
 	ctx := context.Background()
 	db := openTestStore(t)
 	certificateDir := t.TempDir()
-	service := Service{Store: db, Certificates: certmanager.Service{Storage: httpsproxy.ManagedCertificateStorage{CertificateDir: certificateDir}, NewID: func() (string, error) { return "cert-file-1", nil }, Now: func() time.Time { return time.Now().UTC() }}, ListenerReconciler: &fakeProxyListenerReconciler{}}
+	service := NewServices(Options{Store: db, Certificates: certmanager.Service{Storage: httpsproxy.ManagedCertificateStorage{CertificateDir: certificateDir}, NewID: func() (string, error) { return "cert-file-1", nil }, Now: func() time.Time { return time.Now().UTC() }}, ListenerReconciler: &fakeProxyListenerReconciler{}})
 
 	certFile, keyFile := writeManagedCertPair(t, certificateDir, "free.example.com", time.Now().Add(24*time.Hour))
 	certificate, err := service.CreateCertificate(ctx, CreateCertificateInput{Host: "free.example.com", ProviderType: domain.CertificateProviderFile, CertFile: certFile, KeyFile: keyFile, ActorID: "admin-1"})
@@ -140,7 +140,7 @@ func TestServiceDeleteBoundButUnservableCertificateNoConfirmation(t *testing.T) 
 	ctx := context.Background()
 	db := openTestStore(t)
 	certificateDir := t.TempDir()
-	service := Service{Store: db, Certificates: certmanager.Service{Storage: httpsproxy.ManagedCertificateStorage{CertificateDir: certificateDir}, NewID: func() (string, error) { return "cert-expired-1", nil }, Now: func() time.Time { return time.Now().UTC() }}, ListenerReconciler: &fakeProxyListenerReconciler{}}
+	service := NewServices(Options{Store: db, Certificates: certmanager.Service{Storage: httpsproxy.ManagedCertificateStorage{CertificateDir: certificateDir}, NewID: func() (string, error) { return "cert-expired-1", nil }, Now: func() time.Time { return time.Now().UTC() }}, ListenerReconciler: &fakeProxyListenerReconciler{}})
 	user, client := createAdminTestOwnership(ctx, t, service)
 
 	// 写入一对已过期的受管证书文件并以遗留路径方式绑定到代理。
@@ -183,7 +183,7 @@ func TestServiceDeleteCertificateAcceptsCertificateIdConfirmation(t *testing.T) 
 	ctx := context.Background()
 	db := openTestStore(t)
 	certificateDir := t.TempDir()
-	service := Service{Store: db, Certificates: certmanager.Service{Storage: httpsproxy.ManagedCertificateStorage{CertificateDir: certificateDir}, NewID: func() (string, error) { return "cert-confirm-1", nil }, Now: func() time.Time { return time.Now().UTC() }}, ListenerReconciler: &fakeProxyListenerReconciler{}}
+	service := NewServices(Options{Store: db, Certificates: certmanager.Service{Storage: httpsproxy.ManagedCertificateStorage{CertificateDir: certificateDir}, NewID: func() (string, error) { return "cert-confirm-1", nil }, Now: func() time.Time { return time.Now().UTC() }}, ListenerReconciler: &fakeProxyListenerReconciler{}})
 	user, client := createAdminTestOwnership(ctx, t, service)
 
 	certFile, keyFile := writeManagedCertPair(t, certificateDir, "app.example.com", time.Now().Add(24*time.Hour))
@@ -228,10 +228,10 @@ func TestServiceBindUnbindCertificateAndOneToOneConflict(t *testing.T) {
 	db := openTestStore(t)
 	certificateDir := t.TempDir()
 	certSeq := 0
-	service := Service{Store: db, Certificates: certmanager.Service{Storage: httpsproxy.ManagedCertificateStorage{CertificateDir: certificateDir}, NewID: func() (string, error) {
+	service := NewServices(Options{Store: db, Certificates: certmanager.Service{Storage: httpsproxy.ManagedCertificateStorage{CertificateDir: certificateDir}, NewID: func() (string, error) {
 		certSeq++
 		return fmt.Sprintf("cert-bind-%d", certSeq), nil
-	}, Now: func() time.Time { return time.Now().UTC() }}, ListenerReconciler: &fakeProxyListenerReconciler{}}
+	}, Now: func() time.Time { return time.Now().UTC() }}, ListenerReconciler: &fakeProxyListenerReconciler{}})
 	user, client := createAdminTestOwnership(ctx, t, service)
 
 	certFile, keyFile := writeManagedCertPair(t, certificateDir, "app.example.com", time.Now().Add(24*time.Hour))
@@ -317,7 +317,7 @@ func TestServiceBindCertificateRejectsIncompatibleHost(t *testing.T) {
 	ctx := context.Background()
 	db := openTestStore(t)
 	certificateDir := t.TempDir()
-	service := Service{Store: db, Certificates: certmanager.Service{Storage: httpsproxy.ManagedCertificateStorage{CertificateDir: certificateDir}, NewID: func() (string, error) { return "cert-host-1", nil }, Now: func() time.Time { return time.Now().UTC() }}, ListenerReconciler: &fakeProxyListenerReconciler{}}
+	service := NewServices(Options{Store: db, Certificates: certmanager.Service{Storage: httpsproxy.ManagedCertificateStorage{CertificateDir: certificateDir}, NewID: func() (string, error) { return "cert-host-1", nil }, Now: func() time.Time { return time.Now().UTC() }}, ListenerReconciler: &fakeProxyListenerReconciler{}})
 	user, client := createAdminTestOwnership(ctx, t, service)
 
 	certFile, keyFile := writeManagedCertPair(t, certificateDir, "other.example.com", time.Now().Add(24*time.Hour))
@@ -340,7 +340,7 @@ func TestServiceUpdateDomainRejectsHostOutsideBoundCertificate(t *testing.T) {
 	ctx := context.Background()
 	db := openTestStore(t)
 	certificateDir := t.TempDir()
-	service := Service{Store: db, Certificates: certmanager.Service{Storage: httpsproxy.ManagedCertificateStorage{CertificateDir: certificateDir}, NewID: func() (string, error) { return "cert-update-domain-1", nil }, Now: func() time.Time { return time.Now().UTC() }}, ListenerReconciler: &fakeProxyListenerReconciler{}}
+	service := NewServices(Options{Store: db, Certificates: certmanager.Service{Storage: httpsproxy.ManagedCertificateStorage{CertificateDir: certificateDir}, NewID: func() (string, error) { return "cert-update-domain-1", nil }, Now: func() time.Time { return time.Now().UTC() }}, ListenerReconciler: &fakeProxyListenerReconciler{}})
 	user, client := createAdminTestOwnership(ctx, t, service)
 
 	certFile, keyFile := writeManagedCertPair(t, certificateDir, "app.example.com", time.Now().Add(24*time.Hour))
@@ -378,7 +378,7 @@ func TestServiceUpdateProxyRejectsHostOutsideBoundCertificate(t *testing.T) {
 	ctx := context.Background()
 	db := openTestStore(t)
 	certificateDir := t.TempDir()
-	service := Service{Store: db, Certificates: certmanager.Service{Storage: httpsproxy.ManagedCertificateStorage{CertificateDir: certificateDir}, NewID: func() (string, error) { return "cert-update-proxy-1", nil }, Now: func() time.Time { return time.Now().UTC() }}, ListenerReconciler: &fakeProxyListenerReconciler{}}
+	service := NewServices(Options{Store: db, Certificates: certmanager.Service{Storage: httpsproxy.ManagedCertificateStorage{CertificateDir: certificateDir}, NewID: func() (string, error) { return "cert-update-proxy-1", nil }, Now: func() time.Time { return time.Now().UTC() }}, ListenerReconciler: &fakeProxyListenerReconciler{}})
 	user, client := createAdminTestOwnership(ctx, t, service)
 
 	certFile, keyFile := writeManagedCertPair(t, certificateDir, "app.example.com", time.Now().Add(24*time.Hour))
@@ -416,7 +416,7 @@ func TestServiceMigrateLegacyFileCertificatesIsIdempotent(t *testing.T) {
 	ctx := context.Background()
 	db := openTestStore(t)
 	certificateDir := t.TempDir()
-	service := Service{Store: db, Certificates: certmanager.Service{Storage: httpsproxy.ManagedCertificateStorage{CertificateDir: certificateDir}, NewID: func() (string, error) { return "cert-migrated-1", nil }, Now: func() time.Time { return time.Now().UTC() }}}
+	service := NewServices(Options{Store: db, Certificates: certmanager.Service{Storage: httpsproxy.ManagedCertificateStorage{CertificateDir: certificateDir}, NewID: func() (string, error) { return "cert-migrated-1", nil }, Now: func() time.Time { return time.Now().UTC() }}})
 
 	user := domain.User{ID: "user-1", Username: "alice", Role: domain.RoleUser, Status: domain.UserEnabled}
 	client := domain.Client{ID: "client-1", UserID: user.ID, Name: "home", Status: domain.ClientOffline, CredentialHash: domain.HashCredential("secret")}
@@ -452,14 +452,14 @@ func TestServiceMigrateLegacyFileCertificatesIsIdempotent(t *testing.T) {
 		t.Fatalf("expected domain bound to certificate, got %+v", webDomain)
 	}
 	// MigrateLegacyFileCertificates is a no-op once proxy-level cert paths are gone.
-	migrated, err := service.MigrateLegacyFileCertificates(ctx)
+	migrated, err := service.Certificates.MigrateLegacyFileCertificates(ctx)
 	if err != nil {
 		t.Fatalf("migrate legacy file certificates: %v", err)
 	}
 	if migrated != 0 {
 		t.Fatalf("expected no proxy-level file certs to migrate, got %d", migrated)
 	}
-	again, err := service.MigrateLegacyFileCertificates(ctx)
+	again, err := service.Certificates.MigrateLegacyFileCertificates(ctx)
 	if err != nil {
 		t.Fatalf("re-run migration: %v", err)
 	}
@@ -480,7 +480,7 @@ func TestServiceMigrateLegacyFileCertificatesStoresOnlyPathsNotPrivateKeyBytes(t
 	}
 	t.Cleanup(func() { _ = db.Close() })
 	certificateDir := t.TempDir()
-	service := Service{Store: db, Certificates: certmanager.Service{Storage: httpsproxy.ManagedCertificateStorage{CertificateDir: certificateDir}, NewID: func() (string, error) { return "cert-migrated-1", nil }, Now: func() time.Time { return time.Now().UTC() }}}
+	service := NewServices(Options{Store: db, Certificates: certmanager.Service{Storage: httpsproxy.ManagedCertificateStorage{CertificateDir: certificateDir}, NewID: func() (string, error) { return "cert-migrated-1", nil }, Now: func() time.Time { return time.Now().UTC() }}})
 
 	user := domain.User{ID: "user-1", Username: "alice", Role: domain.RoleUser, Status: domain.UserEnabled}
 	client := domain.Client{ID: "client-1", UserID: user.ID, Name: "home", Status: domain.ClientOffline, CredentialHash: domain.HashCredential("secret")}
