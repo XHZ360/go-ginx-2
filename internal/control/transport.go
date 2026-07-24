@@ -377,6 +377,10 @@ func (server Server) handleControl(ctx context.Context, stream io.ReadWriteClose
 }
 
 func (server Server) setClientRuntimeStatus(ctx context.Context, clientID string, status domain.ClientStatus) bool {
+	// This is the registered runtime-status exception in
+	// docs/changes/completed/server-runtime-context-architecture.md: authenticated
+	// control connection lifecycle may directly synchronize ClientStatus without
+	// invoking a business facade or producing an audit event.
 	if server.Authenticator.Store == nil || server.Authenticator.Store.Clients() == nil {
 		return false
 	}

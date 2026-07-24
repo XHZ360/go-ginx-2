@@ -474,15 +474,15 @@ func TestServerClientCredentialAndValidationContract(t *testing.T) {
 
 func TestServerProxyEntryConflictAndDeleteAfterDisable(t *testing.T) {
 	server := startAdminTestServer(t, func(entry *Entry) {
-		entry.Commands.StaticListenerClaims = []domain.ListenerClaim{
+		testCommands(entry).StaticListenerClaims = []domain.ListenerClaim{
 			{Network: domain.ListenerNetworkTCP, Port: 10022, Source: "admin_listen", ResourceID: "admin_listen"},
 			{Network: domain.ListenerNetworkTCP, Port: 10081, Source: "client_enrollment_listen", ResourceID: "client_enrollment_listen"},
 		}
 		ctx := context.Background()
-		if err := entry.Commands.Store.Proxies().Create(ctx, domain.Proxy{ID: "proxy-update", UserID: "user-1", ClientID: "client-1", Name: "ssh-update", Type: domain.ProxyTCP, Status: domain.ProxyEnabled, EntryPort: 10024, TargetHost: "127.0.0.1", TargetPort: 24}); err != nil {
+		if err := testCommands(entry).Store.Proxies().Create(ctx, domain.Proxy{ID: "proxy-update", UserID: "user-1", ClientID: "client-1", Name: "ssh-update", Type: domain.ProxyTCP, Status: domain.ProxyEnabled, EntryPort: 10024, TargetHost: "127.0.0.1", TargetPort: 24}); err != nil {
 			t.Fatalf("seed update proxy: %v", err)
 		}
-		if err := entry.Commands.Store.Proxies().Create(ctx, domain.Proxy{ID: "proxy-enable", UserID: "user-1", ClientID: "client-1", Name: "ssh-enable", Type: domain.ProxyTCP, Status: domain.ProxyDisabled, EntryPort: 10022, TargetHost: "127.0.0.1", TargetPort: 22}); err != nil {
+		if err := testCommands(entry).Store.Proxies().Create(ctx, domain.Proxy{ID: "proxy-enable", UserID: "user-1", ClientID: "client-1", Name: "ssh-enable", Type: domain.ProxyTCP, Status: domain.ProxyDisabled, EntryPort: 10022, TargetHost: "127.0.0.1", TargetPort: 22}); err != nil {
 			t.Fatalf("seed enable proxy: %v", err)
 		}
 	})
@@ -533,7 +533,7 @@ func TestServerClientJoinDefaultsAndDeleteContract(t *testing.T) {
 		t.Fatalf("write control ca: %v", err)
 	}
 	server := startAdminTestServer(t, func(entry *Entry) {
-		entry.Commands.DefaultJoin = config.JoinServiceDefaults{
+		testCommands(entry).DefaultJoin = config.JoinServiceDefaults{
 			EnrollmentURL:    "http://server.example.com:8081/api/client/enroll",
 			ServerAddress:    "server.example.com:8443",
 			ServerTLSAddress: "server.example.com:9443",
@@ -584,29 +584,29 @@ func TestServerClientJoinDefaultsAndDeleteContract(t *testing.T) {
 func TestServerCertificateResponsesStaySecretSafe(t *testing.T) {
 	server := startAdminTestServer(t, func(entry *Entry) {
 		ctx := context.Background()
-		if err := entry.Commands.Store.Proxies().Create(ctx, domain.Proxy{ID: "proxy-https", UserID: "user-1", ClientID: "client-1", Name: "secure", Type: domain.ProxyHTTPS, Status: domain.ProxyEnabled, EntryHost: "secure.example.com", TargetHost: "127.0.0.1", TargetPort: 8443}); err != nil {
+		if err := testCommands(entry).Store.Proxies().Create(ctx, domain.Proxy{ID: "proxy-https", UserID: "user-1", ClientID: "client-1", Name: "secure", Type: domain.ProxyHTTPS, Status: domain.ProxyEnabled, EntryHost: "secure.example.com", TargetHost: "127.0.0.1", TargetPort: 8443}); err != nil {
 			t.Fatalf("seed https proxy: %v", err)
 		}
 		// remove auto-registered static cert if any, then seed secret-path certificate for leak checks
-		proxy, err := entry.Commands.Store.Proxies().ByID(ctx, "proxy-https")
+		proxy, err := testCommands(entry).Store.Proxies().ByID(ctx, "proxy-https")
 		if err != nil {
 			t.Fatalf("reload proxy: %v", err)
 		}
-		webDomain, err := entry.Commands.Store.Domains().ByID(ctx, proxy.DomainID)
+		webDomain, err := testCommands(entry).Store.Domains().ByID(ctx, proxy.DomainID)
 		if err != nil {
 			t.Fatalf("reload domain: %v", err)
 		}
 		if webDomain.CertificateID != "" {
-			_ = entry.Commands.Store.Certificates().Delete(ctx, webDomain.CertificateID)
+			_ = testCommands(entry).Store.Certificates().Delete(ctx, webDomain.CertificateID)
 			webDomain.CertificateID = ""
-			_ = entry.Commands.Store.Domains().Update(ctx, webDomain)
+			_ = testCommands(entry).Store.Domains().Update(ctx, webDomain)
 		}
 		notAfter := time.Now().UTC().Add(time.Hour)
-		if err := entry.Commands.Store.Certificates().Create(ctx, domain.ManagedCertificate{ID: "cert-1", ProxyID: "proxy-https", Host: "secure.example.com", Status: domain.CertificateValid, CertFile: "secret-cert.pem", KeyFile: "secret-key.pem", PreviousCertFile: "old-cert.pem", PreviousKeyFile: "old-key.pem", NotAfter: &notAfter}); err != nil {
+		if err := testCommands(entry).Store.Certificates().Create(ctx, domain.ManagedCertificate{ID: "cert-1", ProxyID: "proxy-https", Host: "secure.example.com", Status: domain.CertificateValid, CertFile: "secret-cert.pem", KeyFile: "secret-key.pem", PreviousCertFile: "old-cert.pem", PreviousKeyFile: "old-key.pem", NotAfter: &notAfter}); err != nil {
 			t.Fatalf("seed certificate: %v", err)
 		}
 		webDomain.CertificateID = "cert-1"
-		if err := entry.Commands.Store.Domains().Update(ctx, webDomain); err != nil {
+		if err := testCommands(entry).Store.Domains().Update(ctx, webDomain); err != nil {
 			t.Fatalf("bind domain certificate: %v", err)
 		}
 	})
@@ -631,7 +631,7 @@ func TestServerCertificateResponsesStaySecretSafe(t *testing.T) {
 
 func TestServerProviderCredentialGraphQLLifecycleIsSecretSafe(t *testing.T) {
 	server := startAdminTestServer(t, func(entry *Entry) {
-		entry.Commands.Certificates = certmanager.Service{
+		testCommands(entry).Certificates = certmanager.Service{
 			ProviderSecretStore: certmanager.FileSecretStore{Dir: t.TempDir()},
 			OriginCAClient:      adminAPIOriginCAClient{},
 			OriginCASettings:    domain.OriginCAProviderSettings{Enabled: true},
@@ -730,7 +730,7 @@ func TestServerProviderCredentialGraphQLReportsUnavailableStorage(t *testing.T) 
 
 func TestServerProviderCredentialGraphQLReportsVerificationFailure(t *testing.T) {
 	server := startAdminTestServer(t, func(entry *Entry) {
-		entry.Commands.Certificates = certmanager.Service{
+		testCommands(entry).Certificates = certmanager.Service{
 			ProviderSecretStore: certmanager.FileSecretStore{Dir: t.TempDir()},
 			OriginCAClient:      adminAPIOriginCAClient{verifyErr: io.ErrUnexpectedEOF},
 			OriginCASettings:    domain.OriginCAProviderSettings{Enabled: true},
@@ -753,7 +753,7 @@ func TestServerProviderCredentialGraphQLReportsVerificationFailure(t *testing.T)
 
 func TestServerCloudflareOriginCAIssueFailureIsConsumable(t *testing.T) {
 	server := startAdminTestServer(t, func(entry *Entry) {
-		entry.Commands.Certificates = certmanager.Service{
+		testCommands(entry).Certificates = certmanager.Service{
 			ProviderSecretStore: certmanager.FileSecretStore{Dir: t.TempDir()},
 			OriginCAClient: adminAPIOriginCAClient{createErr: &certmanager.CloudflareAPIError{
 				FailureMessage: "cloudflare origin ca request failed",
@@ -789,7 +789,7 @@ func TestServerCloudflareOriginCAIssueFailureIsConsumable(t *testing.T) {
 
 func TestServerReportsACMEReadinessAndBlocksCreate(t *testing.T) {
 	server := startAdminTestServer(t, func(entry *Entry) {
-		entry.Commands.Certificates = certmanager.Service{Settings: domain.ACMEProviderSettings{DNSProviderTokenEnv: "CF_DNS_API_TOKEN"}}
+		testCommands(entry).Certificates = certmanager.Service{Settings: domain.ACMEProviderSettings{DNSProviderTokenEnv: "CF_DNS_API_TOKEN"}}
 	})
 	client := newAdminHTTPClient(t)
 	bootstrap := loginAdmin(t, client, server.Addr().String(), "admin", "secret")
@@ -815,7 +815,7 @@ func TestServerCreatesWildcardOriginCACertificateThroughGraphQL(t *testing.T) {
 	now := time.Date(2026, 6, 10, 12, 0, 0, 0, time.UTC)
 	certificateDir := t.TempDir()
 	server := startAdminTestServer(t, func(entry *Entry) {
-		entry.Commands.Certificates = certmanager.Service{
+		testCommands(entry).Certificates = certmanager.Service{
 			ProviderSecretStore: certmanager.FileSecretStore{Dir: t.TempDir()},
 			OriginCAClient: adminAPIOriginCAClient{create: func(_ context.Context, _ string, request certmanager.OriginCACreateRequest) (certmanager.OriginCACertificate, error) {
 				return certmanager.OriginCACertificate{ID: "cf-cert-wildcard", CertificatePEM: adminAPIOriginCATestCertificateFromCSR(t, request.CSR, request.Hostnames, now.Add(365*24*time.Hour)), Hostnames: request.Hostnames, RequestType: request.RequestType, RequestedValidity: request.RequestedValidity, Status: "active"}, nil
@@ -847,7 +847,7 @@ func TestServerCreatesWildcardOriginCACertificateThroughGraphQL(t *testing.T) {
 	if len(hostnames) != 1 || hostnames[0] != "*.example.com" {
 		t.Fatalf("unexpected wildcard hostnames: %+v", hostnames)
 	}
-	stored, err := server.commands.Store.Certificates().ByID(context.Background(), "cert-origin-wildcard")
+	stored, err := server.commands.(*admin.Service).Store.Certificates().ByID(context.Background(), "cert-origin-wildcard")
 	if err != nil {
 		t.Fatalf("read stored wildcard certificate: %v", err)
 	}
@@ -969,7 +969,7 @@ func startAdminTestServer(t *testing.T, mutateEntry func(*Entry)) *Server {
 	t.Cleanup(cancel)
 	db, sessions, memory := adminAPITestRuntime(t)
 	credentialsFile := writeAdminCredentials(t)
-	entry := Entry{ListenAddress: "127.0.0.1:0", AdminCredentialsFile: credentialsFile, AdminFrontendDir: writeAdminFrontendFixture(t), AdminJWTSecret: testAdminJWTSecret(), Query: adminquery.Service{Store: db, Sessions: sessions, Stats: memory}, Commands: admin.Service{Store: db}}
+	entry := Entry{ListenAddress: "127.0.0.1:0", AdminCredentialsFile: credentialsFile, AdminFrontendDir: writeAdminFrontendFixture(t), AdminJWTSecret: testAdminJWTSecret(), Query: adminquery.Service{Store: db, Sessions: sessions, Stats: memory}, Commands: &admin.Service{Store: db}}
 	if mutateEntry != nil {
 		mutateEntry(&entry)
 	}
@@ -980,6 +980,14 @@ func startAdminTestServer(t *testing.T, mutateEntry func(*Entry)) *Server {
 	t.Cleanup(func() { _ = server.Close() })
 	go func() { _ = server.Serve(ctx) }()
 	return server
+}
+
+func testCommands(entry *Entry) *admin.Service {
+	commands, ok := entry.Commands.(*admin.Service)
+	if !ok {
+		panic("admin api test entry must use *admin.Service commands")
+	}
+	return commands
 }
 
 func setDefaultAdminExecutable(t *testing.T, deploymentRoot string) {
@@ -1341,7 +1349,7 @@ func TestServerDomainDetailResolvesEmbeddedListFields(t *testing.T) {
 
 	server := startAdminTestServer(t, func(entry *Entry) {
 		entry.Query = adminquery.Service{Store: db}
-		entry.Commands = admin.Service{Store: db}
+		entry.Commands = &admin.Service{Store: db}
 	})
 	client := newAdminHTTPClient(t)
 	bootstrap := loginAdmin(t, client, server.Addr().String(), "admin", "secret")
@@ -1374,10 +1382,10 @@ query {
 func TestServerCertificateBindingMutationsAndReferenceFields(t *testing.T) {
 	server := startAdminTestServer(t, func(entry *Entry) {
 		ctx := context.Background()
-		if err := entry.Commands.Store.Proxies().Create(ctx, domain.Proxy{ID: "proxy-https", UserID: "user-1", ClientID: "client-1", Name: "secure", Type: domain.ProxyHTTPS, Status: domain.ProxyEnabled, EntryHost: "secure.example.com", TargetHost: "127.0.0.1", TargetPort: 8443}); err != nil {
+		if err := testCommands(entry).Store.Proxies().Create(ctx, domain.Proxy{ID: "proxy-https", UserID: "user-1", ClientID: "client-1", Name: "secure", Type: domain.ProxyHTTPS, Status: domain.ProxyEnabled, EntryHost: "secure.example.com", TargetHost: "127.0.0.1", TargetPort: 8443}); err != nil {
 			t.Fatalf("seed https proxy: %v", err)
 		}
-		if err := entry.Commands.Store.Certificates().Create(ctx, domain.ManagedCertificate{ID: "cert-bind", Host: "secure.example.com", Hostnames: []string{"secure.example.com"}, Status: domain.CertificateValid, CertFile: "secret-cert.pem", KeyFile: "secret-key.pem"}); err != nil {
+		if err := testCommands(entry).Store.Certificates().Create(ctx, domain.ManagedCertificate{ID: "cert-bind", Host: "secure.example.com", Hostnames: []string{"secure.example.com"}, Status: domain.CertificateValid, CertFile: "secret-cert.pem", KeyFile: "secret-key.pem"}); err != nil {
 			t.Fatalf("seed certificate: %v", err)
 		}
 	})
@@ -1453,10 +1461,10 @@ func TestServerCertificateBindingMutationsAndReferenceFields(t *testing.T) {
 func TestServerBindCertificateIncompatibleHostReportsTypedCode(t *testing.T) {
 	server := startAdminTestServer(t, func(entry *Entry) {
 		ctx := context.Background()
-		if err := entry.Commands.Store.Proxies().Create(ctx, domain.Proxy{ID: "proxy-https", UserID: "user-1", ClientID: "client-1", Name: "secure", Type: domain.ProxyHTTPS, Status: domain.ProxyEnabled, EntryHost: "secure.example.com", TargetHost: "127.0.0.1", TargetPort: 8443}); err != nil {
+		if err := testCommands(entry).Store.Proxies().Create(ctx, domain.Proxy{ID: "proxy-https", UserID: "user-1", ClientID: "client-1", Name: "secure", Type: domain.ProxyHTTPS, Status: domain.ProxyEnabled, EntryHost: "secure.example.com", TargetHost: "127.0.0.1", TargetPort: 8443}); err != nil {
 			t.Fatalf("seed https proxy: %v", err)
 		}
-		if err := entry.Commands.Store.Certificates().Create(ctx, domain.ManagedCertificate{ID: "cert-other", Host: "other.example.com", Hostnames: []string{"other.example.com"}, Status: domain.CertificateValid, CertFile: "c.pem", KeyFile: "k.pem"}); err != nil {
+		if err := testCommands(entry).Store.Certificates().Create(ctx, domain.ManagedCertificate{ID: "cert-other", Host: "other.example.com", Hostnames: []string{"other.example.com"}, Status: domain.CertificateValid, CertFile: "c.pem", KeyFile: "k.pem"}); err != nil {
 			t.Fatalf("seed certificate: %v", err)
 		}
 	})
@@ -1476,7 +1484,7 @@ func TestServerCertificateCreateProxySelectionAndRiskBasedDeleteThroughSchema(t 
 	certificateDir := t.TempDir()
 	certFile, keyFile := writeAdminAPICertPair(t, certificateDir, "secure.example.com", time.Now().Add(24*time.Hour))
 	server := startAdminTestServer(t, func(entry *Entry) {
-		entry.Commands.Certificates = certmanager.Service{
+		testCommands(entry).Certificates = certmanager.Service{
 			Storage: httpsproxy.ManagedCertificateStorage{CertificateDir: certificateDir},
 			NewID:   func() (string, error) { return "cert-file-graphql", nil },
 			Now:     func() time.Time { return time.Now().UTC() },

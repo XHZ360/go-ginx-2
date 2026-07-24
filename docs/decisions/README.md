@@ -35,5 +35,6 @@
 | 文档 | 状态 | 说明 |
 | --- | --- | --- |
 | [domain-path-proxy-routing.md](domain-path-proxy-routing.md) | 已采纳，待实现 | Domain 独立管理，HTTP/HTTPS 共享 Domain + Path 到 Proxy 路由 |
+| [server-runtime-context-boundaries.md](server-runtime-context-boundaries.md) | 已采纳，已实现 | 管理、运行时、通信和持久化上下文的依赖与端口边界 |
 
 历史上下文见 [../changes/archive/milestone-one-continuation.md](../changes/archive/milestone-one-continuation.md) 与 [../references/](../references/)。

@@ -44,15 +44,16 @@ const (
 var executablePath = os.Executable
 
 type Server struct {
-	query      adminquery.Service
-	commands   admin.Service
-	listener   net.Listener
-	httpServer *http.Server
-	schema     graphql.Schema
-	creds      credentialVerifier
-	sessions   *sessionManager
-	frontend   *adminFrontend
-	enrollment enrollment.Service
+	query              adminquery.Service
+	commands           admin.CommandFacades
+	listener           net.Listener
+	httpServer         *http.Server
+	schema             graphql.Schema
+	creds              credentialVerifier
+	sessions           *sessionManager
+	frontend           *adminFrontend
+	enrollment         enrollment.Service
+	proxyEntryDefaults domain.ProxyEntryDefaults
 }
 
 type Entry struct {
@@ -63,7 +64,8 @@ type Entry struct {
 	Credentials             credentialVerifier
 	Enrollment              enrollment.Service
 	Query                   adminquery.Service
-	Commands                admin.Service
+	Commands                admin.CommandFacades
+	ProxyEntryDefaults      domain.ProxyEntryDefaults
 	SessionIdleTimeout      time.Duration
 	SessionAbsoluteLifetime time.Duration
 	Now                     func() time.Time
@@ -205,13 +207,14 @@ func Listen(entry Entry) (*Server, error) {
 		return nil, err
 	}
 	server := &Server{
-		query:      entry.Query,
-		commands:   entry.Commands,
-		listener:   listener,
-		creds:      creds,
-		sessions:   sessions,
-		frontend:   frontend,
-		enrollment: entry.Enrollment,
+		query:              entry.Query,
+		commands:           entry.Commands,
+		listener:           listener,
+		creds:              creds,
+		sessions:           sessions,
+		frontend:           frontend,
+		enrollment:         entry.Enrollment,
+		proxyEntryDefaults: entry.ProxyEntryDefaults,
 	}
 	schema, err := server.buildSchema()
 	if err != nil {
@@ -1954,7 +1957,7 @@ func defaultString(value string, fallback string) string {
 }
 
 func (server *Server) proxyEntryOptions() proxyEntryOptions {
-	defaults := server.commands.ProxyEntryDefaults
+	defaults := server.proxyEntryDefaults
 	options := proxyEntryOptions{
 		TCPDefaultBindHost:   defaults.TCPBindHost,
 		HTTPDefaultBindHost:  defaults.HTTPBindHost,

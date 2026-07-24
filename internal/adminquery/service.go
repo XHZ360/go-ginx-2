@@ -17,11 +17,16 @@ import (
 
 type Service struct {
 	Store                  store.Store
-	Sessions               *session.Manager
+	Sessions               SessionSnapshotSource
 	Stats                  *stats.Memory
 	CertificateDir         string
 	RenewalWindow          time.Duration
 	OriginCARotationWindow time.Duration
+}
+
+// SessionSnapshotSource exposes the immutable runtime session view required by queries.
+type SessionSnapshotSource interface {
+	SnapshotLatest() []session.Session
 }
 
 type DashboardSummary struct {

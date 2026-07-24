@@ -24,6 +24,14 @@ GoGinX 由服务端、provider 客户端、可选的 consumer SDK、Admin API/UI
 
 相关验证：`go test ./internal/control ./internal/session ./internal/proxy/... ./sdk -count=1`。
 
+## 上下文边界
+
+- 管理适配器通过 `internal/admin` 的按领域 facade 执行业务命令；`adminapi.Entry.Commands` 只接受这些 facade 的组合，不直接依赖 `admin.Service` 的实现字段。非命令的入口默认值作为独立装配配置通过 `adminapi.Entry.ProxyEntryDefaults` 传入。
+- `internal/adminquery` 只能通过 `SessionSnapshotSource` 读取会话快照，不能操作 session 生命周期。
+- `internal/control` 负责远端协议与连接生命周期。认证结果和连接关闭可直接同步 `ClientStatus`，这是唯一登记的直连 store 写入例外；其他业务 mutation 必须经业务 facade。
+- `internal/session` 提供 `VirtualSession` 和 `SessionRegistry` 运行时端口；`internal/systemclient`、`internal/localproxy` 固定未来系统 client、本机代理、目标策略和拨号端口，不在此阶段实现业务能力。
+- `internal/daemon` 只装配上述上下文及其生命周期，不承载管理业务规则。
+
 ## 明确边界
 
 当前系统是反向代理平台，不是任意目标正向代理。HTTP/HTTPS 支持路径前缀路由；HTTPS 支持可选访问激活。配额、限速、备份恢复、普通用户自助和完整指标/告警仍未实现，详见 [../requirements/limits.md](../requirements/limits.md)、[../requirements/proxy-runtime.md](../requirements/proxy-runtime.md) 和 [admin-and-observability.md](admin-and-observability.md)。

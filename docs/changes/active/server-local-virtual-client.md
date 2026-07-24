@@ -2,7 +2,7 @@
 
 状态：`active`（feature 设计与计划，尚未实现）
 
-架构前置条件：先完成 [Server Runtime Context 架构重整](server-runtime-context-architecture.md)。本 Change 不再承担全局架构重整，只定义本机虚拟 client 这一项业务能力。
+架构前置条件：[Server Runtime Context 架构重整](../completed/server-runtime-context-architecture.md) 已完成。本 Change 不再承担全局架构重整，只定义本机虚拟 client 这一项业务能力。
 
 ## 1. 背景与目标
 

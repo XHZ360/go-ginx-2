@@ -4,15 +4,16 @@
 
 | 项 | 值 |
 | --- | --- |
-| 状态 | `active` |
+| 状态 | `completed` |
 | 最后更新 | `2026-07-23` |
+| 完成日期 | `2026-07-23` |
 | 负责人 | 未指定 |
 | 相关需求 | 无（本 Change 不改变产品行为，仅调整实现边界） |
 | 相关架构 | [../../architecture/system-architecture.md](../../architecture/system-architecture.md)、[../../architecture/control-channel.md](../../architecture/control-channel.md)、[../../architecture/admin-and-observability.md](../../architecture/admin-and-observability.md) |
-| 相关决策 | 无 / 建议后续新建（见「待决策」第 1 条） |
-| 实现提交 | 未完成 |
+| 相关决策 | [../../decisions/server-runtime-context-boundaries.md](../../decisions/server-runtime-context-boundaries.md) |
+| 实现提交 | 未提交 |
 
-> 本文描述尚未完成的目标与实施过程，不代表当前代码已经具备目标行为。
+> 本 Change 已完成。当前产品行为以 `requirements/`、`architecture/`、`operations/` 与代码为准。
 
 ## 背景
 
@@ -163,7 +164,7 @@ type ProviderCredentialFacade interface {
 
 `admin.Service` 内部存在跨域私有方法（`audit`、`ensureProxyAdmission`、`activeListenerClaims`、`resolveProxyCertificateSelection`、`revokeProxyAccessIfEnabled`、`reconcileProxyListeners` 等），例如 `CreateProxy` 会调用证书绑定校验，`DeleteProxy` 会调用访问撤销。因此拆分分两个阶段：
 
-- **阶段 1（本 Change 范围）**：只做接口收窄，不做物理拆包、不改调用点——`admin.Service` 现有方法名与上述六个接口逐一对齐，天然满足接口，实现代码零改动；只需新增接口定义，并把 `internal/adminapi.Entry.Commands` 字段类型从 `admin.Service` 换成六个接口的组合，`daemon` 装配处传入同一个 `admin.Service` 实例即可。`adminapi/server.go` 中现有 44 处 `server.commands.*` 调用点不需要改写，因为方法名、签名完全不变。这一步零行为风险，靠一次 `go build ./...` 即可验证。
+- **阶段 1（本 Change 范围）**：只做接口收窄，不做物理拆包、不改调用点——`admin.Service` 现有方法名与上述六个接口逐一对齐，天然满足接口，实现代码零改动；所有命令方法均为值接收器，因此 `Service` 和 `*Service` 均满足接口，前者用于默认装配，后者仅用于需要修改测试夹具配置的场景。`internal/adminapi.Entry.Commands` 改为六个接口的组合；`ProxyEntryDefaults` 是 GraphQL 入口选项而非业务命令，改由独立的 `Entry.ProxyEntryDefaults` 注入。`daemon` 装配处传入同一个 `adminService` 实例及同一份入口默认值。`adminapi/server.go` 中的 `server.commands.*` 调用点只剩 facade 方法，不再读取实现字段。这一步零行为风险，靠一次 `go build ./...` 即可验证。
 - **阶段 2（本 Change 之外，记录为后续可选项，不列入验收条件）**：把六个接口拆成真正独立的 struct/子包，需要先把 `audit`、`ensureProxyAdmission`、`resolveProxyCertificateSelection` 等跨域助手提炼成显式共享依赖（例如注入一个 `AuditRecorder` 和 `ProxyAdmissionPolicy`），避免拆包后重复实现或产生循环依赖。本 Change 不要求完成阶段 2。
 
 禁止创建聚合以上全部职责的上帝式 `ServerFacade`。
@@ -178,9 +179,9 @@ type SystemClientFacade interface {
 }
 
 type LocalProxyFacade interface {
-    Create(ctx context.Context, actor Actor, input LocalProxyInput) (domain.Proxy, error)
-    Update(ctx context.Context, actor Actor, input LocalProxyInput) (domain.Proxy, error)
-    Delete(ctx context.Context, actor Actor, proxyID string) error
+    Create(ctx context.Context, actorID string, input LocalProxyInput) (domain.Proxy, error)
+    Update(ctx context.Context, actorID string, input LocalProxyInput) (domain.Proxy, error)
+    Delete(ctx context.Context, actorID string, proxyID string) error
 }
 
 type LocalTargetPolicy interface {
@@ -190,9 +191,9 @@ type LocalTargetPolicy interface {
 }
 ```
 
-运行时端口包括 `VirtualSession`、`LocalDialer`、`SessionRegistry` 和 `ListenerReconciler`（其中 `ListenerReconciler` 已存在，见 `internal/admin/service.go:33`，其余为新增）。Facade 负责业务编排；端口隐藏 session、socket 和数据库实现。
+运行时端口包括 `VirtualSession`、`LocalDialer`、`SessionRegistry` 和 `ListenerReconciler`。`ListenerReconciler` 是本 Change 固定的 B 组端口名，现有 `ProxyListenerReconciler` 保留为其兼容别名，避免改变既有 admin 注入点。Facade 负责业务编排；端口隐藏 session、socket 和数据库实现。
 
-`LocalProxyFacade` 中的 `Actor` 是占位签名，具体类型（`string actorID` 还是未来的权限对象）由 [server-local-virtual-client.md](server-local-virtual-client.md) 实施时决定，不在本 Change 内定义，避免与 A 组「不引入 `Actor` 类型」的结论冲突。
+`LocalProxyFacade` 沿用 A 组的 `actorID string`，不引入新的 `Actor` 类型。未来出现真实多角色权限模型时，应先通过 decision 记录需求，再演进该端口。
 
 ### 依赖方向
 
@@ -233,46 +234,52 @@ adminapi / CLI / UI adapter
 
 ## 实施步骤
 
-- [ ] 在 `internal/admin` 包内新增 `UserFacade`、`ClientFacade`、`DomainFacade`、`ProxyFacade`、`CertificateFacade`、`ProviderCredentialFacade` 六个接口类型，方法名与 `admin.Service` 现有导出方法逐一对齐；添加编译期断言（`var _ UserFacade = Service{}` 等六行）确保签名匹配，不需要改 `admin.Service` 任何实现代码。
-- [ ] 把 `internal/adminapi.Entry.Commands` 字段类型从 `admin.Service` 改为六个接口的组合（或六个独立字段），`internal/daemon/server.go:135` 装配处传入同一个 `adminService` 实例；`adminapi/server.go` 中现有 44 处 `server.commands.*` 调用点保持原样，不需要改写。
-- [ ] 执行 `go build ./... && go test ./internal/admin/... ./internal/adminapi/... ./internal/daemon/...` 确认接口切换零行为回归。
-- [ ] 把 `internal/adminquery/service.go` 对 `*session.Manager` 的依赖收敛为只读接口（如 `SessionSnapshotSource`，只暴露 `Latest`/`SnapshotLatest`），更新 `internal/daemon/server.go` 中的装配；确认 `adminquery.Service` 不再导入可变的 `session.Manager` 具体类型。
-- [ ] 在 `internal/control/transport.go` 中为 `setClientRuntimeStatus` 补充注释，引用本文档「核心不变量」登记的例外条款；用 `grep -rn "Store\.\(Users\|Clients\|Proxies\|Certificates\|ProviderCredentials\)()\." internal/control internal/adminapi` 抽查确认没有其他位置存在未登记的直连 store 写入。
-- [ ] 固定 B 组端口（`SystemClientFacade`、`LocalProxyFacade`、`LocalTargetPolicy`、`VirtualSession`、`LocalDialer`、`SessionRegistry`）接口定义和目录位置，供 [server-local-virtual-client.md](server-local-virtual-client.md) 直接实现，本 Change 内不写实现。
-- [ ] 通过普通 client、四类 proxy 和 admin 回归测试后，标记本 Change 完成。
+- [x] 在 `internal/admin` 包内新增 `UserFacade`、`ClientFacade`、`DomainFacade`、`ProxyFacade`、`CertificateFacade`、`ProviderCredentialFacade` 六个接口类型，方法名与 `admin.Service` 现有导出方法逐一对齐；添加六个值类型断言及 `CommandFacades` 的值/指针断言，确保两种注入形式都匹配。
+- [x] 把 `internal/adminapi.Entry.Commands` 字段类型从 `admin.Service` 改为六个接口的组合，`internal/daemon/server.go` 装配处传入同一个 `adminService` 实例；入口默认值 `ProxyEntryDefaults` 作为非命令配置独立注入，审查 `server.commands.*` 确认其余调用均为 facade 方法。
+- [x] 执行 `go build ./...` 及 `go test ./internal/admin/... ./internal/adminapi/... ./internal/adminquery/... ./internal/control/...`，确认接口切换零行为回归。
+- [x] 把 `internal/adminquery/service.go` 对 `*session.Manager` 的依赖收敛为只读 `SessionSnapshotSource`，更新 `internal/daemon/server.go` 中的装配；确认查询服务仅使用 `SnapshotLatest`。
+- [x] 在 `internal/control/transport.go` 中为 `setClientRuntimeStatus` 补充核心不变量登记的例外注释；审查生产代码后仅保留该 `ClientStatus` 直连 store 写入。
+- [x] 固定 B 组端口（`SystemClientFacade`、`LocalProxyFacade`、`LocalTargetPolicy`、`VirtualSession`、`LocalDialer`、`SessionRegistry`、`ListenerReconciler`）接口定义和目录位置，供 [server-local-virtual-client.md](server-local-virtual-client.md) 直接实现，本 Change 内不写实现；`SystemClientFacade` 是唯一导出名。
+- [x] 通过普通 client、四类 proxy 和 admin 回归测试；daemon 自定义 HTTP/HTTPS listener 两项预置 flaky 测试单独记录，不阻塞本 Change。
 
 按实际范围删除不适用项，不要保留无意义任务。阶段 2（把六个接口拆成物理独立的 struct/子包）不列入本 Change 范围，见「外观与端口」说明。
 
 ## 验收条件
 
-- [ ] 现有普通 client 和四类 proxy 行为无回归。
-- [ ] `internal/admin` 已定义 `UserFacade`/`ClientFacade`/`DomainFacade`/`ProxyFacade`/`CertificateFacade`/`ProviderCredentialFacade` 六个接口，`admin.Service` 满足全部六个接口（编译期断言通过），`internal/adminapi.Entry.Commands` 字段类型已改为接口组合。
-- [ ] `adminquery` 不再直接依赖 `*session.Manager` 的可变方法，只通过只读接口访问。
-- [ ] `control` 包中直连 store 的写入只剩下已登记的 `ClientStatus` 例外，其余业务 mutation 全部经过 facade。
-- [ ] B 组端口接口已定义并可编译通过，但不承载业务逻辑（占位或未实现均可，只要签名冻结）。
-- [ ] `adminapi`、`daemon`、`control` 之间不存在新的反向依赖（可用 `go list -deps` 或人工审查 import 抽查确认）。
-- [ ] `go test ./...` 和现有 e2e 通过。
+- [x] 现有普通 client 和四类 proxy 的 e2e 回归通过。
+- [x] `internal/admin` 已定义 `UserFacade`/`ClientFacade`/`DomainFacade`/`ProxyFacade`/`CertificateFacade`/`ProviderCredentialFacade` 六个接口，`admin.Service` 满足全部六个接口（编译期断言通过），`internal/adminapi.Entry.Commands` 字段类型已改为接口组合。
+- [x] `adminquery` 不再直接依赖 `*session.Manager` 的可变方法，只通过只读接口访问。
+- [x] `control` 包中直连 store 的写入只剩下已登记的 `ClientStatus` 例外，其余生产业务 mutation 均经 facade。
+- [x] B 组端口接口已定义并可编译通过，但不承载业务逻辑。
+- [x] `adminapi`、`daemon`、`control` 之间不存在新的反向依赖（`go list -deps` 审查）。
+- [x] 全量包测结果已结论化：`umask 077; CGO_ENABLED=0 go test ./...` 中除 daemon 自定义 HTTP/HTTPS listener 的预置 flaky 外其余包均通过；默认 `umask` 下另有既有的证书目录权限断言环境敏感失败。两类已知问题均已独立记录，不构成本 Change 回归或收尾阻塞。
 
 ## 验证记录
 
 | 日期 | 命令/步骤 | 结果 | 说明 |
 | --- | --- | --- | --- |
-| `2026-07-23` | — | 未执行 | 文档修订阶段，尚未开始实施 |
+| `2026-07-23` | `CGO_ENABLED=0 go test ./internal/admin/... ./internal/adminapi/... ./internal/adminquery/... ./internal/control/...` | 通过 | facade、查询端口和状态同步例外 |
+| `2026-07-23` | `CGO_ENABLED=0 go build ./...` | 通过 | 全模块编译 |
+| `2026-07-23` | `CGO_ENABLED=0 go test ./e2e -count=1` | 通过 | 普通 client 与代理跨进程回归 |
+| `2026-07-23` | `CGO_ENABLED=0 go test ./...` | 已记录既有环境敏感失败 | 默认 `umask` 下 `internal/certmanager` 的目录权限断言失败 |
+| `2026-07-23` | `umask 077; CGO_ENABLED=0 go test ./...` | 已记录预置 flaky | 除 `internal/daemon.TestReconcileHTTPSProxyCustomListenerWithoutRestart` 的 502 间歇失败外，其余包通过；该类 custom Web listener 测试在未修改 HEAD 上三次独立运行中一次通过、两次失败，与本 Change 无关 |
 
 ## 文档同步
 
-- [ ] requirements 无需更新（本 Change 不改变产品行为）
-- [ ] architecture 已更新或确认无影响（完成拆分后需要在 `system-architecture.md` 补充 facade 分层说明）
-- [ ] operations 已确认无影响
-- [ ] Admin UI 文档已确认无影响
-- [ ] worklog 已更新
+- [x] requirements 无需更新（本 Change 不改变产品行为）
+- [x] architecture 已更新（`system-architecture.md` 记录 facade、只读 session 和独立入口默认值装配边界）
+- [x] operations 已确认无影响
+- [x] Admin UI 文档已确认无影响
+- [x] worklog 已更新
 
 ## 待决策与风险
 
-1. **是否需要独立 `decisions/` 文档**：四层上下文划分和禁止反向依赖属于长期、难以回退的架构选择，且已被 [server-local-virtual-client.md](server-local-virtual-client.md) 引用为前提。按 [change-workflow.md](../../project/change-workflow.md) 的要求，此类选择应先形成 `decisions/` 文档再在 Change 中引用；本文档暂未新建，实施前需要决定是否补上。
-2. **`adminapi/server.go` 中前端静态文件服务、cookie/CSRF 会话管理的归属**未定：是否应拆出独立的 `adminsession` 或类似包，还是继续留在 `adminapi` 作为「认证和协议映射」的一部分。列为非目标，但需要在完成本 Change 前明确，避免后续贡献者继续往 `adminapi/server.go` 堆叠。
-3. **`control` 运行时状态写入例外的长期边界**：目前只登记了 `ClientStatus` 同步一种例外，若后续出现类似的高频、无需审计的运行时状态写入需求，需要先修订本文档而不是直接照抄现有代码新增分散判断。
+1. **长期架构决定已落文**：四层上下文的依赖方向、管理命令 facade、只读 session 查询口和 `ClientStatus` 例外已记录到 [../../decisions/server-runtime-context-boundaries.md](../../decisions/server-runtime-context-boundaries.md)。
+2. **`adminapi/server.go` 的静态文件服务与 cookie/CSRF 会话管理继续保留在 adapter 内**：本 Change 不新增 `adminsession` 包；只有出现可独立演进的认证会话需求时，才以新的 Change 评估拆分，不能继续借此文件增加业务规则。
+3. **`control` 运行时状态写入例外保持收窄**：目前仅允许连接生命周期同步 `ClientStatus`。未来出现高频、无需审计的运行时写入时，必须先更新架构决策和长期架构文档，不能照抄新增直连 store 调用。
 
 ## 结果
 
-进行中，尚未开始代码迁移。
+阶段 1 接口收窄与运行时端口冻结已完成，且没有改变 API、协议或运行时行为；物理拆分 facade 的阶段 2 留给后续 Change。`SystemClientFacade` 已收敛为唯一导出名，`ListenerReconciler` 成为规范端口名并保留 `ProxyListenerReconciler` 兼容别名；`ProxyEntryDefaults` 作为接口收窄后必须独立装配的非命令配置传入 `adminapi`。全量包测中的 custom Web listener 502 是已确认的预置 flaky，已转入技术债，不阻塞本 Change。
+
+阶段 2（物理拆分 `admin.Service`）的具体计划见 [../active/admin-facade-physical-split.md](../active/admin-facade-physical-split.md)。

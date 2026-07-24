@@ -26,13 +26,17 @@ type Service struct {
 	Certificates         certmanager.Service
 	StaticListenerClaims []domain.ListenerClaim
 	ProxyEntryDefaults   domain.ProxyEntryDefaults
-	ListenerReconciler   ProxyListenerReconciler
+	ListenerReconciler   ListenerReconciler
 	DefaultJoin          config.JoinServiceDefaults
 }
 
-type ProxyListenerReconciler interface {
+// ListenerReconciler is the runtime listener lifecycle port used by proxy commands.
+type ListenerReconciler interface {
 	ReconcileProxyListeners(ctx context.Context) error
 }
+
+// ProxyListenerReconciler remains an alias for the established admin port name.
+type ProxyListenerReconciler = ListenerReconciler
 
 type CreateUserInput struct {
 	ID       string
