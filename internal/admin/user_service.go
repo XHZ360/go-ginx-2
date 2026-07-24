@@ -7,6 +7,7 @@ import (
 
 	"github.com/simp-frp/go-ginx-2/internal/contracterr"
 	"github.com/simp-frp/go-ginx-2/internal/domain"
+	"github.com/simp-frp/go-ginx-2/internal/systemclient"
 )
 
 func (service *UserService) CreateUser(ctx context.Context, input CreateUserInput) (domain.User, error) {
@@ -18,6 +19,13 @@ func (service *UserService) CreateUser(ctx context.Context, input CreateUserInpu
 	}
 	if strings.TrimSpace(input.ID) == "" {
 		input.ID = newID("user")
+	}
+	if err := systemclient.ProtectUserMutation(input.ID); err != nil {
+		recordRejectedAudit(ctx, service.Audit, input.ActorID, "user", input.ID, "create_user", err)
+		return domain.User{}, err
+	}
+	if input.Username == systemclient.Username {
+		return domain.User{}, &contracterr.Error{Code: contracterr.CodeForbidden, Message: "system username is reserved"}
 	}
 	if input.Role == "" {
 		input.Role = domain.RoleUser
@@ -41,6 +49,10 @@ func (service *UserService) DisableUser(ctx context.Context, userID string, acto
 	if service.Store == nil {
 		return errors.New("store is required")
 	}
+	if err := systemclient.ProtectUserMutation(userID); err != nil {
+		recordRejectedAudit(ctx, service.Audit, actorID, "user", userID, "disable_user", err)
+		return err
+	}
 	if err := service.Store.Users().SetStatus(ctx, userID, domain.UserDisabled); err != nil {
 		return err
 	}
@@ -51,6 +63,10 @@ func (service *UserService) EnableUser(ctx context.Context, userID string, actor
 	if service.Store == nil {
 		return errors.New("store is required")
 	}
+	if err := systemclient.ProtectUserMutation(userID); err != nil {
+		recordRejectedAudit(ctx, service.Audit, actorID, "user", userID, "enable_user", err)
+		return err
+	}
 	if err := service.Store.Users().SetStatus(ctx, userID, domain.UserEnabled); err != nil {
 		return err
 	}
@@ -60,6 +76,10 @@ func (service *UserService) EnableUser(ctx context.Context, userID string, actor
 func (service *UserService) SetUserPassword(ctx context.Context, userID string, password string, actorID string) error {
 	if service.Store == nil {
 		return errors.New("store is required")
+	}
+	if err := systemclient.ProtectUserMutation(userID); err != nil {
+		recordRejectedAudit(ctx, service.Audit, actorID, "user", userID, "set_user_password", err)
+		return err
 	}
 	if err := validateSetUserPassword(userID, password); err != nil {
 		return err
@@ -80,6 +100,10 @@ func (service *UserService) DeleteUser(ctx context.Context, userID string, actor
 	}
 	if strings.TrimSpace(userID) == "" {
 		return contracterr.Validation("validation failed", map[string]string{"id": "user id is required"})
+	}
+	if err := systemclient.ProtectUserMutation(userID); err != nil {
+		recordRejectedAudit(ctx, service.Audit, actorID, "user", userID, "delete_user", err)
+		return err
 	}
 	if _, err := service.Store.Users().ByID(ctx, userID); err != nil {
 		return err

@@ -13,7 +13,7 @@
 - 管理适配器只通过按领域划分的 `admin.CommandFacades` 执行业务命令；不得依赖 `admin.Service` 的实现字段。适配器需要的非命令入口选项（当前为 `ProxyEntryDefaults`）必须作为独立装配配置注入。
 - `adminquery` 只能通过只读 session 快照接口读取运行时状态；session 的注册、关闭和流打开必须经由运行时端口。
 - `control` 只负责协议和连接生命周期。认证和连接关闭可直连 store 同步 `ClientStatus`，这是唯一已登记的业务 facade 例外；任何新增例外必须先更新本决策和系统架构。
-- 未来系统 client 和本机代理能力通过明确端口接入。`SystemClientFacade` 是该身份边界的唯一导出名；`ListenerReconciler` 是 listener 生命周期端口的规范名称，`ProxyListenerReconciler` 仅作为兼容别名保留。
+- 系统 client 和本机代理能力通过明确端口接入。`SystemClientFacade` 是该身份边界的唯一导出名；`ListenerReconciler` 是 listener 生命周期端口的规范名称，`ProxyListenerReconciler` 仅作为兼容别名保留。
 - `daemon` 只负责这些依赖的装配和生命周期，不承载管理业务规则。
 
 ## 后果
@@ -26,4 +26,4 @@
 
 - 当前架构：[../architecture/system-architecture.md](../architecture/system-architecture.md)
 - 已完成 Change：[../changes/completed/server-runtime-context-architecture.md](../changes/completed/server-runtime-context-architecture.md)
-- 后续 feature：[../changes/active/server-local-virtual-client.md](../changes/active/server-local-virtual-client.md)
+- 后续 feature：[../changes/completed/server-local-virtual-client.md](../changes/completed/server-local-virtual-client.md)

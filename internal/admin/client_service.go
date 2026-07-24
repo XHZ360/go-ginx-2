@@ -12,6 +12,7 @@ import (
 	"github.com/simp-frp/go-ginx-2/internal/domain"
 	"github.com/simp-frp/go-ginx-2/internal/enrollment"
 	"github.com/simp-frp/go-ginx-2/internal/store"
+	"github.com/simp-frp/go-ginx-2/internal/systemclient"
 )
 
 func (service *ClientService) CreateClient(ctx context.Context, input CreateClientInput) (domain.Client, error) {
@@ -26,6 +27,13 @@ func (service *ClientService) CreateClient(ctx context.Context, input CreateClie
 	}
 	if strings.TrimSpace(input.ID) == "" {
 		input.ID = newID("client")
+	}
+	if err := systemclient.ProtectClientMutation(input.ID); err != nil {
+		recordRejectedAudit(ctx, service.Audit, input.ActorID, "client", input.ID, "create_client", err)
+		return domain.Client{}, err
+	}
+	if systemclient.IsSystemUserID(input.UserID) {
+		return domain.Client{}, &contracterr.Error{Code: contracterr.CodeForbidden, Message: "system user cannot own regular clients"}
 	}
 	if _, err := service.Store.Users().ByID(ctx, input.UserID); err != nil {
 		return domain.Client{}, err
@@ -129,6 +137,10 @@ func (service *ClientService) ReviewClientJoinToken(ctx context.Context, clientI
 	}
 	if strings.TrimSpace(clientID) == "" {
 		return ReviewClientJoinTokenResult{}, contracterr.Validation("validation failed", map[string]string{"id": "client id is required"})
+	}
+	if err := systemclient.ProtectClientMutation(clientID); err != nil {
+		recordRejectedAudit(ctx, service.Audit, actorID, "client", clientID, "review_client_join_token", err)
+		return ReviewClientJoinTokenResult{}, err
 	}
 	client, err := service.Store.Clients().ByID(ctx, clientID)
 	if err != nil {
@@ -254,6 +266,10 @@ func (service *ClientService) EnableClient(ctx context.Context, clientID string,
 	if strings.TrimSpace(clientID) == "" {
 		return contracterr.Validation("validation failed", map[string]string{"id": "client id is required"})
 	}
+	if err := systemclient.ProtectClientMutation(clientID); err != nil {
+		recordRejectedAudit(ctx, service.Audit, actorID, "client", clientID, "enable_client", err)
+		return err
+	}
 	if err := service.Store.Clients().SetStatus(ctx, clientID, domain.ClientOffline); err != nil {
 		return err
 	}
@@ -267,6 +283,10 @@ func (service *ClientService) DisableClient(ctx context.Context, clientID string
 	if strings.TrimSpace(clientID) == "" {
 		return contracterr.Validation("validation failed", map[string]string{"id": "client id is required"})
 	}
+	if err := systemclient.ProtectClientMutation(clientID); err != nil {
+		recordRejectedAudit(ctx, service.Audit, actorID, "client", clientID, "disable_client", err)
+		return err
+	}
 	if err := service.Store.Clients().SetStatus(ctx, clientID, domain.ClientDisabled); err != nil {
 		return err
 	}
@@ -279,6 +299,10 @@ func (service *ClientService) DeleteClient(ctx context.Context, clientID string,
 	}
 	if strings.TrimSpace(clientID) == "" {
 		return contracterr.Validation("validation failed", map[string]string{"id": "client id is required"})
+	}
+	if err := systemclient.ProtectClientMutation(clientID); err != nil {
+		recordRejectedAudit(ctx, service.Audit, actorID, "client", clientID, "delete_client", err)
+		return err
 	}
 	if _, err := service.Store.Clients().ByID(ctx, clientID); err != nil {
 		return err
@@ -304,6 +328,10 @@ func (service *ClientService) RotateClientCredential(ctx context.Context, input 
 	}
 	if strings.TrimSpace(input.ClientID) == "" {
 		return RotateClientCredentialResult{}, contracterr.Validation("validation failed", map[string]string{"id": "client id is required"})
+	}
+	if err := systemclient.ProtectClientMutation(input.ClientID); err != nil {
+		recordRejectedAudit(ctx, service.Audit, input.ActorID, "client", input.ClientID, "rotate_client_credential", err)
+		return RotateClientCredentialResult{}, err
 	}
 	client, err := service.Store.Clients().ByID(ctx, input.ClientID)
 	if err != nil {

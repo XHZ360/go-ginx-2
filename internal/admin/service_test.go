@@ -23,7 +23,56 @@ import (
 	httpsproxy "github.com/simp-frp/go-ginx-2/internal/proxy/https"
 	"github.com/simp-frp/go-ginx-2/internal/store"
 	"github.com/simp-frp/go-ginx-2/internal/store/sqlite"
+	"github.com/simp-frp/go-ginx-2/internal/systemclient"
 )
+
+func TestSystemClientForbiddenMutationsAreAudited(t *testing.T) {
+	ctx := context.Background()
+	db := openTestStore(t)
+	if _, err := (systemclient.Service{Store: db}).Ensure(ctx); err != nil {
+		t.Fatal(err)
+	}
+	services := NewServices(Options{Store: db})
+	operations := []struct {
+		action string
+		run    func() error
+	}{
+		{action: "disable_client", run: func() error { return services.DisableClient(ctx, systemclient.ClientID, "admin-1") }},
+		{action: "delete_client", run: func() error { return services.DeleteClient(ctx, systemclient.ClientID, "admin-1") }},
+		{action: "rotate_client_credential", run: func() error {
+			_, err := services.RotateClientCredential(ctx, RotateClientCredentialInput{ClientID: systemclient.ClientID, ActorID: "admin-1"})
+			return err
+		}},
+		{action: "review_client_join_token", run: func() error {
+			_, err := services.ReviewClientJoinToken(ctx, systemclient.ClientID, "admin-1")
+			return err
+		}},
+	}
+	for _, operation := range operations {
+		var contractError *contracterr.Error
+		if err := operation.run(); !errors.As(err, &contractError) || contractError.Code != contracterr.CodeForbidden {
+			t.Fatalf("%s: expected forbidden, got %v", operation.action, err)
+		}
+	}
+	events, err := db.AuditEvents().ListRecent(ctx, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wanted := make(map[string]bool, len(operations))
+	for _, operation := range operations {
+		wanted[operation.action] = false
+	}
+	for _, event := range events {
+		if _, ok := wanted[event.Action]; ok && event.ResourceID == systemclient.ClientID && event.Result == "forbidden" && event.ErrorSummary == contracterr.CodeForbidden {
+			wanted[event.Action] = true
+		}
+	}
+	for action, found := range wanted {
+		if !found {
+			t.Fatalf("missing forbidden audit for %s: %+v", action, events)
+		}
+	}
+}
 
 func TestServiceCreatesMilestoneOneResources(t *testing.T) {
 	ctx := context.Background()

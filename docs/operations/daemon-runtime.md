@@ -76,6 +76,14 @@ On the client host:
 
 The join command redeems the token through the dedicated client enrollment listener at `/api/client/enroll`, writes `data/client-state.json`, writes `data/certs/server-ca.crt`, and subsequent client runs use that managed state. The admin listener no longer serves `/api/client/enroll`; old tokens that point at the admin listener must be regenerated. By default these paths are under the deployment root derived from the `goginx-client` binary location; when the binary is under `bin/`, the deployment root is the parent of `bin/`.
 
+## Server 本机代理运维
+
+server 启动时会在 SQLite 中幂等确保 `server-local-system` 用户、`server-local` client 和 `local_target_allowlist` 默认记录，并注册常驻 virtual session。默认白名单只包含 `127.0.0.1/32` 与 `::1/128`，两条记录默认允许全部端口；上线前应在 Admin UI 的 `Server Local` 客户端详情中按实际服务端口收紧。当前管理面只支持 TCP/UDP 本机代理，target 必须是 IP，不能填写 hostname。
+
+白名单替换使用事务持久化和原子运行时快照。无效/空白名单、保留身份冲突或初始化失败会阻止 server 注册可用 virtual session；更新写入失败时旧策略继续生效。收紧后只拒绝新连接，不主动中断既有连接。所有本机代理管理操作和 forbidden 尝试进入审计，但日志与审计错误摘要不保存凭据或完整底层拨号错误。
+
+回滚旧版本前，先在 Admin UI 禁用所有本机代理并确认对应 TCP/UDP listener 已关闭，再停止 server、备份 SQLite 并替换二进制/UI。保留系统 user/client/proxy 和 `local_target_allowlist` 数据，不要手工删除；不了解这些表的旧版本会忽略它们，重新升级后可恢复。若仅需紧急阻断流量，禁用本机代理比删除数据更可恢复。
+
 Managed startup accepts environment overrides for file-free deployments that need non-default ports, paths, secrets, or join defaults, including `GOGINX_ADMIN_LISTEN`, `GOGINX_ADMIN_JWT_SECRET_FILE`, `GOGINX_CLIENT_ENROLLMENT_LISTEN`, `GOGINX_CONTROL_QUIC_LISTEN`, `GOGINX_CONTROL_TLS_LISTEN`, `GOGINX_JOIN_SERVICE_HOST`, `GOGINX_HTTP_ENTRY_LISTEN`, `GOGINX_HTTPS_ENTRY_LISTEN`, `GOGINX_SQLITE_PATH`, `GOGINX_DATA_DIR`, and `GOGINX_CERTIFICATE_DIR`. Treat `127.0.0.1` as a local development or last-resort fallback; cross-host joins should use a reachable DNS name or IP through `GOGINX_JOIN_SERVICE_HOST`, `join_service_host`, `-server-config`, or explicit join command flags. Configless defaults use `:8081` for client enrollment, `:80` for HTTP entry traffic, and `:443` for HTTPS entry traffic; binding 80/443 can require root, `CAP_NET_BIND_SERVICE`, service-manager privileges, or explicit non-privileged overrides.
 
 ## Optional Server Config

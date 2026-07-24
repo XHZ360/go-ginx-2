@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { DeploymentUnitOutlined } from '@ant-design/icons';
-import { Button } from 'antd';
+import { Button, Tag } from 'antd';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { ConfirmButton } from '../components/ConfirmButton';
@@ -12,6 +12,7 @@ import { ErrorState, NotFoundState, PageLoading } from '../components/PageStates
 import { isNotFoundError, type ProxySummary } from '../lib/contracts';
 import { useSession } from '../session';
 import { DetailBackLink, PageHeader, StatusBadge, Timestamp } from './shared';
+import { LocalClientManagement } from './LocalClientManagement';
 
 function isWebProxy(type: string) {
   return type === 'web' || type === 'http' || type === 'https';
@@ -89,26 +90,30 @@ export function ClientDetailPage() {
         actions={
           <>
             <StatusBadge value={client.status} />
-            <Button
-              type="default"
-              icon={<DeploymentUnitOutlined aria-hidden="true" />}
-              onClick={() => navigate(`/proxies?create=1&userId=${encodeURIComponent(client.userId)}&clientId=${encodeURIComponent(client.id)}`)}
-            >
-              Create proxy
-            </Button>
-            <ConfirmButton
-              label="Rotate credential"
-              confirmLabel="Rotate this client credential?"
-              onConfirm={() => rotateMutation.mutate(undefined)}
-              disabled={rotateMutation.isPending}
-              tone="secondary"
-            />
-            <ConfirmButton
-              label="Delete client"
-              confirmLabel="Delete this client?"
-              onConfirm={() => deleteMutation.mutate(undefined)}
-              disabled={deleteMutation.isPending}
-            />
+            {client.isSystem ? <Tag color="blue">System client</Tag> : (
+              <>
+                <Button
+                  type="default"
+                  icon={<DeploymentUnitOutlined aria-hidden="true" />}
+                  onClick={() => navigate(`/proxies?create=1&userId=${encodeURIComponent(client.userId)}&clientId=${encodeURIComponent(client.id)}`)}
+                >
+                  Create proxy
+                </Button>
+                <ConfirmButton
+                  label="Rotate credential"
+                  confirmLabel="Rotate this client credential?"
+                  onConfirm={() => rotateMutation.mutate(undefined)}
+                  disabled={rotateMutation.isPending}
+                  tone="secondary"
+                />
+                <ConfirmButton
+                  label="Delete client"
+                  confirmLabel="Delete this client?"
+                  onConfirm={() => deleteMutation.mutate(undefined)}
+                  disabled={deleteMutation.isPending}
+                />
+              </>
+            )}
           </>
         }
       />
@@ -144,7 +149,7 @@ export function ClientDetailPage() {
         </article>
       </div>
 
-      <article className="panel">
+      {client.isSystem ? <LocalClientManagement client={client} /> : <article className="panel">
         <h2>Managed proxies</h2>
         {client.managedProxies.length === 0 ? (
           <p className="muted">No proxies assigned to this client.</p>
@@ -176,7 +181,7 @@ export function ClientDetailPage() {
             </table>
           </div>
         )}
-      </article>
+      </article>}
     </section>
   );
 }

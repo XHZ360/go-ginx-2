@@ -7,6 +7,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/pem"
+	"errors"
 	"math/big"
 	"path/filepath"
 	"testing"
@@ -18,7 +19,47 @@ import (
 	"github.com/simp-frp/go-ginx-2/internal/stats"
 	"github.com/simp-frp/go-ginx-2/internal/store"
 	"github.com/simp-frp/go-ginx-2/internal/store/sqlite"
+	"github.com/simp-frp/go-ginx-2/internal/systemclient"
 )
+
+func TestServiceHidesSystemUserAndMarksSystemObjects(t *testing.T) {
+	ctx := context.Background()
+	db := openQueryTestStore(t)
+	seedQueryTestData(t, ctx, db)
+	if _, err := (systemclient.Service{Store: db}).Ensure(ctx); err != nil {
+		t.Fatalf("ensure system client: %v", err)
+	}
+	proxy := domain.Proxy{ID: "local-proxy", UserID: systemclient.UserID, ClientID: systemclient.ClientID, Name: "local", Type: domain.ProxyTCP, Status: domain.ProxyEnabled, EntryBindHost: "127.0.0.1", EntryPort: 18080, TargetHost: "127.0.0.1", TargetPort: 8080}
+	if err := db.Proxies().Create(systemclient.WithInternalMutation(ctx), proxy); err != nil {
+		t.Fatalf("create local proxy: %v", err)
+	}
+	service := Service{Store: db}
+
+	users, err := service.ListUsers(ctx, UserListInput{Page: PageInput{Page: 1, PageSize: 100}})
+	if err != nil {
+		t.Fatalf("list users: %v", err)
+	}
+	for _, user := range users.Items {
+		if user.ID == systemclient.UserID {
+			t.Fatal("system owner must be hidden from normal user management")
+		}
+	}
+	if _, err := service.UserDetail(ctx, systemclient.UserID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("system owner detail should be hidden, got %v", err)
+	}
+
+	client, err := service.ClientDetail(ctx, systemclient.ClientID)
+	if err != nil || !client.IsSystem {
+		t.Fatalf("system client should be marked, detail=%+v err=%v", client, err)
+	}
+	if len(client.ManagedProxies) != 1 || !client.ManagedProxies[0].IsSystem {
+		t.Fatalf("system proxy summary should be marked: %+v", client.ManagedProxies)
+	}
+	proxyDetail, err := service.ProxyDetail(ctx, proxy.ID)
+	if err != nil || !proxyDetail.IsSystem {
+		t.Fatalf("system proxy should be marked, detail=%+v err=%v", proxyDetail, err)
+	}
+}
 
 func TestServiceBuildsDashboardSummary(t *testing.T) {
 	ctx := context.Background()

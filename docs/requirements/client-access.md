@@ -6,6 +6,7 @@
 | --- | --- |
 | Provider 客户端 | 连接本地 target，承接服务端打开的代理子流 |
 | Consumer 客户端 / SDK | 主动打开用户已授权的固定代理流 |
+| Server 本机虚拟客户端 | 由 server 进程承接管理员配置的本机 TCP/UDP target，不建立远程控制连接 |
 
 同一 client 的最新有效会话优先；consumer 不替换同用户 provider 会话。
 
@@ -31,6 +32,9 @@
 - Provider 不在线、代理禁用、未知代理或用户不匹配时拒绝桥接。
 - Consumer SDK 只能选择已授权 proxy ID；本地 SOCKS5/CONNECT 目标地址不覆盖服务端 target。
 - 日志与错误不得包含 credential、完整 token 或私钥。
+- 固定系统客户端 `server-local` 及其保留用户不可删除、禁用、改密、轮换凭据或 enrollment；普通用户不能把代理绑定到该客户端，也不能通过 consumer/SDK 打开其代理。
+- 只有管理员可通过专用本机代理操作维护 TCP/UDP 代理和目标白名单；通用 client/proxy mutation 即使由管理员调用也必须拒绝系统对象。
+- 本机 target 只接受 IP/CIDR 白名单。默认仅允许 `127.0.0.1/32` 和 `::1/128`，可选端口闭区间；hostname 和未命中目标默认拒绝。
 
 ## 验收口径
 
@@ -38,6 +42,7 @@
 - Provider 收到自身代理快照；代理流量可达。
 - Consumer/SDK 只能访问已授权启用代理。
 - 临时控制面故障可按配置退避重连；认证拒绝立即停止重试。
+- server 重启后系统客户端仍只有一个且虚拟会话恢复；白名单收紧只影响新连接，已有连接不主动断开。
 
 ## 相关文档
 

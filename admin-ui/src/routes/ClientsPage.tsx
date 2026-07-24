@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { CopyOutlined, DeploymentUnitOutlined, PlusOutlined, ReloadOutlined } from '@ant-design/icons';
-import { Button, type TableColumnsType } from 'antd';
+import { Button, Tag, type TableColumnsType } from 'antd';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { Dialog } from '../components/Dialog';
@@ -273,7 +273,13 @@ export function ClientsPage() {
     () => [
       { title: 'ID', dataIndex: 'id', key: 'id', ellipsis: true, width: 120 },
       { title: 'User', dataIndex: 'userId', key: 'userId', ellipsis: true, width: 120 },
-      { title: 'Name', dataIndex: 'name', key: 'name', ellipsis: true },
+      {
+        title: 'Name',
+        dataIndex: 'name',
+        key: 'name',
+        ellipsis: true,
+        render: (name: string, client) => <div className="inline-actions"><span>{name}</span>{client.isSystem ? <Tag color="blue">System</Tag> : null}</div>,
+      },
       {
         title: 'Status',
         dataIndex: 'status',
@@ -320,15 +326,23 @@ export function ClientsPage() {
         width: 220,
         render: (_, client) => (
           <div className="inline-actions" onClick={(event) => event.stopPropagation()}>
-            <Button type="default" icon={<DeploymentUnitOutlined aria-hidden="true" />} onClick={() => createProxyForClient(client.id, client.userId)}>
-              Create proxy
-            </Button>
-            <ConfirmButton
-              label="Delete"
-              confirmLabel="Delete this client?"
-              onConfirm={() => deleteMutation.mutate(client.id)}
-              disabled={deleteMutation.isPending}
-            />
+            {client.isSystem ? (
+              <Button type="default" icon={<DeploymentUnitOutlined aria-hidden="true" />} onClick={() => navigate(`/clients/${client.id}`)}>
+                Manage local
+              </Button>
+            ) : (
+              <>
+                <Button type="default" icon={<DeploymentUnitOutlined aria-hidden="true" />} onClick={() => createProxyForClient(client.id, client.userId)}>
+                  Create proxy
+                </Button>
+                <ConfirmButton
+                  label="Delete"
+                  confirmLabel="Delete this client?"
+                  onConfirm={() => deleteMutation.mutate(client.id)}
+                  disabled={deleteMutation.isPending}
+                />
+              </>
+            )}
           </div>
         ),
       },

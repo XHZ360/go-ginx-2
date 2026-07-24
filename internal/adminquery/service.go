@@ -13,6 +13,7 @@ import (
 	"github.com/simp-frp/go-ginx-2/internal/session"
 	"github.com/simp-frp/go-ginx-2/internal/stats"
 	"github.com/simp-frp/go-ginx-2/internal/store"
+	"github.com/simp-frp/go-ginx-2/internal/systemclient"
 )
 
 type Service struct {
@@ -168,6 +169,7 @@ type ClientListItem struct {
 	ID            string
 	UserID        string
 	Name          string
+	IsSystem      bool
 	Status        domain.ClientStatus
 	Version       int64
 	LastOnlineAt  *time.Time
@@ -181,6 +183,7 @@ type ClientDetail struct {
 	ID             string
 	UserID         string
 	Name           string
+	IsSystem       bool
 	Status         domain.ClientStatus
 	Version        int64
 	LastOnlineAt   *time.Time
@@ -295,8 +298,10 @@ type ProxyTypeConfig struct {
 type ProxySummary struct {
 	ID                   string
 	Name                 string
+	IsSystem             bool
 	Type                 domain.ProxyType
 	Status               domain.ProxyStatus
+	Description          string
 	RuntimeStatus        domain.ProxyStatus
 	EntryBindHost        string
 	EntryHost            string
@@ -311,6 +316,7 @@ type ProxyListItem struct {
 	UserID               string
 	ClientID             string
 	Name                 string
+	IsSystem             bool
 	Type                 domain.ProxyType
 	Status               domain.ProxyStatus
 	Description          string
@@ -334,6 +340,7 @@ type ProxyDetail struct {
 	UserID               string
 	ClientID             string
 	Name                 string
+	IsSystem             bool
 	Type                 domain.ProxyType
 	Status               domain.ProxyStatus
 	Description          string
@@ -438,6 +445,9 @@ func (service Service) ListUsers(ctx context.Context, input UserListInput) (User
 	}
 	items := make([]UserListItem, 0, len(users))
 	for _, user := range users {
+		if systemclient.IsSystemUserID(user.ID) {
+			continue
+		}
 		item := UserListItem{ID: user.ID, Username: user.Username, Role: user.Role, Status: user.Status, ClientCount: clientCountByUser[user.ID], ProxyCount: proxyCountByUser[user.ID], UploadBytes: uploadByUser[user.ID], DownloadBytes: downloadByUser[user.ID], LastActivityAt: lastActivityByUser[user.ID], HasPasswordHash: user.PasswordHash != "", CreatedAt: user.CreatedAt, UpdatedAt: user.UpdatedAt}
 		if !matchesUserFilter(item, input.Filter) {
 			continue
@@ -450,6 +460,9 @@ func (service Service) ListUsers(ctx context.Context, input UserListInput) (User
 }
 
 func (service Service) UserDetail(ctx context.Context, userID string) (UserDetail, error) {
+	if systemclient.IsSystemUserID(userID) {
+		return UserDetail{}, store.ErrNotFound
+	}
 	user, err := service.Store.Users().ByID(ctx, userID)
 	if err != nil {
 		return UserDetail{}, err
@@ -510,7 +523,7 @@ func (service Service) ClientDetail(ctx context.Context, clientID string) (Clien
 	}
 	sort.Slice(managedProxies, func(i, j int) bool { return managedProxies[i].Name < managedProxies[j].Name })
 	item := clientListItemFromDomain(client, latestByClient[clientID])
-	return ClientDetail{ID: item.ID, UserID: item.UserID, Name: item.Name, Status: item.Status, Version: item.Version, LastOnlineAt: item.LastOnlineAt, LastOfflineAt: item.LastOfflineAt, Runtime: item.Runtime, ManagedProxies: managedProxies, CreatedAt: client.CreatedAt, UpdatedAt: client.UpdatedAt}, nil
+	return ClientDetail{ID: item.ID, UserID: item.UserID, Name: item.Name, IsSystem: item.IsSystem, Status: item.Status, Version: item.Version, LastOnlineAt: item.LastOnlineAt, LastOfflineAt: item.LastOfflineAt, Runtime: item.Runtime, ManagedProxies: managedProxies, CreatedAt: client.CreatedAt, UpdatedAt: client.UpdatedAt}, nil
 }
 
 func (service Service) ListProxies(ctx context.Context, input ProxyListInput) (ProxyPage, error) {
@@ -558,7 +571,7 @@ func (service Service) ProxyDetail(ctx context.Context, proxyID string) (ProxyDe
 			}
 		}
 	}
-	return ProxyDetail{ID: item.ID, UserID: item.UserID, ClientID: item.ClientID, Name: item.Name, Type: item.Type, Status: item.Status, Description: item.Description, RuntimeStatus: item.RuntimeStatus, ActiveTCPConnections: item.ActiveTCPConnections, UploadBytes: item.UploadBytes, DownloadBytes: item.DownloadBytes, TCPErrorCount: item.TCPErrorCount, UDPErrorCount: item.UDPErrorCount, HTTPErrorCount: item.HTTPErrorCount, AccessAuthEnabled: item.AccessAuthEnabled, AccessAuthVersion: item.AccessAuthVersion, Config: item.Config, Certificate: item.Certificate, CreatedAt: proxy.CreatedAt, UpdatedAt: proxy.UpdatedAt}, nil
+	return ProxyDetail{ID: item.ID, UserID: item.UserID, ClientID: item.ClientID, Name: item.Name, IsSystem: item.IsSystem, Type: item.Type, Status: item.Status, Description: item.Description, RuntimeStatus: item.RuntimeStatus, ActiveTCPConnections: item.ActiveTCPConnections, UploadBytes: item.UploadBytes, DownloadBytes: item.DownloadBytes, TCPErrorCount: item.TCPErrorCount, UDPErrorCount: item.UDPErrorCount, HTTPErrorCount: item.HTTPErrorCount, AccessAuthEnabled: item.AccessAuthEnabled, AccessAuthVersion: item.AccessAuthVersion, Config: item.Config, Certificate: item.Certificate, CreatedAt: proxy.CreatedAt, UpdatedAt: proxy.UpdatedAt}, nil
 }
 
 func (service Service) ListManagedCertificates(ctx context.Context, input CertificateListInput) (ManagedCertificatePage, error) {
@@ -799,7 +812,7 @@ func latestByClientID(sessions []session.Session) map[string]session.Session {
 }
 
 func clientListItemFromDomain(client domain.Client, runtimeSession session.Session) ClientListItem {
-	item := ClientListItem{ID: client.ID, UserID: client.UserID, Name: client.Name, Status: client.Status, Version: client.Version, LastOnlineAt: client.LastOnlineAt, LastOfflineAt: client.LastOfflineAt, CreatedAt: client.CreatedAt, UpdatedAt: client.UpdatedAt}
+	item := ClientListItem{ID: client.ID, UserID: client.UserID, Name: client.Name, IsSystem: systemclient.IsSystemClientID(client.ID), Status: client.Status, Version: client.Version, LastOnlineAt: client.LastOnlineAt, LastOfflineAt: client.LastOfflineAt, CreatedAt: client.CreatedAt, UpdatedAt: client.UpdatedAt}
 	if runtimeSession.ID == "" {
 		return item
 	}
@@ -826,7 +839,7 @@ func proxyListItemFromDomain(proxy domain.Proxy, runtimeSession session.Session,
 	if certificate != nil {
 		certificateID = certificate.CertificateID
 	}
-	return ProxyListItem{ID: proxy.ID, UserID: proxy.UserID, ClientID: proxy.ClientID, Name: proxy.Name, Type: proxy.Type, Status: proxy.Status, Description: proxy.Description, RuntimeStatus: runtimeStatus, ActiveTCPConnections: proxyStats.TCPCurrentConnections, UploadBytes: proxyStats.TCPUploadBytes + proxyStats.UDPUploadBytes + proxyStats.HTTPUploadBytes, DownloadBytes: proxyStats.TCPDownloadBytes + proxyStats.UDPDownloadBytes + proxyStats.HTTPDownloadBytes, TCPErrorCount: proxyStats.TCPErrors, UDPErrorCount: proxyStats.UDPErrors, HTTPErrorCount: proxyStats.HTTPErrors, AccessAuthEnabled: proxy.AccessAuthEnabled, AccessAuthVersion: proxy.AccessAuthVersion, Config: ProxyTypeConfig{DomainID: proxy.DomainID, PathPrefix: proxy.PathPrefix, StripPrefix: proxy.StripPrefix, UpstreamPathPrefix: proxy.UpstreamPathPrefix, EntryBindHost: proxy.EntryBindHost, EntryHost: proxy.EntryHost, EntryPort: proxy.EntryPort, TargetHost: proxy.TargetHost, TargetPort: proxy.TargetPort, CertificateID: certificateID}, Certificate: certificate, CreatedAt: proxy.CreatedAt, UpdatedAt: proxy.UpdatedAt}
+	return ProxyListItem{ID: proxy.ID, UserID: proxy.UserID, ClientID: proxy.ClientID, Name: proxy.Name, IsSystem: systemclient.IsSystemProxy(proxy), Type: proxy.Type, Status: proxy.Status, Description: proxy.Description, RuntimeStatus: runtimeStatus, ActiveTCPConnections: proxyStats.TCPCurrentConnections, UploadBytes: proxyStats.TCPUploadBytes + proxyStats.UDPUploadBytes + proxyStats.HTTPUploadBytes, DownloadBytes: proxyStats.TCPDownloadBytes + proxyStats.UDPDownloadBytes + proxyStats.HTTPDownloadBytes, TCPErrorCount: proxyStats.TCPErrors, UDPErrorCount: proxyStats.UDPErrors, HTTPErrorCount: proxyStats.HTTPErrors, AccessAuthEnabled: proxy.AccessAuthEnabled, AccessAuthVersion: proxy.AccessAuthVersion, Config: ProxyTypeConfig{DomainID: proxy.DomainID, PathPrefix: proxy.PathPrefix, StripPrefix: proxy.StripPrefix, UpstreamPathPrefix: proxy.UpstreamPathPrefix, EntryBindHost: proxy.EntryBindHost, EntryHost: proxy.EntryHost, EntryPort: proxy.EntryPort, TargetHost: proxy.TargetHost, TargetPort: proxy.TargetPort, CertificateID: certificateID}, Certificate: certificate, CreatedAt: proxy.CreatedAt, UpdatedAt: proxy.UpdatedAt}
 }
 
 func proxySummaryFromDomain(proxy domain.Proxy, runtimeSession session.Session, proxyStats stats.ProxyStats, certificate *ManagedCertificateSummary) ProxySummary {
@@ -840,7 +853,7 @@ func proxySummaryFromDomain(proxy domain.Proxy, runtimeSession session.Session, 
 			runtimeStatus = domain.ProxyOnline
 		}
 	}
-	return ProxySummary{ID: proxy.ID, Name: proxy.Name, Type: proxy.Type, Status: proxy.Status, RuntimeStatus: runtimeStatus, EntryBindHost: proxy.EntryBindHost, EntryHost: proxy.EntryHost, EntryPort: proxy.EntryPort, TargetHost: proxy.TargetHost, TargetPort: proxy.TargetPort, ActiveTCPConnections: proxyStats.TCPCurrentConnections}
+	return ProxySummary{ID: proxy.ID, Name: proxy.Name, IsSystem: systemclient.IsSystemProxy(proxy), Type: proxy.Type, Status: proxy.Status, Description: proxy.Description, RuntimeStatus: runtimeStatus, EntryBindHost: proxy.EntryBindHost, EntryHost: proxy.EntryHost, EntryPort: proxy.EntryPort, TargetHost: proxy.TargetHost, TargetPort: proxy.TargetPort, ActiveTCPConnections: proxyStats.TCPCurrentConnections}
 }
 
 func certificateSummary(certificate domain.ManagedCertificate) ManagedCertificateSummary {

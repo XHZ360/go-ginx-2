@@ -17,6 +17,8 @@ import type {
   ClientsQueryVariables,
   CreateCertificateMutation,
   CreateCertificateMutationVariables,
+  CreateLocalProxyMutation,
+  CreateLocalProxyMutationVariables,
   CreateClientJoinMutation,
   CreateClientJoinMutationVariables,
   CreateClientMutation,
@@ -34,6 +36,8 @@ import type {
   DeleteCertificateMutationVariables,
   DeleteClientMutation,
   DeleteClientMutationVariables,
+  DeleteLocalProxyMutation,
+  DeleteLocalProxyMutationVariables,
   DeleteProxyMutation,
   DeleteProxyMutationVariables,
   DeleteProviderCredentialMutation,
@@ -42,6 +46,8 @@ import type {
   DisableProxyAccessAuthMutationVariables,
   DisableProxyMutation,
   DisableProxyMutationVariables,
+  DisableLocalProxyMutation,
+  DisableLocalProxyMutationVariables,
   DisableProviderCredentialMutation,
   DisableProviderCredentialMutationVariables,
   DisableUserMutation,
@@ -50,8 +56,11 @@ import type {
   EnableProxyAccessAuthAndCreateActivationMutationVariables,
   EnableProxyMutation,
   EnableProxyMutationVariables,
+  EnableLocalProxyMutation,
+  EnableLocalProxyMutationVariables,
   IssueManagedCertificateMutation,
   IssueManagedCertificateMutationVariables,
+  LocalTargetAllowlistQuery,
   ProviderCredentialsQuery,
   ProviderCredentialsQueryVariables,
   ProxiesQuery,
@@ -61,6 +70,8 @@ import type {
   ProxyQueryVariables,
   RenewManagedCertificateMutation,
   RenewManagedCertificateMutationVariables,
+  ReplaceLocalTargetAllowlistMutation,
+  ReplaceLocalTargetAllowlistMutationVariables,
   RevokeAllProxyAccessMutation,
   RevokeAllProxyAccessMutationVariables,
   RevokeCloudflareOriginCertificateMutation,
@@ -77,6 +88,8 @@ import type {
   UnbindCertificateMutationVariables,
   UpdateProviderCredentialMutation,
   UpdateProviderCredentialMutationVariables,
+  UpdateLocalProxyMutation,
+  UpdateLocalProxyMutationVariables,
   UpdateProxyMutation,
   UpdateProxyMutationVariables,
   UserQuery,
@@ -93,6 +106,9 @@ import type {
   DashboardSummary,
   DomainEntry,
   DomainRecord,
+	LocalProxyInput,
+	LocalTargetAllowlist,
+	LocalTargetAllowlistEntry,
 	ManagedCertificate,
 	CertificateProviderReadiness,
   PageInfo,
@@ -293,6 +309,21 @@ export async function queryProxyEntryOptions() {
   return data.proxyEntryOptions satisfies ProxyEntryOptions;
 }
 
+export async function queryLocalTargetAllowlist() {
+  const data = await request<LocalTargetAllowlistQuery, undefined>({ operationName: 'LocalTargetAllowlist' });
+  return data.localTargetAllowlist satisfies LocalTargetAllowlist;
+}
+
+export function mutateReplaceLocalTargetAllowlist(csrfToken: string, entries: LocalTargetAllowlistEntry[]) {
+  const variables = { input: { entries } } satisfies ReplaceLocalTargetAllowlistMutationVariables;
+  return request<ReplaceLocalTargetAllowlistMutation, ReplaceLocalTargetAllowlistMutationVariables>({
+    operationName: 'ReplaceLocalTargetAllowlist',
+    variables,
+    mutation: true,
+    csrfToken,
+  });
+}
+
 export async function queryCertificates(input: ListInput<CertificateFilter>) {
   const variables = { input: cleanObject(input) } satisfies CertificatesQueryVariables;
   const data = await request<CertificatesQuery, CertificatesQueryVariables>({ operationName: 'Certificates', variables });
@@ -384,6 +415,31 @@ export function mutateDeleteClient(csrfToken: string, id: string) {
     mutation: true,
     csrfToken,
   });
+}
+
+export function mutateCreateLocalProxy(csrfToken: string, input: LocalProxyInput) {
+  const variables = { input: cleanObject(input) } satisfies CreateLocalProxyMutationVariables;
+  return request<CreateLocalProxyMutation, CreateLocalProxyMutationVariables>({ operationName: 'CreateLocalProxy', variables, mutation: true, csrfToken });
+}
+
+export function mutateUpdateLocalProxy(csrfToken: string, input: LocalProxyInput & { id: string }) {
+  const variables = { input: cleanObject(input) } satisfies UpdateLocalProxyMutationVariables;
+  return request<UpdateLocalProxyMutation, UpdateLocalProxyMutationVariables>({ operationName: 'UpdateLocalProxy', variables, mutation: true, csrfToken });
+}
+
+export function mutateEnableLocalProxy(csrfToken: string, id: string) {
+  const variables = { input: { id } } satisfies EnableLocalProxyMutationVariables;
+  return request<EnableLocalProxyMutation, EnableLocalProxyMutationVariables>({ operationName: 'EnableLocalProxy', variables, mutation: true, csrfToken });
+}
+
+export function mutateDisableLocalProxy(csrfToken: string, id: string) {
+  const variables = { input: { id } } satisfies DisableLocalProxyMutationVariables;
+  return request<DisableLocalProxyMutation, DisableLocalProxyMutationVariables>({ operationName: 'DisableLocalProxy', variables, mutation: true, csrfToken });
+}
+
+export function mutateDeleteLocalProxy(csrfToken: string, id: string) {
+  const variables = { input: { id } } satisfies DeleteLocalProxyMutationVariables;
+  return request<DeleteLocalProxyMutation, DeleteLocalProxyMutationVariables>({ operationName: 'DeleteLocalProxy', variables, mutation: true, csrfToken });
 }
 
 export async function mutateCreateDomain(

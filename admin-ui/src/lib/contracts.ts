@@ -69,8 +69,10 @@ export type ClientRuntime = {
 export type ProxySummary = {
   id: string;
   name: string;
+  isSystem: boolean;
   type: string;
   status: string;
+  description?: string | null;
   runtimeStatus: string;
   entryBindHost?: string | null;
   entryHost?: string | null;
@@ -84,6 +86,7 @@ export type Client = {
   id: string;
   userId: string;
   name: string;
+  isSystem: boolean;
   status: string;
   version: number;
   runtime: ClientRuntime;
@@ -218,6 +221,7 @@ export type ProxyRecord = {
   userId: string;
   clientId: string;
   name: string;
+  isSystem: boolean;
   type: string;
   status: string;
   description?: string | null;
@@ -234,6 +238,27 @@ export type ProxyRecord = {
   certificate?: ManagedCertificate | null;
   createdAt: string;
   updatedAt: string;
+};
+
+export type LocalTargetAllowlistEntry = {
+  cidr: string;
+  portStart: number;
+  portEnd: number;
+};
+
+export type LocalTargetAllowlist = {
+  entries: LocalTargetAllowlistEntry[];
+};
+
+export type LocalProxyInput = {
+  id?: string;
+  name: string;
+  type: string;
+  entryBindHost?: string;
+  entryPort: number;
+  targetHost: string;
+  targetPort: number;
+  description?: string;
 };
 
 export type AuditEvent = {

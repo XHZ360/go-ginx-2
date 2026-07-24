@@ -11,6 +11,7 @@ GoGinX 由服务端、provider 客户端、可选的 consumer SDK、Admin API/UI
 3. 服务端入口接收 TCP、UDP、HTTP 或 HTTPS 流量，并通过最新的 provider 会话打开代理子流。
 4. consumer SDK 通过同一控制通道主动打开指定代理的流；服务端校验用户、代理状态和 provider 在线状态后桥接到固定 target。
 5. 累计代理统计和管理审计写入 SQLite；活跃连接、会话和 listener 属于进程运行时状态。
+6. server 内置的 `server-local` virtual provider session 可承接管理员专属 TCP/UDP 代理，经持久化 IP/CIDR 白名单校验后拨号本机 target。
 
 ## 代码入口
 
@@ -20,6 +21,8 @@ GoGinX 由服务端、provider 客户端、可选的 consumer SDK、Admin API/UI
 - `internal/proxy/`：TCP、UDP、HTTP、HTTPS 和双向隧道。
 - `internal/certmanager/`：托管证书 provider、健康检查和调度。
 - `internal/store/sqlite/`：cgo-free SQLite 仓储。
+- `internal/systemclient/`：保留系统身份、幂等 ensure 和系统对象保护。
+- `internal/localproxy/`：本机目标策略、dialer、virtual session 和管理端口。
 - `sdk/`：consumer SDK 和本地固定目标入口。
 
 相关验证：`go test ./internal/control ./internal/session ./internal/proxy/... ./sdk -count=1`。
@@ -31,7 +34,7 @@ GoGinX 由服务端、provider 客户端、可选的 consumer SDK、Admin API/UI
 - Domain、Proxy、Certificate 之间的共享规则通过 `ProxyAdmissionPolicy`、`CertificateBindingPolicy` 和 `ProxyAccessPolicy` 注入；service 之间不访问对方的字段或私有方法。`createWebProxy` 属于 `ProxyService`，不形成 Domain 到 Proxy 的 facade 依赖。
 - `internal/adminquery` 只能通过 `SessionSnapshotSource` 读取会话快照，不能操作 session 生命周期。
 - `internal/control` 负责远端协议与连接生命周期。认证结果和连接关闭可直接同步 `ClientStatus`，这是唯一登记的直连 store 写入例外；其他业务 mutation 必须经业务 facade。
-- `internal/session` 提供 `VirtualSession` 和 `SessionRegistry` 运行时端口；`internal/systemclient`、`internal/localproxy` 固定未来系统 client、本机代理、目标策略和拨号端口，不在此阶段实现业务能力。
+- `internal/session` 提供 `VirtualSession` 和 `SessionRegistry` 运行时端口；`internal/systemclient` 实现固定系统身份与保护规则，`internal/localproxy` 实现白名单策略、本机拨号和 virtual session。Admin API 只调用专用 facade，不直接依赖运行时实现。
 - `internal/daemon` 只装配上述上下文及其生命周期，不承载管理业务规则。
 
 ## 明确边界

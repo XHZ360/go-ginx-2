@@ -38,8 +38,10 @@ fragment ClientRuntimeFields on AdminClientRuntime {
 fragment ProxySummaryFields on AdminProxySummary {
   id
   name
+  isSystem
   type
   status
+  description
   runtimeStatus
   entryBindHost
   entryHost
@@ -53,6 +55,7 @@ fragment ClientFields on AdminClient {
   id
   userId
   name
+  isSystem
   status
   version
   runtime {
@@ -68,6 +71,7 @@ fragment ClientDetailFields on AdminClientDetail {
   id
   userId
   name
+  isSystem
   status
   version
   runtime {
@@ -197,6 +201,7 @@ fragment ProxyFields on AdminProxy {
   userId
   clientId
   name
+  isSystem
   type
   status
   description
@@ -376,6 +381,16 @@ query ProxyEntryOptions {
   }
 }
 
+query LocalTargetAllowlist {
+  localTargetAllowlist {
+    entries {
+      cidr
+      portStart
+      portEnd
+    }
+  }
+}
+
 query Certificates($input: AdminCertificatesInput) {
   certificates(input: $input) {
     totalCount
@@ -461,6 +476,47 @@ mutation RotateClientCredential($input: AdminUserIDInput!) {
 mutation DeleteClient($input: AdminUserIDInput!) {
   deleteClient(input: $input) {
     clientId
+  }
+}
+
+mutation ReplaceLocalTargetAllowlist($input: AdminReplaceLocalTargetAllowlistInput!) {
+  replaceLocalTargetAllowlist(input: $input) {
+    entries {
+      cidr
+      portStart
+      portEnd
+    }
+  }
+}
+
+mutation CreateLocalProxy($input: AdminCreateLocalProxyInput!) {
+  createLocalProxy(input: $input) {
+    ...ProxyPayloadFields
+  }
+}
+
+mutation UpdateLocalProxy($input: AdminUpdateLocalProxyInput!) {
+  updateLocalProxy(input: $input) {
+    ...ProxyPayloadFields
+  }
+}
+
+mutation EnableLocalProxy($input: AdminUserIDInput!) {
+  enableLocalProxy(input: $input) {
+    ...ProxyPayloadFields
+  }
+}
+
+mutation DisableLocalProxy($input: AdminUserIDInput!) {
+  disableLocalProxy(input: $input) {
+    ...ProxyPayloadFields
+  }
+}
+
+mutation DeleteLocalProxy($input: AdminUserIDInput!) {
+  deleteLocalProxy(input: $input) {
+    proxyId
+    status
   }
 }
 

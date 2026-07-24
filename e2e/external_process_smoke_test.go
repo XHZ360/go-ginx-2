@@ -529,7 +529,7 @@ func TestExternalProcessesConfiglessServerAndClientJoin(t *testing.T) {
 	}
 
 	runCommand(t, smokeCtx, stateDir, adminBin, "init-admin", "-id", "admin-1", "-username", "admin", "-password", "secret")
-	if err := waitForAdminDashboard(smokeCtx, adminAddress, "admin", "secret", 0); err != nil {
+	if err := waitForAdminDashboard(smokeCtx, adminAddress, "admin", "secret", 1); err != nil {
 		t.Fatalf("configless admin login failed: %v\nserver output:\n%s", err, server.Output())
 	}
 	token := strings.TrimSpace(runCommand(t, smokeCtx, stateDir, adminBin, "create-client-join", "-id", "client-1", "-user", "admin-1", "-name", "home", "-server-ca-file", filepath.Join(deployCertDir, "control-ca.crt"), "-server-name", "go-ginx-control.local", "-server-address", controlQUICAddress, "-server-tls-address", controlTLSAddress))
@@ -546,7 +546,7 @@ func TestExternalProcessesConfiglessServerAndClientJoin(t *testing.T) {
 	runCommand(t, smokeCtx, stateDir, clientBin, "join", token)
 	waitForFile(t, smokeCtx, filepath.Join(deployDir, "data", "client-state.json"))
 	client := startProcess(t, stateDir, clientBin)
-	if err := waitForAdminDashboard(smokeCtx, adminAddress, "admin", "secret", 1); err != nil {
+	if err := waitForAdminDashboard(smokeCtx, adminAddress, "admin", "secret", 2); err != nil {
 		t.Fatalf("joined configless client did not come online: %v\nserver output:\n%s\nclient output:\n%s", err, server.Output(), client.Output())
 	}
 }

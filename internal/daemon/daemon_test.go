@@ -26,10 +26,162 @@ import (
 	"github.com/simp-frp/go-ginx-2/internal/certmanager"
 	"github.com/simp-frp/go-ginx-2/internal/config"
 	"github.com/simp-frp/go-ginx-2/internal/domain"
+	"github.com/simp-frp/go-ginx-2/internal/localproxy"
 	httpsproxy "github.com/simp-frp/go-ginx-2/internal/proxy/https"
 	"github.com/simp-frp/go-ginx-2/internal/store"
 	"github.com/simp-frp/go-ginx-2/internal/store/sqlite"
+	"github.com/simp-frp/go-ginx-2/internal/systemclient"
 )
+
+func TestServerLocalVirtualClientTrafficAndRestart(t *testing.T) {
+	serverCert, serverKey, _ := writeTestTLSFiles(t)
+	tcpTarget := startEchoTarget(t)
+	udpTarget := startUDPEchoTarget(t)
+	tcpEntryPort := reservePort(t)
+	udpEntryPort := reserveUDPPort(t)
+	deniedEntryPort := reservePort(t)
+	dbPath := filepath.Join(t.TempDir(), "server-local.db")
+	seedDatabase(t, dbPath, nil)
+	db, err := sqlite.Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if _, err := (systemclient.Service{Store: db}).Ensure(ctx); err != nil {
+		t.Fatal(err)
+	}
+	internalCtx := systemclient.WithInternalMutation(ctx)
+	localProxies := []domain.Proxy{
+		{ID: "local-tcp", UserID: systemclient.UserID, ClientID: systemclient.ClientID, Name: "local tcp", Type: domain.ProxyTCP, Status: domain.ProxyEnabled, EntryBindHost: "127.0.0.1", EntryPort: tcpEntryPort, TargetHost: "127.0.0.1", TargetPort: portNumber(t, tcpTarget.Addr())},
+		{ID: "local-udp", UserID: systemclient.UserID, ClientID: systemclient.ClientID, Name: "local udp", Type: domain.ProxyUDP, Status: domain.ProxyEnabled, EntryBindHost: "127.0.0.1", EntryPort: udpEntryPort, TargetHost: "127.0.0.1", TargetPort: portNumber(t, udpTarget.LocalAddr())},
+		{ID: "local-denied", UserID: systemclient.UserID, ClientID: systemclient.ClientID, Name: "local denied", Type: domain.ProxyTCP, Status: domain.ProxyEnabled, EntryBindHost: "127.0.0.1", EntryPort: deniedEntryPort, TargetHost: "192.0.2.1", TargetPort: 80},
+	}
+	for _, proxy := range localProxies {
+		if err := db.Proxies().Create(internalCtx, proxy); err != nil {
+			t.Fatalf("seed %s: %v", proxy.ID, err)
+		}
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	serverConfig := func() config.Server {
+		return config.Server{AdminListen: "127.0.0.1:0", ClientEnrollmentListen: "127.0.0.1:0", ControlQUICListen: "127.0.0.1:0", ControlTLSCertFile: serverCert, ControlTLSKeyFile: serverKey, TCPEntryHost: "127.0.0.1", HTTPEntryListen: "127.0.0.1:0", SQLitePath: dbPath, DataDir: t.TempDir(), CertificateDir: t.TempDir(), HeartbeatTimeout: time.Second, LogRetentionDays: 1}
+	}
+	start := func() (*ServerRuntime, context.CancelFunc) {
+		runtimeCtx, cancel := context.WithCancel(context.Background())
+		runtime, err := StartServer(runtimeCtx, serverConfig())
+		if err != nil {
+			cancel()
+			t.Fatalf("start server: %v", err)
+		}
+		return runtime, cancel
+	}
+	assertTCP := func() {
+		conn, err := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(tcpEntryPort)), time.Second)
+		if err != nil {
+			t.Fatalf("dial local tcp entry: %v", err)
+		}
+		defer conn.Close()
+		if _, err := conn.Write([]byte("ping")); err != nil {
+			t.Fatal(err)
+		}
+		payload := make([]byte, 4)
+		if _, err := io.ReadFull(conn, payload); err != nil || string(payload) != "ping" {
+			t.Fatalf("local tcp echo payload=%q err=%v", payload, err)
+		}
+	}
+
+	runtime1, cancel1 := start()
+	if sessionValue, ok := runtime1.Sessions.Latest(systemclient.ClientID); !ok || !sessionValue.Persistent || sessionValue.StreamOpener == nil {
+		t.Fatalf("system virtual session is not active: %+v", sessionValue)
+	}
+	assertTCP()
+	heldConn, err := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(tcpEntryPort)), time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := heldConn.Write([]byte("before")); err != nil {
+		t.Fatal(err)
+	}
+	heldPayload := make([]byte, len("before"))
+	if _, err := io.ReadFull(heldConn, heldPayload); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime1.LocalTargetPolicy.Replace(context.Background(), localproxy.AllowlistInput{Entries: []localproxy.AllowlistEntry{{CIDR: "::1/128"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := heldConn.Write([]byte("after")); err != nil {
+		t.Fatalf("existing connection should survive allowlist tightening: %v", err)
+	}
+	heldPayload = make([]byte, len("after"))
+	if _, err := io.ReadFull(heldConn, heldPayload); err != nil || string(heldPayload) != "after" {
+		t.Fatalf("existing connection after tightening payload=%q err=%v", heldPayload, err)
+	}
+	newConn, err := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(tcpEntryPort)), time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = newConn.Write([]byte("blocked"))
+	_ = newConn.SetReadDeadline(time.Now().Add(time.Second))
+	if _, err := newConn.Read(make([]byte, 1)); err == nil {
+		t.Fatal("new connection should use the tightened allowlist")
+	}
+	_ = newConn.Close()
+	_ = heldConn.Close()
+	if err := runtime1.LocalTargetPolicy.Replace(context.Background(), localproxy.AllowlistInput{Entries: localproxy.DefaultAllowlist}); err != nil {
+		t.Fatal(err)
+	}
+	udpConn, err := net.Dial("udp", net.JoinHostPort("127.0.0.1", strconv.Itoa(udpEntryPort)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := udpConn.Write([]byte("ping")); err != nil {
+		t.Fatal(err)
+	}
+	_ = udpConn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	udpPayload := make([]byte, 16)
+	n, err := udpConn.Read(udpPayload)
+	_ = udpConn.Close()
+	if err != nil || string(udpPayload[:n]) != "ping" {
+		t.Fatalf("local udp echo payload=%q err=%v", udpPayload[:n], err)
+	}
+	deniedConn, err := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(deniedEntryPort)), time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = deniedConn.Write([]byte("blocked"))
+	_ = deniedConn.SetReadDeadline(time.Now().Add(time.Second))
+	if _, err := deniedConn.Read(make([]byte, 1)); err == nil {
+		t.Fatal("non-allowlisted target should close the entry connection")
+	}
+	_ = deniedConn.Close()
+	cancel1()
+	if err := runtime1.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := runtime1.Sessions.Latest(systemclient.ClientID); ok {
+		t.Fatal("system virtual session should be unregistered on shutdown")
+	}
+
+	runtime2, cancel2 := start()
+	defer cancel2()
+	defer runtime2.Close()
+	clients, err := runtime2.Store.Clients().List(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	systemCount := 0
+	for _, client := range clients {
+		if client.ID == systemclient.ClientID {
+			systemCount++
+		}
+	}
+	if systemCount != 1 {
+		t.Fatalf("expected one system client after restart, got %d in %+v", systemCount, clients)
+	}
+	assertTCP()
+}
 
 func TestStartServerWiresRuntimeListeners(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())

@@ -27,6 +27,7 @@ import (
 	"github.com/simp-frp/go-ginx-2/internal/deploypath"
 	"github.com/simp-frp/go-ginx-2/internal/domain"
 	"github.com/simp-frp/go-ginx-2/internal/enrollment"
+	"github.com/simp-frp/go-ginx-2/internal/localproxy"
 	"github.com/simp-frp/go-ginx-2/internal/store"
 )
 
@@ -46,6 +47,7 @@ var executablePath = os.Executable
 type Server struct {
 	query              adminquery.Service
 	commands           admin.CommandFacades
+	localCommands      admin.LocalAdministrationFacade
 	listener           net.Listener
 	httpServer         *http.Server
 	schema             graphql.Schema
@@ -65,6 +67,7 @@ type Entry struct {
 	Enrollment              enrollment.Service
 	Query                   adminquery.Service
 	Commands                admin.CommandFacades
+	LocalCommands           admin.LocalAdministrationFacade
 	ProxyEntryDefaults      domain.ProxyEntryDefaults
 	SessionIdleTimeout      time.Duration
 	SessionAbsoluteLifetime time.Duration
@@ -209,6 +212,7 @@ func Listen(entry Entry) (*Server, error) {
 	server := &Server{
 		query:              entry.Query,
 		commands:           entry.Commands,
+		localCommands:      entry.LocalCommands,
 		listener:           listener,
 		creds:              creds,
 		sessions:           sessions,
@@ -791,8 +795,10 @@ func (server *Server) buildSchema() (graphql.Schema, error) {
 	proxySummaryType := graphql.NewObject(graphql.ObjectConfig{Name: "AdminProxySummary", Fields: graphql.Fields{
 		"id":                   &graphql.Field{Type: graphql.String},
 		"name":                 &graphql.Field{Type: graphql.String},
+		"isSystem":             &graphql.Field{Type: graphql.Boolean},
 		"type":                 &graphql.Field{Type: graphql.String},
 		"status":               &graphql.Field{Type: graphql.String},
+		"description":          &graphql.Field{Type: graphql.String},
 		"runtimeStatus":        &graphql.Field{Type: graphql.String},
 		"entryBindHost":        &graphql.Field{Type: graphql.String},
 		"entryHost":            &graphql.Field{Type: graphql.String},
@@ -805,6 +811,7 @@ func (server *Server) buildSchema() (graphql.Schema, error) {
 		"id":            &graphql.Field{Type: graphql.String},
 		"userId":        &graphql.Field{Type: graphql.String},
 		"name":          &graphql.Field{Type: graphql.String},
+		"isSystem":      &graphql.Field{Type: graphql.Boolean},
 		"status":        &graphql.Field{Type: graphql.String},
 		"version":       &graphql.Field{Type: graphql.Int},
 		"runtime":       &graphql.Field{Type: clientRuntimeType},
@@ -817,6 +824,7 @@ func (server *Server) buildSchema() (graphql.Schema, error) {
 		"id":             &graphql.Field{Type: graphql.String},
 		"userId":         &graphql.Field{Type: graphql.String},
 		"name":           &graphql.Field{Type: graphql.String},
+		"isSystem":       &graphql.Field{Type: graphql.Boolean},
 		"status":         &graphql.Field{Type: graphql.String},
 		"version":        &graphql.Field{Type: graphql.Int},
 		"runtime":        &graphql.Field{Type: clientRuntimeType},
@@ -872,6 +880,7 @@ func (server *Server) buildSchema() (graphql.Schema, error) {
 		"userId":               &graphql.Field{Type: graphql.String},
 		"clientId":             &graphql.Field{Type: graphql.String},
 		"name":                 &graphql.Field{Type: graphql.String},
+		"isSystem":             &graphql.Field{Type: graphql.Boolean},
 		"type":                 &graphql.Field{Type: graphql.String},
 		"status":               &graphql.Field{Type: graphql.String},
 		"description":          &graphql.Field{Type: graphql.String},
@@ -898,6 +907,14 @@ func (server *Server) buildSchema() (graphql.Schema, error) {
 		"cumulativeTCPErrorCount":  &graphql.Field{Type: graphql.Int},
 		"cumulativeUDPErrorCount":  &graphql.Field{Type: graphql.Int},
 		"cumulativeHTTPErrorCount": &graphql.Field{Type: graphql.Int},
+	}})
+	localAllowlistEntryType := graphql.NewObject(graphql.ObjectConfig{Name: "AdminLocalTargetAllowlistEntry", Fields: graphql.Fields{
+		"cidr":      &graphql.Field{Type: graphql.NewNonNull(graphql.String)},
+		"portStart": &graphql.Field{Type: graphql.NewNonNull(graphql.Int)},
+		"portEnd":   &graphql.Field{Type: graphql.NewNonNull(graphql.Int)},
+	}})
+	localAllowlistType := graphql.NewObject(graphql.ObjectConfig{Name: "AdminLocalTargetAllowlist", Fields: graphql.Fields{
+		"entries": &graphql.Field{Type: graphql.NewNonNull(graphql.NewList(graphql.NewNonNull(localAllowlistEntryType)))},
 	}})
 
 	paginationInput := graphql.NewInputObject(graphql.InputObjectConfig{Name: "AdminPaginationInput", Fields: graphql.InputObjectConfigFieldMap{
@@ -1022,6 +1039,33 @@ func (server *Server) buildSchema() (graphql.Schema, error) {
 		"name":        &graphql.InputObjectFieldConfig{Type: graphql.NewNonNull(graphql.String)},
 		"description": &graphql.InputObjectFieldConfig{Type: graphql.String},
 		"config":      &graphql.InputObjectFieldConfig{Type: graphql.NewNonNull(proxyConfigInput)},
+	}})
+	localAllowlistEntryInput := graphql.NewInputObject(graphql.InputObjectConfig{Name: "AdminLocalTargetAllowlistEntryInput", Fields: graphql.InputObjectConfigFieldMap{
+		"cidr":      &graphql.InputObjectFieldConfig{Type: graphql.NewNonNull(graphql.String)},
+		"portStart": &graphql.InputObjectFieldConfig{Type: graphql.Int},
+		"portEnd":   &graphql.InputObjectFieldConfig{Type: graphql.Int},
+	}})
+	localAllowlistInput := graphql.NewInputObject(graphql.InputObjectConfig{Name: "AdminReplaceLocalTargetAllowlistInput", Fields: graphql.InputObjectConfigFieldMap{
+		"entries": &graphql.InputObjectFieldConfig{Type: graphql.NewNonNull(graphql.NewList(graphql.NewNonNull(localAllowlistEntryInput)))},
+	}})
+	createLocalProxyInput := graphql.NewInputObject(graphql.InputObjectConfig{Name: "AdminCreateLocalProxyInput", Fields: graphql.InputObjectConfigFieldMap{
+		"name":          &graphql.InputObjectFieldConfig{Type: graphql.NewNonNull(graphql.String)},
+		"type":          &graphql.InputObjectFieldConfig{Type: graphql.NewNonNull(graphql.String)},
+		"entryBindHost": &graphql.InputObjectFieldConfig{Type: graphql.String},
+		"entryPort":     &graphql.InputObjectFieldConfig{Type: graphql.NewNonNull(graphql.Int)},
+		"targetHost":    &graphql.InputObjectFieldConfig{Type: graphql.NewNonNull(graphql.String)},
+		"targetPort":    &graphql.InputObjectFieldConfig{Type: graphql.NewNonNull(graphql.Int)},
+		"description":   &graphql.InputObjectFieldConfig{Type: graphql.String},
+	}})
+	updateLocalProxyInput := graphql.NewInputObject(graphql.InputObjectConfig{Name: "AdminUpdateLocalProxyInput", Fields: graphql.InputObjectConfigFieldMap{
+		"id":            &graphql.InputObjectFieldConfig{Type: graphql.NewNonNull(graphql.String)},
+		"name":          &graphql.InputObjectFieldConfig{Type: graphql.NewNonNull(graphql.String)},
+		"type":          &graphql.InputObjectFieldConfig{Type: graphql.String},
+		"entryBindHost": &graphql.InputObjectFieldConfig{Type: graphql.String},
+		"entryPort":     &graphql.InputObjectFieldConfig{Type: graphql.NewNonNull(graphql.Int)},
+		"targetHost":    &graphql.InputObjectFieldConfig{Type: graphql.NewNonNull(graphql.String)},
+		"targetPort":    &graphql.InputObjectFieldConfig{Type: graphql.NewNonNull(graphql.Int)},
+		"description":   &graphql.InputObjectFieldConfig{Type: graphql.String},
 	}})
 	certificateInput := graphql.NewInputObject(graphql.InputObjectConfig{Name: "AdminCertificateMutationInput", Fields: graphql.InputObjectConfigFieldMap{
 		"proxyId":           &graphql.InputObjectFieldConfig{Type: graphql.String},
@@ -1343,6 +1387,13 @@ func (server *Server) buildSchema() (graphql.Schema, error) {
 		"proxyEntryOptions": &graphql.Field{Type: proxyEntryOptionsType, Resolve: server.wrapResolve(func(params graphql.ResolveParams) (any, error) {
 			return server.proxyEntryOptions(), nil
 		})},
+		"localTargetAllowlist": &graphql.Field{Type: localAllowlistType, Resolve: server.wrapResolve(func(graphql.ResolveParams) (any, error) {
+			commands, err := server.requireLocalCommands()
+			if err != nil {
+				return nil, err
+			}
+			return commands.LocalAllowlist(), nil
+		})},
 		"certificates": &graphql.Field{Type: certificatesPageType, Args: graphql.FieldConfigArgument{"input": &graphql.ArgumentConfig{Type: certificatesInput}}, Resolve: server.wrapResolve(func(params graphql.ResolveParams) (any, error) {
 			return server.query.ListManagedCertificates(params.Context, certificateListInputFromArgs(params.Args))
 		})},
@@ -1361,6 +1412,78 @@ func (server *Server) buildSchema() (graphql.Schema, error) {
 		})},
 	}})
 	mutation := graphql.NewObject(graphql.ObjectConfig{Name: "Mutation", Fields: graphql.Fields{
+		"replaceLocalTargetAllowlist": &graphql.Field{Type: localAllowlistType, Args: graphql.FieldConfigArgument{"input": &graphql.ArgumentConfig{Type: graphql.NewNonNull(localAllowlistInput)}}, Resolve: server.wrapResolve(func(params graphql.ResolveParams) (any, error) {
+			commands, err := server.requireLocalCommands()
+			if err != nil {
+				return nil, err
+			}
+			return commands.ReplaceLocalAllowlist(params.Context, actorFromContext(params.Context), localAllowlistInputFromArgs(mapArg(params.Args, "input")))
+		})},
+		"createLocalProxy": &graphql.Field{Type: proxyPayloadType, Args: graphql.FieldConfigArgument{"input": &graphql.ArgumentConfig{Type: graphql.NewNonNull(createLocalProxyInput)}}, Resolve: server.wrapResolve(func(params graphql.ResolveParams) (any, error) {
+			commands, err := server.requireLocalCommands()
+			if err != nil {
+				return nil, err
+			}
+			created, err := commands.CreateLocalProxy(params.Context, actorFromContext(params.Context), localProxyInputFromArgs(mapArg(params.Args, "input")))
+			if err != nil {
+				return nil, err
+			}
+			detail, err := server.query.ProxyDetail(params.Context, created.ID)
+			if err != nil {
+				return nil, err
+			}
+			return proxyPayload{Proxy: detail, ID: created.ID, Status: string(detail.Status)}, nil
+		})},
+		"updateLocalProxy": &graphql.Field{Type: proxyPayloadType, Args: graphql.FieldConfigArgument{"input": &graphql.ArgumentConfig{Type: graphql.NewNonNull(updateLocalProxyInput)}}, Resolve: server.wrapResolve(func(params graphql.ResolveParams) (any, error) {
+			commands, err := server.requireLocalCommands()
+			if err != nil {
+				return nil, err
+			}
+			updated, err := commands.UpdateLocalProxy(params.Context, actorFromContext(params.Context), localProxyInputFromArgs(mapArg(params.Args, "input")))
+			if err != nil {
+				return nil, err
+			}
+			detail, err := server.query.ProxyDetail(params.Context, updated.ID)
+			if err != nil {
+				return nil, err
+			}
+			return proxyPayload{Proxy: detail, ID: updated.ID, Status: string(detail.Status)}, nil
+		})},
+		"enableLocalProxy": &graphql.Field{Type: proxyPayloadType, Args: graphql.FieldConfigArgument{"input": &graphql.ArgumentConfig{Type: graphql.NewNonNull(userIDInput)}}, Resolve: server.wrapResolve(func(params graphql.ResolveParams) (any, error) {
+			commands, err := server.requireLocalCommands()
+			if err != nil {
+				return nil, err
+			}
+			proxyID := stringValue(mapArg(params.Args, "input"), "id")
+			if err := commands.EnableLocalProxy(params.Context, actorFromContext(params.Context), proxyID); err != nil {
+				return nil, err
+			}
+			detail, err := server.query.ProxyDetail(params.Context, proxyID)
+			return proxyPayload{Proxy: detail, ID: proxyID, Status: string(detail.Status)}, err
+		})},
+		"disableLocalProxy": &graphql.Field{Type: proxyPayloadType, Args: graphql.FieldConfigArgument{"input": &graphql.ArgumentConfig{Type: graphql.NewNonNull(userIDInput)}}, Resolve: server.wrapResolve(func(params graphql.ResolveParams) (any, error) {
+			commands, err := server.requireLocalCommands()
+			if err != nil {
+				return nil, err
+			}
+			proxyID := stringValue(mapArg(params.Args, "input"), "id")
+			if err := commands.DisableLocalProxy(params.Context, actorFromContext(params.Context), proxyID); err != nil {
+				return nil, err
+			}
+			detail, err := server.query.ProxyDetail(params.Context, proxyID)
+			return proxyPayload{Proxy: detail, ID: proxyID, Status: string(detail.Status)}, err
+		})},
+		"deleteLocalProxy": &graphql.Field{Type: proxyPayloadType, Args: graphql.FieldConfigArgument{"input": &graphql.ArgumentConfig{Type: graphql.NewNonNull(userIDInput)}}, Resolve: server.wrapResolve(func(params graphql.ResolveParams) (any, error) {
+			commands, err := server.requireLocalCommands()
+			if err != nil {
+				return nil, err
+			}
+			proxyID := stringValue(mapArg(params.Args, "input"), "id")
+			if err := commands.DeleteLocalProxy(params.Context, actorFromContext(params.Context), proxyID); err != nil {
+				return nil, err
+			}
+			return proxyPayload{Proxy: adminquery.ProxyDetail{ID: proxyID, IsSystem: true, Status: domain.ProxyDisabled}, ID: proxyID, Status: "deleted"}, nil
+		})},
 		"createUser": &graphql.Field{Type: userPayloadType, Args: graphql.FieldConfigArgument{"input": &graphql.ArgumentConfig{Type: graphql.NewNonNull(createUserInput)}}, Resolve: server.wrapResolve(func(params graphql.ResolveParams) (any, error) {
 			input := mapArg(params.Args, "input")
 			created, err := server.commands.CreateUser(params.Context, admin.CreateUserInput{Username: stringValue(input, "username"), Password: stringValue(input, "password"), Role: domain.Role(defaultString(stringValue(input, "role"), string(domain.RoleUser))), ActorID: actorFromContext(params.Context)})
@@ -1829,6 +1952,13 @@ func (server *Server) buildSchema() (graphql.Schema, error) {
 	return graphql.NewSchema(graphql.SchemaConfig{Query: query, Mutation: mutation})
 }
 
+func (server *Server) requireLocalCommands() (admin.LocalAdministrationFacade, error) {
+	if server.localCommands == nil {
+		return nil, contracterr.Unsupported("server-local proxy management is unavailable")
+	}
+	return server.localCommands, nil
+}
+
 func (server *Server) wrapResolve(next graphql.FieldResolveFn) graphql.FieldResolveFn {
 	return func(params graphql.ResolveParams) (any, error) {
 		value, err := next(params)
@@ -2046,6 +2176,29 @@ func createProxyInputFromArgs(args map[string]any, actor string) admin.CreatePro
 		CertificateID:      stringValue(config, "certificateId"),
 		Description:        stringValue(args, "description"),
 		ActorID:            actor,
+	}
+}
+
+func localAllowlistInputFromArgs(args map[string]any) localproxy.AllowlistInput {
+	values, _ := args["entries"].([]any)
+	entries := make([]localproxy.AllowlistEntry, 0, len(values))
+	for _, value := range values {
+		entry, _ := value.(map[string]any)
+		entries = append(entries, localproxy.AllowlistEntry{CIDR: stringValue(entry, "cidr"), PortStart: intValue(entry, "portStart"), PortEnd: intValue(entry, "portEnd")})
+	}
+	return localproxy.AllowlistInput{Entries: entries}
+}
+
+func localProxyInputFromArgs(args map[string]any) localproxy.LocalProxyInput {
+	return localproxy.LocalProxyInput{
+		ID:            stringValue(args, "id"),
+		Name:          stringValue(args, "name"),
+		Type:          domain.ProxyType(stringValue(args, "type")),
+		EntryBindHost: stringValue(args, "entryBindHost"),
+		EntryPort:     intValue(args, "entryPort"),
+		TargetHost:    stringValue(args, "targetHost"),
+		TargetPort:    intValue(args, "targetPort"),
+		Description:   stringValue(args, "description"),
 	}
 }
 

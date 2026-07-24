@@ -8,7 +8,7 @@
 | --- | --- |
 | 最后更新 | 2026-07-24 |
 | 基线提交 | `2b15535`（证书 1:n + Domain GraphQL 修复） |
-| 验证状态 | Domain Path Change 已完成并部署验收 |
+| 验证状态 | Server 本机虚拟 Client Change 已完成；全量包测有两个既有阻碍 |
 
 ## 当前状态
 
@@ -18,6 +18,7 @@
 - completed Change [acme-certificate-readiness-ux.md](changes/completed/acme-certificate-readiness-ux.md)：已补齐 ACME DNS-01/Origin CA provider readiness、`PROVIDER_NOT_READY` 契约和 Certificates 页面前置诊断；完整包测仅受既有目录权限测试失败阻断。
 - completed Change [server-runtime-context-architecture.md](changes/completed/server-runtime-context-architecture.md)：管理 facade、只读 session 查询端口与本机代理预留端口已实现；接口收窄后的 `ProxyEntryDefaults` 已改为独立装配配置。
 - completed Change [admin-facade-physical-split.md](changes/completed/admin-facade-physical-split.md)：runtime context 阶段 2 已完成，六个 Admin facade 已拆为独立 concrete service，跨领域规则通过三类 policy 注入，daemon/CLI/TUI/adminapi 已切换到 `Services.Commands`。
+- completed Change [server-local-virtual-client.md](changes/completed/server-local-virtual-client.md)：固定 `server-local` virtual provider、IP/CIDR+端口白名单、管理员专属 TCP/UDP 本机代理、系统对象保护与结果审计已落地；Web 本机代理因 Domain + Path 权威模型明确延期。
 
 ## 已实现能力（摘要）
 
@@ -46,6 +47,7 @@
 2. 生产运维：备份恢复、容量校验。
 3. 部署含 Access activation 身份变更撤销、`proxies` 遗留列 DROP、`web` 流类型修复的版本。
 4. 有代码变更时同步更新 requirements/architecture，并回写本日志验证结果。
+5. 若开放 server-local Web 代理，先设计系统 Domain 归属、证书和访问激活边界，不从通用 proxy mutation 绕过。
 
 ## 最近验证
 
@@ -56,6 +58,7 @@
 | 2026-07-15 | 文档链接与路径 | 通过 | 本地相对链接检查无失效路径 |
 | 2026-07-23 | runtime context 架构变更 | 已完成 | `go build ./...`、相关包测和 `go test ./e2e -count=1` 通过；受控全量包测仅遇到 daemon 自定义 Web listener 的预置 flaky，已单独记录为技术债 |
 | 2026-07-24 | Admin facade 物理拆分 | 已完成 | `CGO_ENABLED=0 go build ./...`、admin/adminapi/admintui/CLI 真实测试和 `go test ./e2e -count=1` 通过；全量包测仅遇到已登记的 daemon custom listener 502 以及 certmanager 临时目录权限断言 |
+| 2026-07-24 | Server 本机虚拟 Client | 已完成 | 相关 Go 包、daemon TCP/UDP+重启集成、UI 34 测试与 build、e2e 通过；全量包测仍仅受已登记的 daemon custom listener 和 certmanager 权限断言阻碍 |
 
 建议验证入口：
 

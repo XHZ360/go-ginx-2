@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { LinkOutlined, PlusOutlined, ReloadOutlined, ThunderboltOutlined } from '@ant-design/icons';
-import { Button, Switch, type TableColumnsType } from 'antd';
+import { Button, Switch, Tag, type TableColumnsType } from 'antd';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { Dialog } from '../components/Dialog';
@@ -11,7 +11,9 @@ import { useAuthedQuery } from '../hooks/useAuthedQuery';
 import { useMutationWithAuth } from '../hooks/useMutationWithAuth';
 import {
   mutateCreateProxy,
+  mutateDisableLocalProxy,
   mutateDisableProxy,
+  mutateEnableLocalProxy,
   mutateEnableProxy,
   queryClients,
   queryDomains,
@@ -260,8 +262,11 @@ export function ProxiesPage() {
   });
 
   const enableMutation = useMutationWithAuth({
-    mutationFn: (id: string) => mutateEnableProxy(session.csrfToken ?? '', id),
-    onSuccess: async (_, id) => {
+    mutationFn: async ({ id, isSystem }: { id: string; isSystem: boolean }) => {
+      if (isSystem) await mutateEnableLocalProxy(session.csrfToken ?? '', id);
+      else await mutateEnableProxy(session.csrfToken ?? '', id);
+    },
+    onSuccess: async (_, { id }) => {
       setActionError(undefined);
       await queryClient.invalidateQueries({ queryKey: ['proxies'] });
       await queryClient.invalidateQueries({ queryKey: ['proxy', id] });
@@ -272,8 +277,11 @@ export function ProxiesPage() {
   });
 
   const disableMutation = useMutationWithAuth({
-    mutationFn: (id: string) => mutateDisableProxy(session.csrfToken ?? '', id),
-    onSuccess: async (_, id) => {
+    mutationFn: async ({ id, isSystem }: { id: string; isSystem: boolean }) => {
+      if (isSystem) await mutateDisableLocalProxy(session.csrfToken ?? '', id);
+      else await mutateDisableProxy(session.csrfToken ?? '', id);
+    },
+    onSuccess: async (_, { id }) => {
       setActionError(undefined);
       await queryClient.invalidateQueries({ queryKey: ['proxies'] });
       await queryClient.invalidateQueries({ queryKey: ['proxy', id] });
@@ -285,7 +293,7 @@ export function ProxiesPage() {
 
   const usesWeb = useMemo(() => isWebProxy(form.type), [form.type]);
   const users = usersQuery.data?.items ?? [];
-  const clients = clientsQuery.data?.items ?? [];
+  const clients = (clientsQuery.data?.items ?? []).filter((client) => !client.isSystem);
   const domains = (domainsQuery.data?.items ?? []).filter((domain: DomainRecord) => !form.userId || domain.userId === form.userId);
   const hostOptions = hostOptionsWithCurrent(entryOptionsQuery.data?.hosts ?? [{ value: '', label: 'Default listener host', isDefault: true }], form.entryBindHost);
   const clientSelectionMismatch = Boolean(form.clientId && clientsQuery.data && !clients.some((client) => client.id === form.clientId));
@@ -319,9 +327,12 @@ export function ProxiesPage() {
         dataIndex: 'name',
         key: 'name',
         render: (name: string, proxy) => (
-          <Button type="link" icon={<LinkOutlined aria-hidden="true" />} onClick={() => navigate(`/proxies/${proxy.id}`)}>
-            {name}
-          </Button>
+          <div className="inline-actions">
+            <Button type="link" icon={<LinkOutlined aria-hidden="true" />} onClick={() => navigate(`/proxies/${proxy.id}`)}>
+              {name}
+            </Button>
+            {proxy.isSystem ? <Tag color="blue">System</Tag> : null}
+          </div>
         ),
       },
       { title: 'Type', dataIndex: 'type', key: 'type', width: 90 },
@@ -375,11 +386,11 @@ export function ProxiesPage() {
         render: (_, proxy) => (
           <div className="inline-actions">
             {proxy.status === 'disabled' ? (
-              <Button type="default" icon={<ThunderboltOutlined aria-hidden="true" />} onClick={() => enableMutation.mutate(proxy.id)}>
+              <Button type="default" icon={<ThunderboltOutlined aria-hidden="true" />} onClick={() => enableMutation.mutate({ id: proxy.id, isSystem: proxy.isSystem })}>
                 Enable
               </Button>
             ) : (
-              <ConfirmButton label="Disable" confirmLabel="Disable this proxy?" onConfirm={() => disableMutation.mutate(proxy.id)} tone="secondary" />
+              <ConfirmButton label="Disable" confirmLabel="Disable this proxy?" onConfirm={() => disableMutation.mutate({ id: proxy.id, isSystem: proxy.isSystem })} tone="secondary" />
             )}
           </div>
         ),

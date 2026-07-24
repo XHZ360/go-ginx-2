@@ -111,3 +111,20 @@ func TestMarkExpiredClosesStaleSessions(t *testing.T) {
 		t.Fatalf("expected session not found, got %v", err)
 	}
 }
+
+func TestMarkExpiredKeepsPersistentVirtualSession(t *testing.T) {
+	now := time.Date(2026, 7, 24, 12, 0, 0, 0, time.UTC)
+	manager := NewManager()
+	manager.now = func() time.Time { return now }
+	registered, _, err := manager.Register(RegisterInput{SessionID: "server-local-virtual", ClientID: "server-local", UserID: "server-local-system", Protocol: domain.ProtocolTCPTLS, Persistent: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(24 * time.Hour)
+	if expired := manager.MarkExpired(time.Second); len(expired) != 0 {
+		t.Fatalf("persistent session must not expire: %+v", expired)
+	}
+	if latest, ok := manager.Latest(registered.ClientID); !ok || latest.ID != registered.ID {
+		t.Fatalf("persistent session should remain latest: %+v", latest)
+	}
+}

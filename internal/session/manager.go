@@ -35,6 +35,7 @@ type Session struct {
 	ClosedAt      *time.Time
 	Stats         HeartbeatStats
 	StreamOpener  StreamOpener
+	Persistent    bool
 }
 
 type StreamOpener interface {
@@ -65,6 +66,7 @@ type RegisterInput struct {
 	Protocol      domain.Protocol
 	ConfigVersion int64
 	StreamOpener  StreamOpener
+	Persistent    bool
 }
 
 type HeartbeatInput struct {
@@ -111,6 +113,7 @@ func (manager *Manager) Register(input RegisterInput) (Session, *Session, error)
 		ConnectedAt:   now,
 		LastHeartbeat: now,
 		StreamOpener:  input.StreamOpener,
+		Persistent:    input.Persistent,
 	}
 
 	var replaced *Session
@@ -201,7 +204,7 @@ func (manager *Manager) MarkExpired(timeout time.Duration) []Session {
 	now := manager.now()
 	expired := make([]Session, 0)
 	for id, current := range manager.byID {
-		if current.ReplacedAt != nil || current.ClosedAt != nil {
+		if current.Persistent || current.ReplacedAt != nil || current.ClosedAt != nil {
 			continue
 		}
 		if now.Sub(current.LastHeartbeat) <= timeout {

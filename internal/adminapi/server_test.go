@@ -9,6 +9,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"io"
 	"math/big"
 	"net/http"
@@ -25,14 +26,109 @@ import (
 	"github.com/simp-frp/go-ginx-2/internal/adminquery"
 	"github.com/simp-frp/go-ginx-2/internal/certmanager"
 	"github.com/simp-frp/go-ginx-2/internal/config"
+	"github.com/simp-frp/go-ginx-2/internal/contracterr"
 	"github.com/simp-frp/go-ginx-2/internal/domain"
 	"github.com/simp-frp/go-ginx-2/internal/enrollment"
+	"github.com/simp-frp/go-ginx-2/internal/localproxy"
 	httpsproxy "github.com/simp-frp/go-ginx-2/internal/proxy/https"
 	"github.com/simp-frp/go-ginx-2/internal/session"
 	"github.com/simp-frp/go-ginx-2/internal/stats"
 	"github.com/simp-frp/go-ginx-2/internal/store"
 	"github.com/simp-frp/go-ginx-2/internal/store/sqlite"
+	"github.com/simp-frp/go-ginx-2/internal/systemclient"
 )
+
+func TestServerLocalClientManagementGraphQL(t *testing.T) {
+	var db store.Store
+	server := startAdminTestServer(t, func(entry *Entry) {
+		db = entry.Query.Store
+		if _, err := (systemclient.Service{Store: db}).Ensure(context.Background()); err != nil {
+			t.Fatalf("ensure system client: %v", err)
+		}
+		allowlistStore, ok := db.(localproxy.AllowlistRepositoryStore)
+		if !ok {
+			t.Fatal("test store does not expose local allowlist repository")
+		}
+		policy, err := localproxy.LoadPolicy(context.Background(), allowlistStore.LocalAllowlist())
+		if err != nil {
+			t.Fatalf("load local policy: %v", err)
+		}
+		services := admin.NewServices(admin.Options{Store: db, LocalTargetPolicy: policy})
+		entry.LocalCommands = services.Local
+	})
+	client := newAdminHTTPClient(t)
+	login := loginAdmin(t, client, server.Addr().String(), "admin", "secret")
+
+	clientResult := postAdminGraphQL(t, client, server.Addr().String(), `query {
+		client(id: "server-local") { id isSystem managedProxies { id isSystem } }
+		clients(input: {page: {page: 1, pageSize: 100}}) { items { id isSystem } }
+		localTargetAllowlist { entries { cidr portStart portEnd } }
+	}`, "", http.StatusOK)
+	data := clientResult["data"].(map[string]any)
+	systemClient := data["client"].(map[string]any)
+	if systemClient["isSystem"] != true {
+		t.Fatalf("expected system client marker: %+v", clientResult)
+	}
+	defaultEntries := data["localTargetAllowlist"].(map[string]any)["entries"].([]any)
+	if len(defaultEntries) != 2 {
+		t.Fatalf("expected loopback defaults: %+v", defaultEntries)
+	}
+
+	replaced := postAdminGraphQL(t, client, server.Addr().String(), `mutation {
+		replaceLocalTargetAllowlist(input: {entries: [{cidr: "127.0.0.1", portStart: 8080, portEnd: 8080}]}) {
+			entries { cidr portStart portEnd }
+		}
+	}`, login.CSRFToken, http.StatusOK)
+	entries := replaced["data"].(map[string]any)["replaceLocalTargetAllowlist"].(map[string]any)["entries"].([]any)
+	entry := entries[0].(map[string]any)
+	if entry["cidr"] != "127.0.0.1/32" || entry["portStart"] != float64(8080) || entry["portEnd"] != float64(8080) {
+		t.Fatalf("unexpected normalized allowlist: %+v", replaced)
+	}
+	persisted, err := db.(localproxy.AllowlistRepositoryStore).LocalAllowlist().List(context.Background())
+	if err != nil || len(persisted) != 1 || persisted[0].CIDR != "127.0.0.1/32" {
+		t.Fatalf("allowlist was not persisted: entries=%+v err=%v", persisted, err)
+	}
+
+	created := postAdminGraphQL(t, client, server.Addr().String(), `mutation {
+		createLocalProxy(input: {name: "local-api", type: "tcp", entryBindHost: "127.0.0.1", entryPort: 19080, targetHost: "127.0.0.1", targetPort: 8080}) {
+			proxyId status proxy { id clientId isSystem config { targetHost targetPort } }
+		}
+	}`, login.CSRFToken, http.StatusOK)
+	createdPayload := created["data"].(map[string]any)["createLocalProxy"].(map[string]any)
+	proxyID := createdPayload["proxyId"].(string)
+	if createdPayload["proxy"].(map[string]any)["isSystem"] != true {
+		t.Fatalf("expected system proxy marker: %+v", created)
+	}
+	assertGraphQLErrorCodeForQuery(t, client, server.Addr().String(), `mutation { deleteProxy(input: {id: "`+proxyID+`"}) { proxyId } }`, login.CSRFToken, "FORBIDDEN")
+
+	postAdminGraphQL(t, client, server.Addr().String(), `mutation { disableLocalProxy(input: {id: "`+proxyID+`"}) { status proxy { isSystem } } }`, login.CSRFToken, http.StatusOK)
+	postAdminGraphQL(t, client, server.Addr().String(), `mutation { deleteLocalProxy(input: {id: "`+proxyID+`"}) { proxyId status } }`, login.CSRFToken, http.StatusOK)
+	if _, err := db.Proxies().ByID(context.Background(), proxyID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("local proxy should be deleted, got %v", err)
+	}
+	audits, err := db.AuditEvents().ListRecent(context.Background(), 100)
+	if err != nil {
+		t.Fatalf("list audit events: %v", err)
+	}
+	wantActions := map[string]bool{"replace_local_allowlist": false, "create_local_proxy": false, "disable_local_proxy": false, "delete_local_proxy": false}
+	foundForbiddenDelete := false
+	for _, event := range audits {
+		if _, ok := wantActions[event.Action]; ok {
+			wantActions[event.Action] = true
+		}
+		if event.Action == "delete_proxy" && event.ResourceID == proxyID && event.Result == "forbidden" && event.ErrorSummary == contracterr.CodeForbidden {
+			foundForbiddenDelete = true
+		}
+	}
+	for action, found := range wantActions {
+		if !found {
+			t.Fatalf("missing audit action %s in %+v", action, audits)
+		}
+	}
+	if !foundForbiddenDelete {
+		t.Fatalf("missing forbidden generic delete audit in %+v", audits)
+	}
+}
 
 func TestServerRemovedRoutesAndSessionBootstrap(t *testing.T) {
 	server := startAdminTestServer(t, nil)

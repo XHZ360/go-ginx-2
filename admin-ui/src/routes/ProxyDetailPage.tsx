@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react';
 import { EditOutlined, ThunderboltOutlined } from '@ant-design/icons';
-import { Button, QRCode, Switch } from 'antd';
+import { Button, QRCode, Switch, Tag } from 'antd';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { useQueryClient } from '@tanstack/react-query';
 import { ConfirmButton } from '../components/ConfirmButton';
@@ -11,12 +11,16 @@ import { useAuthedQuery } from '../hooks/useAuthedQuery';
 import { useMutationWithAuth } from '../hooks/useMutationWithAuth';
 import {
   mutateCreateProxyActivationLink,
+  mutateDeleteLocalProxy,
   mutateDeleteProxy,
+  mutateDisableLocalProxy,
   mutateDisableProxy,
   mutateDisableProxyAccessAuth,
+  mutateEnableLocalProxy,
   mutateEnableProxy,
   mutateEnableProxyAccessAuthAndCreateActivation,
   mutateRevokeAllProxyAccess,
+  mutateUpdateLocalProxy,
   mutateUpdateProxy,
   queryDomains,
   queryProxy,
@@ -115,10 +119,23 @@ export function ProxyDetailPage() {
   };
 
   const updateMutation = useMutationWithAuth({
-    mutationFn: () => {
+    mutationFn: async () => {
       if (!form || !query.data) throw new Error('missing form');
       const web = isWebProxy(query.data.type);
-      return mutateUpdateProxy(session.csrfToken ?? '', {
+      if (query.data.isSystem) {
+        await mutateUpdateLocalProxy(session.csrfToken ?? '', {
+          id,
+          name: form.name,
+          type: query.data.type,
+          description: form.description,
+          entryBindHost: form.entryBindHost || undefined,
+          entryPort: Number(form.entryPort),
+          targetHost: form.targetHost,
+          targetPort: Number(form.targetPort),
+        });
+        return;
+      }
+      await mutateUpdateProxy(session.csrfToken ?? '', {
         id,
         type: query.data.type,
         name: form.name,
@@ -155,15 +172,24 @@ export function ProxyDetailPage() {
   });
 
   const enableMutation = useMutationWithAuth({
-    mutationFn: () => mutateEnableProxy(session.csrfToken ?? '', id),
+    mutationFn: async () => {
+      if (query.data?.isSystem) await mutateEnableLocalProxy(session.csrfToken ?? '', id);
+      else await mutateEnableProxy(session.csrfToken ?? '', id);
+    },
     onSuccess: invalidate,
   });
   const disableMutation = useMutationWithAuth({
-    mutationFn: () => mutateDisableProxy(session.csrfToken ?? '', id),
+    mutationFn: async () => {
+      if (query.data?.isSystem) await mutateDisableLocalProxy(session.csrfToken ?? '', id);
+      else await mutateDisableProxy(session.csrfToken ?? '', id);
+    },
     onSuccess: invalidate,
   });
   const deleteMutation = useMutationWithAuth({
-    mutationFn: () => mutateDeleteProxy(session.csrfToken ?? '', id),
+    mutationFn: async () => {
+      if (query.data?.isSystem) await mutateDeleteLocalProxy(session.csrfToken ?? '', id);
+      else await mutateDeleteProxy(session.csrfToken ?? '', id);
+    },
     onSuccess: () => navigate('/proxies'),
   });
 
@@ -217,6 +243,7 @@ export function ProxyDetailPage() {
         description={web ? `Web path proxy · ${proxyRouteLabel(proxy)}` : `Proxy ID: ${proxy.id}`}
         actions={
           <>
+            {proxy.isSystem ? <Tag color="blue">System proxy</Tag> : null}
             <Button
               type="default"
               icon={<EditOutlined aria-hidden="true" />}

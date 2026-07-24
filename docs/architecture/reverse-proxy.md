@@ -8,6 +8,14 @@
 
 Web 支持 HTTP/1.1 WebSocket Upgrade，并在升级后进入双向隧道。启用、禁用、更新或删除后，服务端协调 listener（TCP/UDP 来自 Proxy entry，HTTP/HTTPS 来自 DomainEntry）；冲突或绑定失败作为管理操作错误返回。
 
+## Server 本机虚拟客户端
+
+server 启动时幂等确保固定 `server-local` client，并向 session registry 注册常驻 provider virtual session。TCP/UDP listener 仍使用既有 `StreamOpener` 和 `OpenStream` 帧；virtual session 在进程内通过 pipe 接收该帧，经白名单二次校验后直接拨号 server 所在机器的 target，不连接自身 control listener，也不扩展 wire protocol。
+
+系统 client/proxy 由保留系统用户归属。通用 client/proxy mutation 和 repository 写入默认拒绝这些对象，只有系统初始化与专用本机代理 facade 可使用受限内部写入上下文。管理面当前只开放本机 TCP/UDP 代理；Web 本机代理需要与 Domain + Path、证书和系统 Domain 归属共同设计，当前未开放。
+
+目标策略持久化为规范化的 `CIDR + 可选端口闭区间`。单个 IP 转为 `/32` 或 `/128`，IPv4-mapped IPv6 先 unmap，hostname 拒绝；空白名单无效。更新先持久化再原子发布不可变快照，失败保留旧快照；每次拨号重新校验，新连接立即使用新策略，已有连接继续。
+
 ## 路径路由
 
 > 当前事实：Domain + Path 模型已落地（见 [../decisions/domain-path-proxy-routing.md](../decisions/domain-path-proxy-routing.md) 与 [../changes/completed/domain-path-proxy-routing.md](../changes/completed/domain-path-proxy-routing.md)）。

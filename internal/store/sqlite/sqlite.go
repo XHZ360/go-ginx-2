@@ -10,7 +10,9 @@ import (
 	"time"
 
 	"github.com/simp-frp/go-ginx-2/internal/domain"
+	"github.com/simp-frp/go-ginx-2/internal/localproxy"
 	"github.com/simp-frp/go-ginx-2/internal/store"
+	"github.com/simp-frp/go-ginx-2/internal/systemclient"
 	_ "modernc.org/sqlite"
 )
 
@@ -59,6 +61,10 @@ func (s *Store) ProviderCredentials() store.ProviderCredentialRepository {
 func (s *Store) Stats() store.StatsRepository { return statsRepository{s.db} }
 
 func (s *Store) AuditEvents() store.AuditRepository { return auditRepository{s.db} }
+
+func (s *Store) LocalAllowlist() localproxy.AllowlistRepository {
+	return localAllowlistRepository{s.db}
+}
 
 // dropProxyWebLegacyColumns rebuilds proxies without entry_host/cert_file/key_file/certificate_id.
 // TCP/UDP keep entry_bind_host + entry_port; Web authority lives on domains.
@@ -260,7 +266,72 @@ func (s *Store) migrate(ctx context.Context) error {
 	if err := migrateDomainPathRouting(ctx, s.db); err != nil {
 		return err
 	}
-	return dropProxyWebLegacyColumns(ctx, s.db)
+	if err := dropProxyWebLegacyColumns(ctx, s.db); err != nil {
+		return err
+	}
+	return ensureLocalAllowlistDefaults(ctx, s.db)
+}
+
+type localAllowlistRepository struct{ db *sql.DB }
+
+func (repository localAllowlistRepository) List(ctx context.Context) ([]localproxy.AllowlistEntry, error) {
+	rows, err := repository.db.QueryContext(ctx, `select cidr, port_start, port_end from local_target_allowlist order by cidr, port_start, port_end`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	entries := make([]localproxy.AllowlistEntry, 0)
+	for rows.Next() {
+		var entry localproxy.AllowlistEntry
+		if err := rows.Scan(&entry.CIDR, &entry.PortStart, &entry.PortEnd); err != nil {
+			return nil, err
+		}
+		entries = append(entries, entry)
+	}
+	return entries, rows.Err()
+}
+
+func (repository localAllowlistRepository) Replace(ctx context.Context, entries []localproxy.AllowlistEntry) error {
+	if len(entries) == 0 {
+		return errors.New("local target allowlist must not be empty")
+	}
+	tx, err := repository.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `delete from local_target_allowlist`); err != nil {
+		return err
+	}
+	now := time.Now().UTC()
+	for _, entry := range entries {
+		if _, err := tx.ExecContext(ctx, `insert into local_target_allowlist (cidr, port_start, port_end, created_at, updated_at) values (?, ?, ?, ?, ?)`, entry.CIDR, entry.PortStart, entry.PortEnd, now, now); err != nil {
+			return translateError(err)
+		}
+	}
+	return tx.Commit()
+}
+
+func ensureLocalAllowlistDefaults(ctx context.Context, db *sql.DB) error {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var count int
+	if err := tx.QueryRowContext(ctx, `select count(*) from local_target_allowlist`).Scan(&count); err != nil {
+		return err
+	}
+	if count > 0 {
+		return tx.Commit()
+	}
+	now := time.Now().UTC()
+	for _, entry := range localproxy.DefaultAllowlist {
+		if _, err := tx.ExecContext(ctx, `insert into local_target_allowlist (cidr, port_start, port_end, created_at, updated_at) values (?, ?, ?, ?, ?)`, entry.CIDR, entry.PortStart, entry.PortEnd, now, now); err != nil {
+			return translateError(err)
+		}
+	}
+	return tx.Commit()
 }
 
 type proxyAccessRepository struct{ db *sql.DB }
@@ -381,6 +452,9 @@ func (r proxyAccessRepository) rewriteAccessState(ctx context.Context, proxyID s
 type userRepository struct{ db *sql.DB }
 
 func (r userRepository) Create(ctx context.Context, user domain.User) error {
+	if !systemclient.AllowsInternalMutation(ctx) && (systemclient.IsSystemUserID(user.ID) || user.Username == systemclient.Username) {
+		return systemclient.ProtectUserMutation(systemclient.UserID)
+	}
 	if err := user.Validate(); err != nil {
 		return err
 	}
@@ -424,16 +498,31 @@ func (r userRepository) List(ctx context.Context) ([]domain.User, error) {
 }
 
 func (r userRepository) SetStatus(ctx context.Context, id string, status domain.UserStatus) error {
+	if !systemclient.AllowsInternalMutation(ctx) {
+		if err := systemclient.ProtectUserMutation(id); err != nil {
+			return err
+		}
+	}
 	result, err := r.db.ExecContext(ctx, `update users set status = ?, updated_at = ? where id = ?`, status, time.Now().UTC(), id)
 	return resultError(result, err)
 }
 
 func (r userRepository) SetPassword(ctx context.Context, id string, passwordHash string) error {
+	if !systemclient.AllowsInternalMutation(ctx) {
+		if err := systemclient.ProtectUserMutation(id); err != nil {
+			return err
+		}
+	}
 	result, err := r.db.ExecContext(ctx, `update users set password_hash = ?, updated_at = ? where id = ?`, passwordHash, time.Now().UTC(), id)
 	return resultError(result, err)
 }
 
 func (r userRepository) Delete(ctx context.Context, id string) error {
+	if !systemclient.AllowsInternalMutation(ctx) {
+		if err := systemclient.ProtectUserMutation(id); err != nil {
+			return err
+		}
+	}
 	result, err := r.db.ExecContext(ctx, `delete from users where id = ?`, id)
 	return resultError(result, err)
 }
@@ -441,6 +530,9 @@ func (r userRepository) Delete(ctx context.Context, id string) error {
 type clientRepository struct{ db *sql.DB }
 
 func (r clientRepository) Create(ctx context.Context, client domain.Client) error {
+	if !systemclient.AllowsInternalMutation(ctx) && (systemclient.IsSystemClientID(client.ID) || systemclient.IsSystemUserID(client.UserID)) {
+		return systemclient.ProtectClientMutation(systemclient.ClientID)
+	}
 	if err := client.Validate(); err != nil {
 		return err
 	}
@@ -481,6 +573,11 @@ func (r clientRepository) List(ctx context.Context) ([]domain.Client, error) {
 }
 
 func (r clientRepository) SetStatus(ctx context.Context, id string, status domain.ClientStatus) error {
+	if !systemclient.AllowsInternalMutation(ctx) {
+		if err := systemclient.ProtectClientMutation(id); err != nil {
+			return err
+		}
+	}
 	now := time.Now().UTC()
 	result, err := r.db.ExecContext(ctx, `
 update clients
@@ -498,6 +595,11 @@ where id = ?`,
 }
 
 func (r clientRepository) RotateCredential(ctx context.Context, id string, credentialHash string) error {
+	if !systemclient.AllowsInternalMutation(ctx) {
+		if err := systemclient.ProtectClientMutation(id); err != nil {
+			return err
+		}
+	}
 	if strings.TrimSpace(credentialHash) == "" {
 		return errors.New("credential hash is required")
 	}
@@ -506,6 +608,11 @@ func (r clientRepository) RotateCredential(ctx context.Context, id string, crede
 }
 
 func (r clientRepository) Delete(ctx context.Context, id string) error {
+	if !systemclient.AllowsInternalMutation(ctx) {
+		if err := systemclient.ProtectClientMutation(id); err != nil {
+			return err
+		}
+	}
 	result, err := r.db.ExecContext(ctx, `delete from clients where id = ?`, id)
 	return resultError(result, err)
 }
@@ -549,6 +656,9 @@ type proxyRepository struct{ db *sql.DB }
 const proxySelectColumns = `id, user_id, client_id, name, type, status, domain_id, path_prefix, strip_prefix, upstream_path_prefix, entry_bind_host, entry_port, target_host, target_port, access_auth_enabled, access_auth_version, stats_legacy_aggregate, description, created_at, updated_at`
 
 func (r proxyRepository) Create(ctx context.Context, proxy domain.Proxy) error {
+	if !systemclient.AllowsInternalMutation(ctx) && (systemclient.IsSystemProxy(proxy) || systemclient.IsSystemUserID(proxy.UserID)) {
+		return systemclient.ProtectProxyMutation(domain.Proxy{ClientID: systemclient.ClientID})
+	}
 	if err := ensureLegacyWebProxyDomain(ctx, r.db, &proxy); err != nil {
 		return err
 	}
@@ -893,11 +1003,20 @@ func (r proxyRepository) byEntry(ctx context.Context, proxyType domain.ProxyType
 }
 
 func (r proxyRepository) SetStatus(ctx context.Context, id string, status domain.ProxyStatus) error {
+	if err := r.protectSystemMutation(ctx, id); err != nil {
+		return err
+	}
 	result, err := r.db.ExecContext(ctx, `update proxies set status = ?, updated_at = ? where id = ?`, status, time.Now().UTC(), id)
 	return resultError(result, err)
 }
 
 func (r proxyRepository) Update(ctx context.Context, proxy domain.Proxy) error {
+	if !systemclient.AllowsInternalMutation(ctx) && (systemclient.IsSystemProxy(proxy) || systemclient.IsSystemUserID(proxy.UserID)) {
+		return systemclient.ProtectProxyMutation(domain.Proxy{ClientID: systemclient.ClientID})
+	}
+	if err := r.protectSystemMutation(ctx, proxy.ID); err != nil {
+		return err
+	}
 	if err := normalizeProxyForStore(&proxy); err != nil {
 		return err
 	}
@@ -909,8 +1028,26 @@ func (r proxyRepository) Update(ctx context.Context, proxy domain.Proxy) error {
 }
 
 func (r proxyRepository) Delete(ctx context.Context, id string) error {
+	if err := r.protectSystemMutation(ctx, id); err != nil {
+		return err
+	}
 	result, err := r.db.ExecContext(ctx, `delete from proxies where id = ?`, id)
 	return resultError(result, err)
+}
+
+func (r proxyRepository) protectSystemMutation(ctx context.Context, id string) error {
+	if systemclient.AllowsInternalMutation(ctx) {
+		return nil
+	}
+	var clientID string
+	err := r.db.QueryRowContext(ctx, `select client_id from proxies where id = ?`, id).Scan(&clientID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	return systemclient.ProtectProxyMutation(domain.Proxy{ClientID: clientID})
 }
 
 type certificateRepository struct{ db *sql.DB }
@@ -2124,6 +2261,16 @@ create table if not exists schema_flags (
     name text primary key,
     value text not null,
     updated_at timestamp not null
+);
+
+create table if not exists local_target_allowlist (
+    cidr text not null,
+    port_start integer not null default 0,
+    port_end integer not null default 0,
+    created_at timestamp not null,
+    updated_at timestamp not null,
+    primary key (cidr, port_start, port_end),
+    check ((port_start = 0 and port_end = 0) or (port_start between 1 and 65535 and port_end between port_start and 65535))
 );
 
 create table if not exists proxy_activation_tokens (

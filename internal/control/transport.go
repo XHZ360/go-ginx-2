@@ -714,7 +714,21 @@ func (client *ClientConn) ServeProxyStreams(ctx context.Context) error {
 }
 
 func handleProxyStream(stream io.ReadWriteCloser) {
+	ServeProxyStream(context.Background(), stream, &net.Dialer{Timeout: httpTargetDialTimeout})
+}
+
+type TargetDialer interface {
+	DialContext(ctx context.Context, network string, address string) (net.Conn, error)
+}
+
+// ServeProxyStream handles the existing OpenStream protocol with an injected
+// target dialer. Server-local virtual sessions use this entry point so target
+// policy is enforced without changing the control wire protocol.
+func ServeProxyStream(ctx context.Context, stream io.ReadWriteCloser, dialer TargetDialer) {
 	defer stream.Close()
+	if dialer == nil {
+		return
+	}
 	envelope, err := ReadMessage(stream)
 	if err != nil || envelope.Type != MessageOpenStream {
 		return
@@ -724,18 +738,22 @@ func handleProxyStream(stream io.ReadWriteCloser) {
 		return
 	}
 	if request.Kind == "http" {
-		handleHTTPStream(stream, request)
+		handleHTTPStreamWithDialer(ctx, stream, request, dialer)
 		return
 	}
 	if request.Kind == "udp" {
-		handleUDPStream(stream, request)
+		handleUDPStreamWithDialer(ctx, stream, request, dialer)
 		return
 	}
-	handleTCPStream(stream, request)
+	handleTCPStreamWithDialer(ctx, stream, request, dialer)
 }
 
 func handleTCPStream(stream io.ReadWriteCloser, request OpenStream) {
-	target, err := net.Dial("tcp", net.JoinHostPort(request.TargetHost, strconv.Itoa(request.TargetPort)))
+	handleTCPStreamWithDialer(context.Background(), stream, request, &net.Dialer{})
+}
+
+func handleTCPStreamWithDialer(ctx context.Context, stream io.ReadWriteCloser, request OpenStream, dialer TargetDialer) {
+	target, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(request.TargetHost, strconv.Itoa(request.TargetPort)))
 	if err != nil {
 		return
 	}
@@ -744,6 +762,10 @@ func handleTCPStream(stream io.ReadWriteCloser, request OpenStream) {
 }
 
 func handleHTTPStream(stream io.ReadWriteCloser, request OpenStream) {
+	handleHTTPStreamWithDialer(context.Background(), stream, request, &net.Dialer{Timeout: httpTargetDialTimeout})
+}
+
+func handleHTTPStreamWithDialer(ctx context.Context, stream io.ReadWriteCloser, request OpenStream, dialer TargetDialer) {
 	inboundReader := bufio.NewReader(stream)
 	inbound, err := http.ReadRequest(inboundReader)
 	if err != nil {
@@ -757,10 +779,12 @@ func handleHTTPStream(stream io.ReadWriteCloser, request OpenStream) {
 	inbound.Host = targetAuthority
 	rewriteHTTPOrigin(inbound.Header, targetAuthority)
 	if tunnel.IsWebSocketUpgrade(inbound.Header) {
-		handleHTTPUpgradeStream(stream, inboundReader, inbound, targetAuthority)
+		handleHTTPUpgradeStreamWithDialer(ctx, stream, inboundReader, inbound, targetAuthority, dialer)
 		return
 	}
-	response, err := http.DefaultTransport.RoundTrip(inbound)
+	transport := &http.Transport{Proxy: nil, DialContext: dialer.DialContext}
+	defer transport.CloseIdleConnections()
+	response, err := transport.RoundTrip(inbound)
 	if err != nil {
 		response = &http.Response{StatusCode: http.StatusBadGateway, Status: "502 Bad Gateway", Body: io.NopCloser(strings.NewReader("target unreachable\n")), Header: make(http.Header)}
 	}
@@ -769,10 +793,13 @@ func handleHTTPStream(stream io.ReadWriteCloser, request OpenStream) {
 }
 
 func handleHTTPUpgradeStream(stream io.ReadWriteCloser, inboundReader *bufio.Reader, inbound *http.Request, targetAuthority string) {
+	handleHTTPUpgradeStreamWithDialer(context.Background(), stream, inboundReader, inbound, targetAuthority, &net.Dialer{Timeout: httpTargetDialTimeout})
+}
+
+func handleHTTPUpgradeStreamWithDialer(parent context.Context, stream io.ReadWriteCloser, inboundReader *bufio.Reader, inbound *http.Request, targetAuthority string, dialer TargetDialer) {
 	tunnel.NormalizeWebSocketRequest(inbound)
-	ctx, cancel := context.WithTimeout(context.Background(), httpTargetDialTimeout)
+	ctx, cancel := context.WithTimeout(parent, httpTargetDialTimeout)
 	defer cancel()
-	dialer := net.Dialer{Timeout: httpTargetDialTimeout}
 	target, err := dialer.DialContext(ctx, "tcp", targetAuthority)
 	if err != nil {
 		_ = writeBadGateway(stream)
@@ -824,7 +851,11 @@ func rewriteHTTPOrigin(header http.Header, targetAuthority string) {
 }
 
 func handleUDPStream(stream io.ReadWriteCloser, request OpenStream) {
-	target, err := net.Dial("udp", net.JoinHostPort(request.TargetHost, strconv.Itoa(request.TargetPort)))
+	handleUDPStreamWithDialer(context.Background(), stream, request, &net.Dialer{})
+}
+
+func handleUDPStreamWithDialer(ctx context.Context, stream io.ReadWriteCloser, request OpenStream, dialer TargetDialer) {
+	target, err := dialer.DialContext(ctx, "udp", net.JoinHostPort(request.TargetHost, strconv.Itoa(request.TargetPort)))
 	if err != nil {
 		return
 	}

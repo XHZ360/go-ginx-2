@@ -9,6 +9,7 @@ import (
 	"github.com/simp-frp/go-ginx-2/internal/contracterr"
 	"github.com/simp-frp/go-ginx-2/internal/domain"
 	"github.com/simp-frp/go-ginx-2/internal/store"
+	"github.com/simp-frp/go-ginx-2/internal/systemclient"
 )
 
 func (service *ProxyService) CreateProxy(ctx context.Context, input CreateProxyInput) (domain.Proxy, error) {
@@ -29,6 +30,11 @@ func (service *ProxyService) CreateProxy(ctx context.Context, input CreateProxyI
 	}
 	client, err := service.Store.Clients().ByID(ctx, input.ClientID)
 	if err != nil {
+		return domain.Proxy{}, err
+	}
+	if systemclient.IsSystemClientID(client.ID) {
+		err := &contracterr.Error{Code: contracterr.CodeForbidden, Message: "system proxies must be created through the local proxy API"}
+		recordRejectedAudit(ctx, service.Audit, input.ActorID, "proxy", input.ID, "create_proxy", err)
 		return domain.Proxy{}, err
 	}
 	if client.UserID != input.UserID {
@@ -132,6 +138,10 @@ func (service *ProxyService) UpdateProxy(ctx context.Context, input UpdateProxyI
 	}
 	existing, err := service.Store.Proxies().ByID(ctx, input.ID)
 	if err != nil {
+		return domain.Proxy{}, err
+	}
+	if err := systemclient.ProtectProxyMutation(existing); err != nil {
+		recordRejectedAudit(ctx, service.Audit, input.ActorID, "proxy", input.ID, "update_proxy", err)
 		return domain.Proxy{}, err
 	}
 	previous := existing
@@ -274,6 +284,10 @@ func (service *ProxyService) EnableProxy(ctx context.Context, proxyID string, ac
 	if err != nil {
 		return err
 	}
+	if err := systemclient.ProtectProxyMutation(proxy); err != nil {
+		recordRejectedAudit(ctx, service.Audit, actorID, "proxy", proxyID, "enable_proxy", err)
+		return err
+	}
 	if proxy.Type == domain.ProxyForward {
 		return contracterr.Unsupported("forward proxy is not supported in this management batch")
 	}
@@ -299,6 +313,14 @@ func (service *ProxyService) DisableProxy(ctx context.Context, proxyID string, a
 	if strings.TrimSpace(proxyID) == "" {
 		return contracterr.Validation("validation failed", map[string]string{"id": "proxy id is required"})
 	}
+	proxy, err := service.Store.Proxies().ByID(ctx, proxyID)
+	if err != nil {
+		return err
+	}
+	if err := systemclient.ProtectProxyMutation(proxy); err != nil {
+		recordRejectedAudit(ctx, service.Audit, actorID, "proxy", proxyID, "disable_proxy", err)
+		return err
+	}
 	if err := service.Store.Proxies().SetStatus(ctx, proxyID, domain.ProxyDisabled); err != nil {
 		return err
 	}
@@ -319,6 +341,10 @@ func (service *ProxyService) DeleteProxy(ctx context.Context, proxyID string, ac
 	if err != nil {
 		return err
 	}
+	if err := systemclient.ProtectProxyMutation(proxy); err != nil {
+		recordRejectedAudit(ctx, service.Audit, actorID, "proxy", proxyID, "delete_proxy", err)
+		return err
+	}
 	if proxy.Status != domain.ProxyDisabled {
 		return contracterr.Conflict("proxy must be disabled before delete", nil)
 	}
@@ -334,6 +360,10 @@ func (service *ProxyService) DeleteProxy(ctx context.Context, proxyID string, ac
 func (service *ProxyService) EnableProxyAccessAuthAndCreateActivation(ctx context.Context, proxyID string, actorID string) (ProxyActivationResult, error) {
 	proxy, err := service.Store.Proxies().ByID(ctx, proxyID)
 	if err != nil {
+		return ProxyActivationResult{}, err
+	}
+	if err := systemclient.ProtectProxyMutation(proxy); err != nil {
+		recordRejectedAudit(ctx, service.Audit, actorID, "proxy", proxyID, "enable_proxy_access_auth", err)
 		return ProxyActivationResult{}, err
 	}
 	if !proxy.Type.IsWeb() || strings.TrimSpace(proxy.DomainID) == "" {
@@ -377,6 +407,10 @@ func (service *ProxyService) CreateProxyActivationLink(ctx context.Context, prox
 	if err != nil {
 		return ProxyActivationResult{}, err
 	}
+	if err := systemclient.ProtectProxyMutation(proxy); err != nil {
+		recordRejectedAudit(ctx, service.Audit, actorID, "proxy", proxyID, "create_proxy_activation", err)
+		return ProxyActivationResult{}, err
+	}
 	if !proxy.AccessAuthEnabled {
 		return ProxyActivationResult{}, contracterr.Conflict("proxy access authentication is disabled", nil)
 	}
@@ -405,6 +439,10 @@ func (service *ProxyService) RevokeAllProxyAccess(ctx context.Context, proxyID s
 	if err != nil {
 		return err
 	}
+	if err := systemclient.ProtectProxyMutation(proxy); err != nil {
+		recordRejectedAudit(ctx, service.Audit, actorID, "proxy", proxyID, "revoke_proxy_access", err)
+		return err
+	}
 	access, ok := store.Access(service.Store)
 	if !ok {
 		return errors.New("proxy access repository is unavailable")
@@ -418,6 +456,10 @@ func (service *ProxyService) RevokeAllProxyAccess(ctx context.Context, proxyID s
 func (service *ProxyService) DisableProxyAccessAuth(ctx context.Context, proxyID string, actorID string) error {
 	proxy, err := service.Store.Proxies().ByID(ctx, proxyID)
 	if err != nil {
+		return err
+	}
+	if err := systemclient.ProtectProxyMutation(proxy); err != nil {
+		recordRejectedAudit(ctx, service.Audit, actorID, "proxy", proxyID, "disable_proxy_access_auth", err)
 		return err
 	}
 	access, ok := store.Access(service.Store)

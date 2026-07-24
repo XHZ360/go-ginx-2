@@ -4,6 +4,7 @@ import (
 	"github.com/simp-frp/go-ginx-2/internal/certmanager"
 	"github.com/simp-frp/go-ginx-2/internal/config"
 	"github.com/simp-frp/go-ginx-2/internal/domain"
+	"github.com/simp-frp/go-ginx-2/internal/localproxy"
 	"github.com/simp-frp/go-ginx-2/internal/store"
 )
 
@@ -14,6 +15,7 @@ type Options struct {
 	ProxyEntryDefaults   domain.ProxyEntryDefaults
 	ListenerReconciler   ListenerReconciler
 	DefaultJoin          config.JoinServiceDefaults
+	LocalTargetPolicy    localproxy.LocalTargetPolicy
 }
 
 type Commands struct {
@@ -34,6 +36,7 @@ type Services struct {
 	Proxies             *ProxyService
 	Certificates        *CertificateService
 	ProviderCredentials *ProviderCredentialService
+	Local               *LocalService
 }
 
 type UserService struct {
@@ -77,6 +80,13 @@ type CertificateService struct {
 	Binding      CertificateBindingPolicy
 }
 
+type LocalService struct {
+	Store     store.Store
+	Policy    localproxy.LocalTargetPolicy
+	Audit     AuditRecorder
+	Admission ProxyAdmissionPolicy
+}
+
 func NewServices(options Options) Services {
 	certificates := options.Certificates
 	certificates.Store = options.Store
@@ -91,6 +101,7 @@ func NewServices(options Options) Services {
 	proxies := &ProxyService{Store: options.Store, Audit: audit, Admission: admission, Binding: binding, Access: access}
 	certificatesService := &CertificateService{Store: options.Store, Certificates: certificates, Audit: audit, Admission: admission, Binding: binding}
 	providerCredentials := &ProviderCredentialService{Store: options.Store, Certificates: certificates, Audit: audit}
+	local := &LocalService{Store: options.Store, Policy: options.LocalTargetPolicy, Audit: audit, Admission: admission}
 
 	return Services{
 		Commands: Commands{
@@ -102,6 +113,6 @@ func NewServices(options Options) Services {
 			ProviderCredentialFacade: providerCredentials,
 		},
 		Store: options.Store, Users: users, Clients: clients, Domains: domains, Proxies: proxies,
-		Certificates: certificatesService, ProviderCredentials: providerCredentials,
+		Certificates: certificatesService, ProviderCredentials: providerCredentials, Local: local,
 	}
 }

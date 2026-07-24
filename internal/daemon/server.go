@@ -17,6 +17,7 @@ import (
 	"github.com/simp-frp/go-ginx-2/internal/domain"
 	"github.com/simp-frp/go-ginx-2/internal/enrollment"
 	"github.com/simp-frp/go-ginx-2/internal/enrollmentapi"
+	"github.com/simp-frp/go-ginx-2/internal/localproxy"
 	httpproxy "github.com/simp-frp/go-ginx-2/internal/proxy/http"
 	httpsproxy "github.com/simp-frp/go-ginx-2/internal/proxy/https"
 	tcpproxy "github.com/simp-frp/go-ginx-2/internal/proxy/tcp"
@@ -25,6 +26,7 @@ import (
 	"github.com/simp-frp/go-ginx-2/internal/stats"
 	"github.com/simp-frp/go-ginx-2/internal/store"
 	"github.com/simp-frp/go-ginx-2/internal/store/sqlite"
+	"github.com/simp-frp/go-ginx-2/internal/systemclient"
 )
 
 var (
@@ -52,6 +54,8 @@ type ServerRuntime struct {
 	HTTPServer         *httpproxy.Server
 	HTTPSListener      *httpsproxy.Listener
 	JoinService        config.JoinServiceDefaults
+	LocalTargetPolicy  *localproxy.Policy
+	virtualSessionID   string
 	proxyEntryDefaults domain.ProxyEntryDefaults
 	certificateDir     string
 	httpsEntryEnabled  bool
@@ -100,6 +104,26 @@ func startServerWithStore(parent context.Context, cfg config.Server, db store.St
 	}
 	runtimeCtx, cancel := context.WithCancel(parent)
 	sessions := session.NewManager()
+	allowlistStore, ok := db.(localproxy.AllowlistRepositoryStore)
+	if !ok {
+		cancel()
+		return nil, errors.New("local target allowlist repository is unavailable")
+	}
+	localTargetPolicy, err := localproxy.LoadPolicy(runtimeCtx, allowlistStore.LocalAllowlist())
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	systemClient, err := (systemclient.Service{Store: db}).Ensure(runtimeCtx)
+	if err != nil {
+		cancel()
+		return nil, fmt.Errorf("ensure system client: %w", err)
+	}
+	const virtualSessionID = "server-local-virtual"
+	if _, _, err := sessions.Register(session.RegisterInput{SessionID: virtualSessionID, ClientID: systemClient.ID, UserID: systemClient.UserID, ClientKind: domain.ClientKindProvider, Protocol: domain.ProtocolTCPTLS, StreamOpener: localproxy.Session{Dialer: localproxy.Dialer{Policy: localTargetPolicy, Timeout: 10 * time.Second}}, Persistent: true}); err != nil {
+		cancel()
+		return nil, fmt.Errorf("register system client session: %w", err)
+	}
 	persistentStats, err := stats.NewPersistent(runtimeCtx, db.Stats(), 30*time.Second)
 	if err != nil {
 		cancel()
@@ -115,7 +139,7 @@ func startServerWithStore(parent context.Context, cfg config.Server, db store.St
 		cancel()
 		return nil, fmt.Errorf("listen control quic: %w", err)
 	}
-	runtime := &ServerRuntime{Store: db, Sessions: sessions, Stats: memoryStats, persistentStats: persistentStats, ControlListener: controlListener, JoinService: joinDefaults, proxyEntryDefaults: proxyEntryDefaults, certificateDir: cfg.CertificateDir, httpsEntryEnabled: cfg.HTTPSEntryListen != "", runtimeCtx: runtimeCtx, cancel: cancel}
+	runtime := &ServerRuntime{Store: db, Sessions: sessions, Stats: memoryStats, persistentStats: persistentStats, ControlListener: controlListener, JoinService: joinDefaults, LocalTargetPolicy: localTargetPolicy, virtualSessionID: virtualSessionID, proxyEntryDefaults: proxyEntryDefaults, certificateDir: cfg.CertificateDir, httpsEntryEnabled: cfg.HTTPSEntryListen != "", runtimeCtx: runtimeCtx, cancel: cancel}
 	runtime.initProxyListenerRegistry()
 	go func() { _ = controlListener.Serve(runtimeCtx) }()
 	go runSessionExpiryLoop(runtimeCtx, sessions, db, cfg.HeartbeatTimeout)
@@ -143,7 +167,7 @@ func startServerWithStore(parent context.Context, cfg config.Server, db store.St
 			// 即使未启用 ACME/Origin CA，证书管理也需要受管证书目录以支持文件型证书（health/迁移）。
 			certificateService = certmanager.Service{Storage: httpsproxy.ManagedCertificateStorage{CertificateDir: cfg.CertificateDir}}
 		}
-		adminServices := admin.NewServices(admin.Options{Store: db, Certificates: certificateService, StaticListenerClaims: staticListenerClaims, ProxyEntryDefaults: proxyEntryDefaults, ListenerReconciler: runtime, DefaultJoin: joinDefaults})
+		adminServices := admin.NewServices(admin.Options{Store: db, Certificates: certificateService, StaticListenerClaims: staticListenerClaims, ProxyEntryDefaults: proxyEntryDefaults, ListenerReconciler: runtime, DefaultJoin: joinDefaults, LocalTargetPolicy: localTargetPolicy})
 		// 启动时将旧代理静态证书（cert_file/key_file）迁移为文件型证书资源并绑定。幂等。
 		if _, err := adminServices.Certificates.MigrateLegacyFileCertificates(runtimeCtx); err != nil {
 			_ = runtime.Close()
@@ -154,7 +178,7 @@ func startServerWithStore(parent context.Context, cfg config.Server, db store.St
 			_ = runtime.Close()
 			return nil, fmt.Errorf("load admin jwt secret: %w", err)
 		}
-		adminServer, err := adminapi.Listen(adminapi.Entry{ListenAddress: cfg.AdminListen, AdminCredentialsFile: cfg.AdminCredentialsFile, AdminFrontendDir: cfg.AdminFrontendDir, AdminJWTSecret: adminJWTSecret, Query: adminquery.Service{Store: db, Sessions: sessions, Stats: memoryStats, CertificateDir: cfg.CertificateDir, RenewalWindow: cfg.ACMERenewalWindow, OriginCARotationWindow: cfg.OriginCARotationWindow}, Commands: adminServices.Commands, ProxyEntryDefaults: proxyEntryDefaults, Enrollment: enrollment.Service{Store: db}})
+		adminServer, err := adminapi.Listen(adminapi.Entry{ListenAddress: cfg.AdminListen, AdminCredentialsFile: cfg.AdminCredentialsFile, AdminFrontendDir: cfg.AdminFrontendDir, AdminJWTSecret: adminJWTSecret, Query: adminquery.Service{Store: db, Sessions: sessions, Stats: memoryStats, CertificateDir: cfg.CertificateDir, RenewalWindow: cfg.ACMERenewalWindow, OriginCARotationWindow: cfg.OriginCARotationWindow}, Commands: adminServices.Commands, LocalCommands: adminServices.Local, ProxyEntryDefaults: proxyEntryDefaults, Enrollment: enrollment.Service{Store: db}})
 		if err != nil {
 			_ = runtime.Close()
 			return nil, fmt.Errorf("listen admin api: %w", err)
@@ -228,6 +252,9 @@ func (runtime *ServerRuntime) Close() error {
 	runtime.once.Do(func() {
 		if runtime.cancel != nil {
 			runtime.cancel()
+		}
+		if runtime.Sessions != nil && runtime.virtualSessionID != "" {
+			_, _, _ = runtime.Sessions.Close(runtime.virtualSessionID)
 		}
 		if runtime.ControlListener != nil {
 			closeErr = errors.Join(closeErr, runtime.ControlListener.Close())
